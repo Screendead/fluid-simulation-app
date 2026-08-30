@@ -33,6 +33,13 @@ typedef struct FluidRenderStats {
   float compression_max;
   float density_min;
   float density_max;
+  float pressure_min;
+  float pressure_max;
+  float v_max;
+  float temperature_min;
+  float temperature_max;
+  uint32_t clamp_count;
+  uint32_t substeps;
 } FluidRenderStats;
 
 #ifdef __cplusplus

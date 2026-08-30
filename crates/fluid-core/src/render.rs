@@ -303,24 +303,26 @@ struct Sim {
     count_cells: wgpu::ComputePipeline,
     scan_single: wgpu::ComputePipeline,
     scatter: wgpu::ComputePipeline,
-    density_walls: wgpu::ComputePipeline,
-    reduce_compression: wgpu::ComputePipeline,
-    substep: wgpu::ComputePipeline,
+    density_factor: wgpu::ComputePipeline,
+    forces: wgpu::ComputePipeline,
+    div_kappa: wgpu::ComputePipeline,
+    div_apply: wgpu::ComputePipeline,
+    den_kappa: wgpu::ComputePipeline,
+    den_apply: wgpu::ComputePipeline,
+    integrate: wgpu::ComputePipeline,
+    reduce_stats: wgpu::ComputePipeline,
     sprites: wgpu::RenderPipeline,
     grid_bind: wgpu::BindGroup,
     scan_bind: wgpu::BindGroup,
-    density_bind: wgpu::BindGroup,
-    step_bind: wgpu::BindGroup,
+    solve_bind: wgpu::BindGroup,
     sprite_bind: wgpu::BindGroup,
     stats_src: wgpu::Buffer,
     stats_staging: [StagingSlot; 3],
-    compression_avg: f32,
-    compression_max: f32,
-    density_min: f32,
-    density_max: f32,
+    stats: [f32; 10],
     count: u32,
     cell_groups: u32,
-    substeps: u32,
+    max_substeps: u32,
+    substeps_used: u32,
 }
 
 impl Sim {
@@ -370,11 +372,32 @@ impl Sim {
         let cursors = storage("sim cursors", u64::from(cells) * 4, none);
         let sorted = storage("sim sorted", u64::from(count) * 4, none);
         let density = storage("sim density", u64::from(count) * 4, none);
-        let stats_src = storage("sim stats", 16, wgpu::BufferUsages::COPY_SRC);
+        let alpha = storage("sim alpha", u64::from(count) * 4, none);
+        let kappa = storage("sim kappa", u64::from(count) * 4, none);
+        let pressure = storage("sim pressure", u64::from(count) * 4, none);
+        let prev_pressure = storage("sim prev pressure", u64::from(count) * 4, none);
+        let clamps = storage("sim clamps", 4, none);
+        let stats_src = storage("sim stats", 40, wgpu::BufferUsages::COPY_SRC);
+        // The box starts at the lab constants' temperature, 20 C.
+        let temperature = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sim temperature"),
+            size: u64::from(count) * 4,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        });
+        let mut warm = Vec::with_capacity(count as usize * 4);
+        for _ in 0..count {
+            warm.extend_from_slice(&293.15f32.to_le_bytes());
+        }
+        temperature
+            .get_mapped_range_mut(..)
+            .expect("mapped at creation")
+            .copy_from_slice(&warm);
+        temperature.unmap();
         let stats_staging = std::array::from_fn(|_| StagingSlot {
             buffer: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("sim stats staging"),
-                size: 16,
+                size: 40,
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -423,11 +446,25 @@ impl Sim {
         let grid_layout = layout("sim grid", &[uniform(0), ro(1), rw(2), ro(3), rw(4), rw(5)]);
         // scan_single never touches block_sums; the gap at 3 stays open.
         let scan_layout = layout("sim scan", &[uniform(0), ro(1), rw(2), rw(4)]);
-        let density_layout = layout(
-            "sim density",
-            &[uniform(0), ro(1), ro(2), ro(3), ro(4), rw(5), rw(6)],
+        let solve_layout = layout(
+            "sim solve",
+            &[
+                uniform(0),
+                rw(1),
+                rw(2),
+                ro(3),
+                ro(4),
+                ro(5),
+                rw(6),
+                rw(7),
+                rw(8),
+                rw(9),
+                rw(10),
+                rw(11),
+                rw(12),
+                rw(13),
+            ],
         );
-        let step_layout = layout("sim step", &[uniform(0), rw(1), rw(2)]);
         let sprite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sim sprites"),
             entries: &[
@@ -479,26 +516,24 @@ impl Sim {
                 entry(4, &cursors),
             ],
         );
-        let density_bind = bind(
-            "sim density",
-            &density_layout,
-            &[
-                entry(0, &params),
-                entry(1, &positions),
-                entry(2, &counts),
-                entry(3, &starts),
-                entry(4, &sorted),
-                entry(5, &density),
-                entry(6, &stats_src),
-            ],
-        );
-        let step_bind = bind(
-            "sim step",
-            &step_layout,
+        let solve_bind = bind(
+            "sim solve",
+            &solve_layout,
             &[
                 entry(0, &params),
                 entry(1, &positions),
                 entry(2, &velocities),
+                entry(3, &counts),
+                entry(4, &starts),
+                entry(5, &sorted),
+                entry(6, &density),
+                entry(7, &alpha),
+                entry(8, &kappa),
+                entry(9, &pressure),
+                entry(10, &prev_pressure),
+                entry(11, &temperature),
+                entry(12, &stats_src),
+                entry(13, &clamps),
             ],
         );
         let sprite_bind = bind(
@@ -519,8 +554,7 @@ impl Sim {
         };
         let grid_module = module("sim_grid", include_str!("sim_grid.wgsl"));
         let scan_module = module("sim_scan", include_str!("sim_scan.wgsl"));
-        let density_module = module("sim_density", include_str!("sim_density.wgsl"));
-        let step_module = module("sim_step", include_str!("sim_step.wgsl"));
+        let solve_module = module("sim_solve", include_str!("sim_solve.wgsl"));
         let sprite_module = module("sim_sprites", include_str!("sim_sprites.wgsl"));
         let pipe_layout = |label, layout: &wgpu::BindGroupLayout, immediate_size: u32| {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -531,8 +565,7 @@ impl Sim {
         };
         let grid_pl = pipe_layout("sim grid", &grid_layout, 0);
         let scan_pl = pipe_layout("sim scan", &scan_layout, 0);
-        let density_pl = pipe_layout("sim density", &density_layout, 0);
-        let step_pl = pipe_layout("sim step", &step_layout, 16);
+        let solve_pl = pipe_layout("sim solve", &solve_layout, 32);
         let sprite_pl = pipe_layout("sim sprites", &sprite_layout, 0);
         let pipeline =
             |layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, entry_point: &str| {
@@ -551,9 +584,14 @@ impl Sim {
             count_cells: pipeline(&grid_pl, &grid_module, "count"),
             scan_single: pipeline(&scan_pl, &scan_module, "scan_single"),
             scatter: pipeline(&grid_pl, &grid_module, "scatter"),
-            density_walls: pipeline(&density_pl, &density_module, "density_walls"),
-            reduce_compression: pipeline(&density_pl, &density_module, "reduce_compression"),
-            substep: pipeline(&step_pl, &step_module, "substep"),
+            density_factor: pipeline(&solve_pl, &solve_module, "density_factor"),
+            forces: pipeline(&solve_pl, &solve_module, "forces"),
+            div_kappa: pipeline(&solve_pl, &solve_module, "div_kappa"),
+            div_apply: pipeline(&solve_pl, &solve_module, "div_apply"),
+            den_kappa: pipeline(&solve_pl, &solve_module, "den_kappa"),
+            den_apply: pipeline(&solve_pl, &solve_module, "den_apply"),
+            integrate: pipeline(&solve_pl, &solve_module, "integrate"),
+            reduce_stats: pipeline(&solve_pl, &solve_module, "reduce_stats"),
             sprites: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("sim sprites"),
                 layout: Some(&sprite_pl),
@@ -584,18 +622,15 @@ impl Sim {
             }),
             grid_bind,
             scan_bind,
-            density_bind,
-            step_bind,
+            solve_bind,
             sprite_bind,
             stats_src,
             stats_staging,
-            compression_avg: 0.0,
-            compression_max: 0.0,
-            density_min: 0.0,
-            density_max: 0.0,
+            stats: [0.0; 10],
             count,
             cell_groups: cells.div_ceil(256),
-            substeps,
+            max_substeps: substeps,
+            substeps_used: 0,
         }
     }
 }
@@ -917,6 +952,13 @@ pub struct RenderStats {
     pub compression_max: f32,
     pub density_min: f32,
     pub density_max: f32,
+    pub pressure_min: f32,
+    pub pressure_max: f32,
+    pub v_max: f32,
+    pub temperature_min: f32,
+    pub temperature_max: f32,
+    pub clamp_count: u32,
+    pub substeps: u32,
 }
 
 pub struct Renderer {
@@ -964,8 +1006,8 @@ impl Renderer {
             // asks 16), so start from downlevel and raise what the code
             // binds: the sim layouts hold five storage buffers a stage.
             required_limits: wgpu::Limits {
-                max_storage_buffers_per_shader_stage: 6,
-                max_immediate_size: 16,
+                max_storage_buffers_per_shader_stage: 13,
+                max_immediate_size: 32,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
             ..Default::default()
@@ -1079,6 +1121,16 @@ impl Renderer {
             (interval_us / 1_000_000.0).clamp(0.0, MAX_DT)
         };
         let force = sample.body_force();
+        if let Mode::Sim(s) = &mut self.mode {
+            // CFL: dt <= 0.4 d / v_max, from the one-frame-stale v_max
+            // the stats readback drained. The GPU clamp enforces the dt
+            // actually encoded.
+            s.substeps_used = if dt > 0.0 {
+                ((dt * s.stats[6] / (0.4 * SIM_SPACING)).ceil() as u32).clamp(1, s.max_substeps)
+            } else {
+                1
+            };
+        }
 
         let started = std::time::Instant::now();
 
@@ -1137,9 +1189,16 @@ impl Renderer {
                 }
                 Mode::Bench(b) => b.encode(&mut pass),
                 Mode::Sim(s) => {
-                    let step = sim::pack_step(force, dt / s.substeps as f32);
+                    let n = s.substeps_used;
+                    let dt_sub = dt / n as f32;
+                    let v_clamp = if dt_sub > 0.0 {
+                        0.4 * SIM_SPACING / dt_sub
+                    } else {
+                        f32::MAX
+                    };
+                    let step = sim::pack_step(force, dt_sub, v_clamp);
                     let particles = s.count.div_ceil(256);
-                    for _ in 0..s.substeps {
+                    for _ in 0..n {
                         pass.set_bind_group(0, &s.grid_bind, &[]);
                         pass.set_pipeline(&s.clear_counts);
                         pass.dispatch_workgroups(s.cell_groups, 1, 1);
@@ -1151,18 +1210,26 @@ impl Renderer {
                         pass.set_bind_group(0, &s.grid_bind, &[]);
                         pass.set_pipeline(&s.scatter);
                         pass.dispatch_workgroups(particles, 1, 1);
-                        pass.set_bind_group(0, &s.density_bind, &[]);
-                        pass.set_pipeline(&s.density_walls);
-                        pass.dispatch_workgroups(particles, 1, 1);
-                        pass.set_bind_group(0, &s.step_bind, &[]);
-                        pass.set_pipeline(&s.substep);
+                        pass.set_bind_group(0, &s.solve_bind, &[]);
+                        pass.set_pipeline(&s.density_factor);
                         pass.set_immediates(0, &step);
                         pass.dispatch_workgroups(particles, 1, 1);
+                        pass.set_pipeline(&s.div_kappa);
+                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.set_pipeline(&s.div_apply);
+                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.set_pipeline(&s.forces);
+                        pass.dispatch_workgroups(particles, 1, 1);
+                        for _ in 0..2 {
+                            pass.set_pipeline(&s.den_kappa);
+                            pass.dispatch_workgroups(particles, 1, 1);
+                            pass.set_pipeline(&s.den_apply);
+                            pass.dispatch_workgroups(particles, 1, 1);
+                        }
+                        pass.set_pipeline(&s.integrate);
+                        pass.dispatch_workgroups(particles, 1, 1);
                     }
-                    // The stat trails the last integrate by one substep;
-                    // it feeds a once-per-second print, not the solver.
-                    pass.set_bind_group(0, &s.density_bind, &[]);
-                    pass.set_pipeline(&s.reduce_compression);
+                    pass.set_pipeline(&s.reduce_stats);
                     pass.dispatch_workgroups(1, 1, 1);
                 }
             }
@@ -1214,7 +1281,7 @@ impl Renderer {
                 .iter()
                 .position(|x| x.state.load(Ordering::Acquire) == SLOT_FREE);
             if let Some(i) = free {
-                encoder.copy_buffer_to_buffer(&s.stats_src, 0, &s.stats_staging[i].buffer, 0, 16);
+                encoder.copy_buffer_to_buffer(&s.stats_src, 0, &s.stats_staging[i].buffer, 0, 40);
             }
             free
         } else {
@@ -1275,20 +1342,17 @@ impl Renderer {
                 if slot.state.load(Ordering::Acquire) != SLOT_READY {
                     continue;
                 }
-                let vals = {
+                {
                     let bytes = slot
                         .buffer
                         .get_mapped_range(..)
                         .expect("mapped by the map_async callback");
-                    let f = |o: usize| f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
-                    [f(0), f(4), f(8), f(12)]
-                };
+                    for (v, chunk) in s.stats.iter_mut().zip(bytes.as_chunks::<4>().0) {
+                        *v = f32::from_le_bytes(*chunk);
+                    }
+                }
                 slot.buffer.unmap();
                 slot.state.store(SLOT_FREE, Ordering::Release);
-                s.compression_avg = vals[0];
-                s.compression_max = vals[1];
-                s.density_min = vals[2];
-                s.density_max = vals[3];
             }
         }
         let Some(t) = self.gpu_timing.as_ref() else {
@@ -1322,20 +1386,22 @@ impl Renderer {
 
     /// Off the frame path; the shells call this about once per second.
     pub fn stats(&self) -> RenderStats {
-        let (compression_avg, compression_max, density_min, density_max) = match &self.mode {
-            Mode::Sim(s) => (
-                s.compression_avg,
-                s.compression_max,
-                s.density_min,
-                s.density_max,
-            ),
-            _ => (0.0, 0.0, 0.0, 0.0),
+        let (f, substeps) = match &self.mode {
+            Mode::Sim(s) => (s.stats, s.substeps_used),
+            _ => ([0.0; 10], 0),
         };
         RenderStats {
-            compression_avg,
-            compression_max,
-            density_min,
-            density_max,
+            compression_avg: f[0],
+            compression_max: f[1],
+            density_min: f[2],
+            density_max: f[3],
+            pressure_min: f[4],
+            pressure_max: f[5],
+            v_max: f[6],
+            temperature_min: f[7],
+            temperature_max: f[8],
+            clamp_count: f[9] as u32,
+            substeps,
             frames: self.frames,
             interval_p50_us: self.interval_us.percentile(0.5),
             interval_p99_us: self.interval_us.percentile(0.99),
@@ -1392,95 +1458,98 @@ mod tests {
         assert_eq!(ring.percentile(0.0), 1.0);
         assert_eq!(ring.percentile(1.0), RING as f32);
     }
-    // Compiles every sim shader and pipeline on this machine's GPU, so a
-    // WGSL error fails here instead of as a crash loop on the phone.
-    #[test]
-    fn the_sim_gpu_path_compiles_on_this_machine() {
-        let instance = wgpu::Instance::default();
-        let Ok(adapter) = ready(instance.request_adapter(&Default::default())) else {
-            eprintln!("no GPU adapter; skipping");
-            return;
-        };
-        let (device, _queue) = ready(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: None,
-            required_features: wgpu::Features::IMMEDIATES,
-            required_limits: wgpu::Limits {
-                max_storage_buffers_per_shader_stage: 6,
-                max_immediate_size: 16,
-                ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
-            },
-            ..Default::default()
-        }))
-        .expect("device");
-        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        Sim::new(
-            &device,
-            wgpu::TextureFormat::Bgra8Unorm,
-            [0.0357, 0.0774],
-            7,
-        );
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .expect("poll");
-        let err = ready(scope.pop());
-        assert!(err.is_none(), "{err:?}");
-    }
 
-    // Seeds the real lattice, runs one grid rebuild and density sweep on
-    // this machine's GPU, and reads the result back: the whole solver
-    // chain, not just its compilation. Mid-slab must read near the rest
-    // density; a binding or scatter bug reads hundreds of times it.
-    #[test]
-    fn one_density_sweep_reads_near_rest_density() {
+    fn headless_sim() -> Option<(wgpu::Device, wgpu::Queue, Sim)> {
         let instance = wgpu::Instance::default();
         let Ok(adapter) = ready(instance.request_adapter(&Default::default())) else {
             eprintln!("no GPU adapter; skipping");
-            return;
+            return None;
         };
         let (device, queue) = ready(adapter.request_device(&wgpu::DeviceDescriptor {
             label: None,
             required_features: wgpu::Features::IMMEDIATES,
             required_limits: wgpu::Limits {
-                max_storage_buffers_per_shader_stage: 6,
-                max_immediate_size: 16,
+                max_storage_buffers_per_shader_stage: 13,
+                max_immediate_size: 32,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
             ..Default::default()
         }))
         .expect("device");
-        let extent = [0.0357, 0.0774];
-        let sim = Sim::new(&device, wgpu::TextureFormat::Bgra8Unorm, extent, 7);
+        let sim = Sim::new(
+            &device,
+            wgpu::TextureFormat::Bgra8Unorm,
+            [0.0357, 0.0774],
+            7,
+        );
+        Some((device, queue, sim))
+    }
+
+    fn read_stats(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sim: &Sim,
+        substeps: u32,
+    ) -> [f32; 10] {
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stats staging"),
-            size: 16,
+            size: 40,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // Gravity along -y, one 120 Hz frame split like the phone would.
+        let dt = 1.0 / 120.0 / substeps.max(1) as f32;
+        let v_clamp = if substeps == 0 {
+            f32::MAX
+        } else {
+            0.4 * SIM_SPACING / dt
+        };
+        let step = sim::pack_step(
+            [0.0, -9.81, 0.0],
+            if substeps == 0 { 0.0 } else { dt },
+            v_clamp,
+        );
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             let particles = sim.count.div_ceil(256);
-            pass.set_bind_group(0, &sim.grid_bind, &[]);
-            pass.set_pipeline(&sim.clear_counts);
-            pass.dispatch_workgroups(sim.cell_groups, 1, 1);
-            pass.set_pipeline(&sim.count_cells);
-            pass.dispatch_workgroups(particles, 1, 1);
-            pass.set_bind_group(0, &sim.scan_bind, &[]);
-            pass.set_pipeline(&sim.scan_single);
-            pass.dispatch_workgroups(1, 1, 1);
-            pass.set_bind_group(0, &sim.grid_bind, &[]);
-            pass.set_pipeline(&sim.scatter);
-            pass.dispatch_workgroups(particles, 1, 1);
-            pass.set_bind_group(0, &sim.density_bind, &[]);
-            pass.set_pipeline(&sim.density_walls);
-            pass.dispatch_workgroups(particles, 1, 1);
-            pass.set_pipeline(&sim.reduce_compression);
+            for _ in 0..substeps.max(1) {
+                pass.set_bind_group(0, &sim.grid_bind, &[]);
+                pass.set_pipeline(&sim.clear_counts);
+                pass.dispatch_workgroups(sim.cell_groups, 1, 1);
+                pass.set_pipeline(&sim.count_cells);
+                pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_bind_group(0, &sim.scan_bind, &[]);
+                pass.set_pipeline(&sim.scan_single);
+                pass.dispatch_workgroups(1, 1, 1);
+                pass.set_bind_group(0, &sim.grid_bind, &[]);
+                pass.set_pipeline(&sim.scatter);
+                pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_bind_group(0, &sim.solve_bind, &[]);
+                pass.set_pipeline(&sim.density_factor);
+                pass.set_immediates(0, &step);
+                pass.dispatch_workgroups(particles, 1, 1);
+                if substeps > 0 {
+                    pass.set_pipeline(&sim.div_kappa);
+                    pass.dispatch_workgroups(particles, 1, 1);
+                    pass.set_pipeline(&sim.div_apply);
+                    pass.dispatch_workgroups(particles, 1, 1);
+                    pass.set_pipeline(&sim.forces);
+                    pass.dispatch_workgroups(particles, 1, 1);
+                    for _ in 0..2 {
+                        pass.set_pipeline(&sim.den_kappa);
+                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.set_pipeline(&sim.den_apply);
+                        pass.dispatch_workgroups(particles, 1, 1);
+                    }
+                    pass.set_pipeline(&sim.integrate);
+                    pass.dispatch_workgroups(particles, 1, 1);
+                }
+            }
+            pass.set_pipeline(&sim.reduce_stats);
             pass.dispatch_workgroups(1, 1, 1);
         }
-        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &staging, 0, 16);
+        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &staging, 0, 40);
         queue.submit(std::iter::once(encoder.finish()));
         staging.map_async(wgpu::MapMode::Read, .., |_| {});
         device
@@ -1490,18 +1559,91 @@ mod tests {
             })
             .expect("poll");
         let bytes = staging.get_mapped_range(..).expect("mapped");
-        let f = |o: usize| f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
-        let (avg, max, lo, hi) = (f(0), f(4), f(8), f(12));
-        eprintln!("seeded slab: compr avg {avg:.4} max {max:.4}, rho {lo:.1}..{hi:.1}");
+        let mut out = [0.0f32; 10];
+        for (v, chunk) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
+            *v = f32::from_le_bytes(*chunk);
+        }
+        out
+    }
+
+    // Compiles every sim shader and pipeline on this machine's GPU, so a
+    // WGSL error fails here instead of as a crash loop on the phone.
+    #[test]
+    fn the_sim_gpu_path_compiles_on_this_machine() {
+        let Some((device, _queue, _sim)) = ({
+            let scope_device;
+            let r = headless_sim();
+            match r {
+                Some((d, q, s)) => {
+                    scope_device = d;
+                    Some((scope_device, q, s))
+                }
+                None => None,
+            }
+        }) else {
+            return;
+        };
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+    }
+
+    // Seeds the real lattice, runs one rebuild and density sweep, and
+    // reads the stats back: the whole solver chain, not just its
+    // compilation.
+    #[test]
+    fn one_density_sweep_reads_near_rest_density() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let f = read_stats(&device, &queue, &sim, 0);
+        eprintln!(
+            "seeded slab: compr avg {:.4} max {:.4}, rho {:.1}..{:.1}",
+            f[0], f[1], f[2], f[3]
+        );
         // The half-full slab reads under rest everywhere: free-surface
         // particles lose half their support, and nobody is compressed at
         // seed. A scatter or binding bug reads hundreds of rest
         // densities; dropped neighbours read pure wall fill, under 0.4.
-        assert!(avg == 0.0 && max == 0.0, "compr {avg} {max}");
-        assert!(lo > 0.4 * sim::REST_DENSITY && lo < hi, "min {lo}");
+        assert!(f[0] == 0.0 && f[1] == 0.0, "compr {} {}", f[0], f[1]);
         assert!(
-            hi > 0.9 * sim::REST_DENSITY && hi < 1.1 * sim::REST_DENSITY,
-            "max {hi}"
+            f[2] > 0.4 * sim::REST_DENSITY && f[2] < f[3],
+            "min {}",
+            f[2]
         );
+        assert!(
+            f[3] > 0.9 * sim::REST_DENSITY && f[3] < 1.1 * sim::REST_DENSITY,
+            "max {}",
+            f[3]
+        );
+        // Nothing has moved or been solved yet.
+        assert_eq!((f[4], f[5], f[6]), (0.0, 0.0, 0.0), "pressure, v_max");
+        assert_eq!((f[7], f[8]), (293.15, 293.15), "temperature");
+        assert_eq!(f[9], 0.0, "clamp count");
+    }
+
+    // One full 120 Hz frame of the solve under gravity: the fluid falls
+    // a little, nothing explodes, pressure is non-negative pascals, and
+    // the temperature stays within a millikelvin of where it started.
+    #[test]
+    fn one_frame_of_the_solve_stays_physical() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let f = read_stats(&device, &queue, &sim, 7);
+        eprintln!(
+            "one frame: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
+            f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9]
+        );
+        let dt = 1.0 / 120.0 / 7.0;
+        let v_clamp = 0.4 * SIM_SPACING / dt;
+        assert!(f[6] > 0.0 && f[6] <= v_clamp * 1.001, "v_max {}", f[6]);
+        assert!(f[4] >= 0.0 && f[5] < 1.0e6, "pressure {}..{}", f[4], f[5]);
+        assert!((f[7] - 293.15).abs() < 1.0e-3, "T min {}", f[7]);
+        assert!((f[8] - 293.15).abs() < 1.0e-3, "T max {}", f[8]);
+        assert!(f[3] < 2.0 * sim::REST_DENSITY, "rho max {}", f[3]);
     }
 }

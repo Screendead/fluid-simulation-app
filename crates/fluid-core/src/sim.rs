@@ -93,11 +93,15 @@ pub(crate) fn seed_slab(spacing: f32, extent: [f32; 2], fill: f32) -> Vec<f32> {
     out
 }
 
-/// The Step immediates block in sim_step.wgsl: force on 16-byte vec3
-/// alignment, dt in the tail slot.
-pub(crate) fn pack_step(force: [f32; 3], dt: f32) -> [u8; 16] {
-    let mut raw = [0u8; 16];
-    for (slot, v) in [force[0], force[1], force[2], dt].into_iter().enumerate() {
+/// The Step immediates block in sim_solve.wgsl: force on 16-byte vec3
+/// alignment, dt in the vec3 tail slot, the CFL clamp speed after it,
+/// then padding to the struct's 32-byte size.
+pub(crate) fn pack_step(force: [f32; 3], dt: f32, v_clamp: f32) -> [u8; 32] {
+    let mut raw = [0u8; 32];
+    for (slot, v) in [force[0], force[1], force[2], dt, v_clamp]
+        .into_iter()
+        .enumerate()
+    {
         raw[slot * 4..slot * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
     raw
@@ -301,11 +305,12 @@ mod tests {
 
     #[test]
     fn step_immediates_land_at_the_shader_offsets() {
-        let raw = pack_step([1.0, 2.0, 3.0], 4.0);
-        for (slot, want) in [1.0f32, 2.0, 3.0, 4.0].into_iter().enumerate() {
+        let raw = pack_step([1.0, 2.0, 3.0], 4.0, 5.0);
+        for (slot, want) in [1.0f32, 2.0, 3.0, 4.0, 5.0].into_iter().enumerate() {
             let got = f32::from_le_bytes(raw[slot * 4..slot * 4 + 4].try_into().unwrap());
             assert_eq!(got, want);
         }
+        assert_eq!(&raw[20..32], &[0u8; 12]);
     }
 
     #[test]

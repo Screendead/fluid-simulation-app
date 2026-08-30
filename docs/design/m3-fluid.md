@@ -90,6 +90,33 @@ non-blocking slot machinery as the timestamps, never a stall. Staleness
 is safe by construction: the GPU-side velocity clamp enforces the dt
 the CPU actually encoded, and every clamp is counted and shown.
 
+The build fixed five details the list above leaves open, each a
+decision, not an accident:
+
+- Fusion: 13 dispatches a substep — clear, count, scan, scatter,
+  density+factor fused, one divergence iteration (kappa then apply),
+  forces (body force, Morris viscosity, and both neighbour-sweep
+  temperature sources in one pass), two constant-density iterations,
+  integrate. Fixed iteration counts: a convergence readback would
+  stall the pipeline, and the on-screen compression stat is the live
+  adequacy check. Raise the counts before raising substeps.
+- Both kappas clamp at zero: the solver pushes, never pulls. Tensile
+  suction at the free surface is the known artifact this avoids.
+- Pressure in pascals is kappa times rho, the constant-density solve's
+  accumulated stiffness. The dimensional chain (alpha in m^5/kg, kappa
+  in m^2/s^2) closes exactly; the settled hydrostatic column is the
+  empirical oracle.
+- The factor's denominator guard is 1e-4 kg^2/m^8 — numerics, not
+  physics. It bites only for a particle with no neighbours and no wall
+  in range, whose kappa is zero anyway.
+- Walls are free-slip in M3: the position clamp zeroes the normal
+  velocity component only. A no-slip wall needs a viscous wall term;
+  deferred with the wall-overlap table.
+
+The substep count is dynamic — n = ceil(dt·v_max / 0.4 d), clamped to
+the FLUID_SIM cap (the knob is now a ceiling, not a count). At rest n
+is 1.
+
 Per-substep uniforms go through push constants (`immediate_size`).
 There is no fallback branch: wgpu 30's Metal backend grants immediates
 unconditionally (wgpu-hal metal/adapter.rs), both targets are Metal,

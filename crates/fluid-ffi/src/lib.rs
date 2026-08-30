@@ -55,6 +55,13 @@ pub struct FluidRenderStats {
     pub compression_max: f32,
     pub density_min: f32,
     pub density_max: f32,
+    pub pressure_min: f32,
+    pub pressure_max: f32,
+    pub v_max: f32,
+    pub temperature_min: f32,
+    pub temperature_max: f32,
+    pub clamp_count: u32,
+    pub substeps: u32,
 }
 
 /// Builds the renderer on a layer: `particle_count` sprites of
@@ -154,6 +161,13 @@ pub unsafe extern "C" fn fluid_renderer_stats(renderer: *const FluidRenderer) ->
         compression_max: stats.compression_max,
         density_min: stats.density_min,
         density_max: stats.density_max,
+        pressure_min: stats.pressure_min,
+        pressure_max: stats.pressure_max,
+        v_max: stats.v_max,
+        temperature_min: stats.temperature_min,
+        temperature_max: stats.temperature_max,
+        clamp_count: stats.clamp_count,
+        substeps: stats.substeps,
     }
 }
 
