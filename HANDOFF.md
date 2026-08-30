@@ -22,27 +22,33 @@ the same commit that closes a milestone or a task. Git holds the history.*
 | iOS shell on the phone | Done 2026-08-30. Jack confirmed the readout: at rest, body force reads about (0, 0, -9.81); moving the phone right sends user acceleration x positive, body force x negative. | `platforms/ios/`, `scripts/run-ios.sh` |
 | iOS shell in the simulator | Launched headless 2026-08-30 (iPhone 15 Plus, iOS 26.5, "FluidSim") | `scripts/run-sim.sh` |
 | Web page | Wasm built; verified in desktop Chrome with synthetic `devicemotion` events: face-up gives (0, 0, -9.81), push right gives x negative | `platforms/web/`, `scripts/build-web.sh` |
+| CI | Green on master since 2026-08-30 (run 33332535892) | `.github/workflows/ci.yml` |
+| M0 | **Done 2026-08-30**, with one check deferred: see the web track note below | — |
 | M1 onward | Not started | — |
 
 Test baseline: 4 Rust tests pass, measured 2026-08-30. Performance
 baseline: none measured yet; O2 sets it at M1.
 
-## The next task — close M0
+## The next task — M1, the surface
 
-M0 is closed when the body force computed in Rust is on the phone screen
-and in a browser, and the signs are right. Done so far: the gate is green,
-the app runs on the phone and in the simulator, and the web page is
-verified with synthetic events in desktop Chrome. Jack confirmed the phone
-readout 2026-08-30. One check remains:
+M0 closed 2026-08-30: the gate is green, the app runs on the phone (Jack
+confirmed the readout) and in the simulator, the web page is verified with
+synthetic events in desktop Chrome, and CI is green.
 
-1. **Verify the web sign convention on the phone, not in emulation.** The
-   conversion in `crates/fluid-web/src/lib.rs` rests on the W3C spec, and
-   iOS Safari has had a sign quirk on `DeviceMotionEvent.acceleration`.
-   Serve over TLS on the LAN (see O4), open the page on the reference
-   device, and compare each row against the native app. If a sign differs,
-   the fix is in `sample_from_device_motion` with a test, not in the page.
+One M0 check is deferred, not dropped. **The web sign convention is
+unverified on a real iPhone.** The conversion in
+`crates/fluid-web/src/lib.rs` rests on the W3C spec, and iOS Safari has had
+a sign quirk on `DeviceMotionEvent.acceleration`. Sensor access needs an
+https origin, Jack ruled out a local certificate authority, so the check
+waits for the web track's real hosting. Until it runs, treat the web
+conversion's signs as provisional: when the first hosted page is up, open
+it on the reference device, compare each row against the native app, and
+fix any difference in `sample_from_device_motion` with a test.
 
-Record the observed numbers here and mark M0 done in the table above.
+M1 starts with its design record, `docs/design/m1-surface.md`: wgpu enters
+(D1 names it), `fluid-core` owns a `CAMetalLayer` on iOS and a canvas on
+the web, clear and present at display rate, frame-time and GPU-time
+capture, the first power measurement, and budget O2.
 
 ## Open decisions
 
@@ -54,7 +60,7 @@ to `docs/design/decisions.md`.
 | O1 | The simulation method. Position-based fluids (PBF) on the GPU is the proposal: cheapest path to a convincing slosh, field colouring is free. MLS-MPM is the fidelity upgrade. Jack has not confirmed either. | M3 design record |
 | O2 | The performance budget: frame time, GPU time and power at 120 Hz on the reference device. Set from M1 measurements, not from guesses. | M1 design record |
 | O3 | The name. "Fluid Box" is a working title; the iOS target is `FluidApp`, bundle `com.screendead.FluidApp`. | Jack |
-| O4 | TLS on the LAN for phone web testing. `DeviceMotion` needs a secure origin; plain `http://` from the Mac's IP is refused. `mkcert` plus a small TLS server is the likely answer. | M0 close |
+| O4 | Resolved 2026-08-30: no local TLS, no certificate authority on Jack's devices. The on-phone web check waits for the web track's real hosting. Jack's sensor rule (CLAUDE.md section 7) stands regardless: sensor data never crosses devices. | — |
 | O5 | The license. `Cargo.toml` says `UNLICENSED` until Jack chooses. | Jack |
 | O6 | Rotation. `CMDeviceMotion.rotationRate` is not read. Coriolis and Euler forces on the fluid arrive when a milestone asks for them (M7). | M7 design record |
 
