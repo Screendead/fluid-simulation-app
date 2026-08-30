@@ -19,7 +19,7 @@ the same commit that closes a milestone or a task. Git holds the history.*
 | Stack, shells, frame and units (D1 to D3) | Decided 2026-08-30 | `docs/design/decisions.md` |
 | Toolchain: Rust 1.98.0 pinned, all three cross-targets, cbindgen 0.29.4, wasm-bindgen-cli 0.2.127, Xcode 26.6 with the iOS 26.5 platform | Done 2026-08-30 | `rust-toolchain.toml` |
 | The gate | Green 2026-08-30 (4 tests) | `scripts/gate.sh` |
-| iOS shell on the phone | Built, signed, installed, launched 2026-08-30; Jack's visual check of the readout pending | `platforms/ios/`, `scripts/run-ios.sh` |
+| iOS shell on the phone | Done 2026-08-30. Jack confirmed the readout: at rest, body force reads about (0, 0, -9.81); moving the phone right sends user acceleration x positive, body force x negative. | `platforms/ios/`, `scripts/run-ios.sh` |
 | iOS shell in the simulator | Launched headless 2026-08-30 (iPhone 15 Plus, iOS 26.5, "FluidSim") | `scripts/run-sim.sh` |
 | Web page | Wasm built; verified in desktop Chrome with synthetic `devicemotion` events: face-up gives (0, 0, -9.81), push right gives x negative | `platforms/web/`, `scripts/build-web.sh` |
 | M1 onward | Not started | — |
@@ -32,12 +32,10 @@ baseline: none measured yet; O2 sets it at M1.
 M0 is closed when the body force computed in Rust is on the phone screen
 and in a browser, and the signs are right. Done so far: the gate is green,
 the app runs on the phone and in the simulator, and the web page is
-verified with synthetic events in desktop Chrome. Two checks remain:
+verified with synthetic events in desktop Chrome. Jack confirmed the phone
+readout 2026-08-30. One check remains:
 
-1. **Jack's visual check of the phone readout.** Face up at rest, body
-   force reads about (0, 0, -9.81). Push the phone right: the x body force
-   goes negative.
-2. **Verify the web sign convention on the phone, not in emulation.** The
+1. **Verify the web sign convention on the phone, not in emulation.** The
    conversion in `crates/fluid-web/src/lib.rs` rests on the W3C spec, and
    iOS Safari has had a sign quirk on `DeviceMotionEvent.acceleration`.
    Serve over TLS on the LAN (see O4), open the page on the reference
