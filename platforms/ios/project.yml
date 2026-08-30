@@ -10,6 +10,7 @@ settings:
     SWIFT_VERSION: "6.0"
     FLUID_RUST_TARGET[sdk=iphoneos*]: aarch64-apple-ios
     FLUID_RUST_TARGET[sdk=iphonesimulator*]: aarch64-apple-ios-sim
+    EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
     LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../target/$(FLUID_RUST_TARGET)/$(FLUID_RUST_PROFILE)
   configs:
     Debug:

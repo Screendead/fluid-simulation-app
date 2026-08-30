@@ -7,4 +7,4 @@ cd "$(dirname "$0")/.."
 profile=()
 [[ "$FLUID_RUST_PROFILE" == release ]] && profile=(--release)
 exec env -i HOME="$HOME" PATH="$HOME/.cargo/bin:/usr/bin:/bin" \
-  cargo build -p fluid-ffi --target "$FLUID_RUST_TARGET" "${profile[@]}"
+  cargo build -p fluid-ffi --target "$FLUID_RUST_TARGET" ${profile[@]+"${profile[@]}"}
