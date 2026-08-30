@@ -1133,7 +1133,7 @@ impl Renderer {
             s.substeps_used = if dt > 0.0 {
                 ((dt * s.stats[6] / (0.4 * SIM_SPACING)).ceil() as u32).clamp(1, s.max_substeps)
             } else {
-                1
+                0
             };
         }
 
@@ -1193,14 +1193,13 @@ impl Renderer {
                     pass.dispatch_workgroups(p.count.div_ceil(64), 1, 1);
                 }
                 Mode::Bench(b) => b.encode(&mut pass),
-                Mode::Sim(s) => {
+                // A dt of zero (the first frame, a resume) encodes no
+                // solve: kappa divides by dt squared, and NaN from a
+                // zero dt poisons every buffer it touches.
+                Mode::Sim(s) if dt > 0.0 => {
                     let n = s.substeps_used;
                     let dt_sub = dt / n as f32;
-                    let v_clamp = if dt_sub > 0.0 {
-                        0.4 * SIM_SPACING / dt_sub
-                    } else {
-                        f32::MAX
-                    };
+                    let v_clamp = 0.4 * SIM_SPACING / dt_sub;
                     let step = sim::pack_step(force, dt_sub, v_clamp);
                     let particles = s.count.div_ceil(256);
                     for _ in 0..n {
@@ -1239,6 +1238,7 @@ impl Renderer {
                     pass.set_pipeline(&s.reduce_stats);
                     pass.dispatch_workgroups(1, 1, 1);
                 }
+                Mode::Sim(_) => {}
             }
         }
         {
@@ -1497,6 +1497,8 @@ mod tests {
         queue: &wgpu::Queue,
         sim: &Sim,
         substeps: u32,
+        frames: u32,
+        gravity: [f32; 3],
     ) -> [f32; 10] {
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stats staging"),
@@ -1504,23 +1506,19 @@ mod tests {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        // Gravity along -y, one 120 Hz frame split like the phone would.
+        // 120 Hz frames split into substeps like the phone would.
         let dt = 1.0 / 120.0 / substeps.max(1) as f32;
         let v_clamp = if substeps == 0 {
             f32::MAX
         } else {
             0.4 * SIM_SPACING / dt
         };
-        let step = sim::pack_step(
-            [0.0, -9.81, 0.0],
-            if substeps == 0 { 0.0 } else { dt },
-            v_clamp,
-        );
+        let step = sim::pack_step(gravity, if substeps == 0 { 0.0 } else { dt }, v_clamp);
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             let particles = sim.count.div_ceil(256);
-            for _ in 0..substeps.max(1) {
+            for _ in 0..(substeps.max(1) * frames) {
                 pass.set_bind_group(0, &sim.grid_bind, &[]);
                 pass.set_pipeline(&sim.clear_counts);
                 pass.dispatch_workgroups(sim.cell_groups, 1, 1);
@@ -1608,7 +1606,7 @@ mod tests {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        let f = read_stats(&device, &queue, &sim, 0);
+        let f = read_stats(&device, &queue, &sim, 0, 1, [0.0; 3]);
         eprintln!(
             "seeded slab: compr avg {:.4} max {:.4}, rho {:.1}..{:.1}",
             f[0], f[1], f[2], f[3]
@@ -1642,7 +1640,7 @@ mod tests {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        let f = read_stats(&device, &queue, &sim, 7);
+        let f = read_stats(&device, &queue, &sim, 7, 1, [0.0, -9.81, 0.0]);
         eprintln!(
             "one frame: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
             f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9]
@@ -1654,5 +1652,29 @@ mod tests {
         assert!((f[7] - 293.15).abs() < 1.0e-3, "T min {}", f[7]);
         assert!((f[8] - 293.15).abs() < 1.0e-3, "T max {}", f[8]);
         assert!(f[3] < 2.0 * sim::REST_DENSITY, "rho max {}", f[3]);
+    }
+
+    // A second of the solve, phone flat on the desk (gravity into the
+    // screen): the state the device diverged in. Settling is allowed;
+    // explosion is not.
+    #[test]
+    fn a_second_of_the_solve_settles_flat() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let f = read_stats(&device, &queue, &sim, 7, 120, [0.0, 0.0, -9.81]);
+        eprintln!(
+            "one second flat: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
+            f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9]
+        );
+        assert!(f[3] < 1.2 * sim::REST_DENSITY, "rho max {}", f[3]);
+        assert!(f[6] < 1.0, "v_max {}", f[6]);
+        assert!(f[4] >= 0.0 && f[5] < 1.0e4, "pressure {}..{}", f[4], f[5]);
+        assert!(
+            (f[7] - 293.15).abs() < 1.0 && (f[8] - 293.15).abs() < 1.0,
+            "T {}..{}",
+            f[7],
+            f[8]
+        );
     }
 }
