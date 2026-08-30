@@ -1,0 +1,5 @@
+{
+  "rust-analyzer.check.command": "clippy",
+  "[rust]": { "editor.formatOnSave": true },
+  "files.exclude": { "**/target": true, "platforms/ios/build": true, "platforms/web/pkg": true }
+}

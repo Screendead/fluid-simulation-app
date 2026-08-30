@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = ["crates/fluid-core", "crates/fluid-ffi", "crates/fluid-web"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+fluid-core = { path = "crates/fluid-core" }
+wasm-bindgen = "0.2.127"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"

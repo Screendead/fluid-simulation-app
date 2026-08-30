@@ -1,0 +1,11 @@
+# Rust
+/target/
+
+# Generated per build; never committed.
+/platforms/ios/*.xcodeproj/
+/platforms/ios/build/
+/platforms/ios/Sources/Info.plist
+/platforms/web/pkg/
+
+# macOS
+.DS_Store

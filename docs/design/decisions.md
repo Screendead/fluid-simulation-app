@@ -1,0 +1,68 @@
+# Decisions
+
+Each record binds the code. Amend a record by an explicit edit that keeps the
+original and states the change.
+
+## D1 — Stack: Rust, wgpu, WGSL (2026-08-30)
+
+**Decision.** The simulation and the rendering are Rust on wgpu, with WGSL
+shaders. One source builds the iOS app and the website.
+
+**Why.** Two requirements fix the choice: one source for the phone and the
+web, and a GPU-compute fluid simulation. On the web that forces WebGPU. The
+single-codebase routes to WebGPU on the web and Metal on iOS are wgpu (Rust)
+and Dawn (C++). wgpu's dual-target tooling is the cleaner of the two, and
+one WGSL file runs unchanged on both. WebGPU is on by default in Safari
+from iOS 26; the reference device has it.
+
+**Rejected.** Unity: a heavy runtime, web compute still experimental, poor
+battery. Flutter: no compute shader access. Godot 4: WebGL 2 on the web, no
+compute. Kotlin Multiplatform: no GPU story. TypeScript plus WebGPU in a
+WKWebView shell: the GPU work is the same, but sensor rate, frame pacing and
+battery sit behind a webview ceiling the project cannot remove later.
+
+## D2 — Shells: a Swift shell on iOS, wasm-bindgen on the web (2026-08-30)
+
+**Decision.** The iOS app is a Swift shell that owns a `CAMetalLayer`,
+CoreMotion at 100 Hz or more, permissions, haptics and the app lifecycle,
+and calls `fluid-core` through the C ABI in `fluid-ffi`. XcodeGen builds
+the Xcode project from `project.yml`; the generated project is not
+committed. The web build is `fluid-web` through wasm-bindgen with a plain
+JavaScript page that owns permissions and the canvas.
+
+The deployment target is iOS 17.0. There is no simulator target: the
+simulator has no motion sensors. The reference device is CLAUDE.md
+section 5.
+
+**Why.** "Feels like holding a box of liquid" is a latency and sample-rate
+requirement. CoreMotion's sensor fusion, delivered straight into the core
+over FFI, gives the rate and the jitter the requirement needs. A webview or
+a bridge caps DeviceMotion at 60 Hz with worse jitter. The shell also gives
+ProMotion frame pacing, Core Haptics, and battery control.
+
+**Rejected.** winit on iOS: it still needs CoreMotion through Objective-C
+bindings, and its iOS support is thinner than a 200-line Swift shell. A
+pure-Rust shell through `objc2` frameworks: possible, and fights the
+platform to save a small file.
+
+## D3 — Frame and units (2026-08-30)
+
+**Decision.** The box is fixed to the device, so the device frame is the
+box frame: x to the right of the screen, y to its top, z out of it. Sensor
+input enters the core as `MotionSample`, whose `gravity` and
+`user_acceleration` are in g with the CoreMotion sign convention: a phone
+face up at rest reads gravity (0, 0, -1). The core works in SI. The body
+force per unit mass on the fluid is `g · (gravity - user_acceleration)`,
+which is the negated proper acceleration of the device.
+
+The web page's `DeviceMotionEvent` vectors are the reaction to gravity, the
+opposite sign. `fluid-web` converts them to a `MotionSample`; the page does
+no arithmetic.
+
+**Why.** CoreMotion supplies the fused split of gravity from user motion,
+and later milestones want gravity alone (the box's "up" for rendering, and
+haptics). The body force needs only the difference, and the identity with
+the negated accelerometer reading is a test.
+
+**Pending.** The sign convention of the web conversion is verified on the
+reference device at the close of M0, not in emulation (`HANDOFF.md`).
