@@ -102,3 +102,36 @@ needs neither. The `wgsl` feature: M1 has no shader; naga's WGSL frontend
 enters at M2 with the first shader.
 
 
+## D5 — M3 method: DFSPH in a 3D thin slab (2026-08-30)
+
+**Decision.** M3 simulates incompressible Navier–Stokes with DFSPH —
+divergence-free SPH: a neighbour grid, an iterative divergence-free
+solve, an iterative constant-density solve, Morris viscosity, real SI
+constants throughout. The domain is 3D: the screen at physical size by
+the device's 7.65 mm depth. Driven by Jack's directive of 2026-08-30
+(HANDOFF): maximum physical accuracy at the device's real size.
+
+**Why DFSPH.** Its pressure and density are physical fields in pascals
+and kg/m³ — Jack's named lenses fall out of the state. It holds density
+error to a stated target at real-time cost, and it keeps particles,
+which the M4 screen-space water renderer consumes directly.
+
+**Rejected.**
+
+- PBF: pressure is a constraint multiplier, not pascals; fails the
+  accuracy directive even where the motion convinces.
+- WCSPH: the real speed of sound, 1482 m/s, forces nanosecond timesteps;
+  the usual artificial speed of sound fakes the equation of state, which
+  the directive forbids.
+- MLS-MPM: grid transfer dissipates the lively slosh, and its scatter
+  atomics are hostile on a mobile GPU. Recorded fallback if DFSPH misses
+  the budget.
+- A pure Eulerian pressure grid (Jack's question, 2026-08-30): no
+  particles means level-set surface tracking, notorious mass loss at a
+  free surface, and nothing for M4 to splat.
+- 2D in the screen plane: discards z physics in a slab real water moves
+  through in 3D, and M4 needs depth. If the stage-0 envelope kills 3D,
+  amend here with the numbers.
+
+**Dependencies.** None new: the prefix scan and reductions are
+hand-written WGSL in `fluid-core`.
