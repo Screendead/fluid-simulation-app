@@ -691,18 +691,18 @@ impl Renderer {
             queries: device.create_query_set(&wgpu::QuerySetDescriptor {
                 label: None,
                 ty: wgpu::QueryType::Timestamp,
-                count: 2,
+                count: 4,
             }),
             resolve: device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
-                size: 16,
+                size: 32,
                 usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             }),
             staging: std::array::from_fn(|_| StagingSlot {
                 buffer: device.create_buffer(&wgpu::BufferDescriptor {
                     label: None,
-                    size: 16,
+                    size: 32,
                     usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 }),
@@ -794,15 +794,16 @@ impl Renderer {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         {
-            // The GPU span opens here and closes at the end of the render
-            // pass, so gpu_us covers simulation and draw together.
+            // Each pass carries its own timestamp pair and gpu_us sums
+            // the spans: one span stretched across both passes read zero
+            // on the reference device (2026-08-30).
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: self.gpu_timing.as_ref().and_then(|t| {
                     slot.map(|_| wgpu::ComputePassTimestampWrites {
                         query_set: &t.queries,
                         beginning_of_pass_write_index: Some(0),
-                        end_of_pass_write_index: None,
+                        end_of_pass_write_index: Some(1),
                     })
                 }),
             });
@@ -831,8 +832,8 @@ impl Renderer {
                 timestamp_writes: self.gpu_timing.as_ref().and_then(|t| {
                     slot.map(|_| wgpu::RenderPassTimestampWrites {
                         query_set: &t.queries,
-                        beginning_of_pass_write_index: None,
-                        end_of_pass_write_index: Some(1),
+                        beginning_of_pass_write_index: Some(2),
+                        end_of_pass_write_index: Some(3),
                     })
                 }),
                 occlusion_query_set: None,
@@ -845,8 +846,8 @@ impl Renderer {
             }
         }
         if let (Some(t), Some(slot)) = (self.gpu_timing.as_ref(), slot) {
-            encoder.resolve_query_set(&t.queries, 0..2, &t.resolve, 0);
-            encoder.copy_buffer_to_buffer(&t.resolve, 0, &t.staging[slot].buffer, 0, 16);
+            encoder.resolve_query_set(&t.queries, 0..4, &t.resolve, 0);
+            encoder.copy_buffer_to_buffer(&t.resolve, 0, &t.staging[slot].buffer, 0, 32);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.present(texture);
@@ -889,7 +890,7 @@ impl Renderer {
             if slot.state.load(Ordering::Acquire) != SLOT_READY {
                 continue;
             }
-            let mut stamps = [0u64; 2];
+            let mut stamps = [0u64; 4];
             {
                 let bytes = slot
                     .buffer
@@ -904,7 +905,9 @@ impl Renderer {
             }
             slot.buffer.unmap();
             slot.state.store(SLOT_FREE, Ordering::Release);
-            let delta_ns = stamps[1].saturating_sub(stamps[0]) as f32 * t.period_ns;
+            let delta_ns = (stamps[1].saturating_sub(stamps[0])
+                + stamps[3].saturating_sub(stamps[2])) as f32
+                * t.period_ns;
             self.gpu_us.push(delta_ns / 1_000.0);
         }
     }
