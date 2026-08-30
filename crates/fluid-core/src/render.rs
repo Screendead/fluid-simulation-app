@@ -308,6 +308,7 @@ struct Sim {
     forces_apply: wgpu::ComputePipeline,
     div_kappa: wgpu::ComputePipeline,
     div_apply: wgpu::ComputePipeline,
+    den_warm: wgpu::ComputePipeline,
     den_kappa: wgpu::ComputePipeline,
     den_apply: wgpu::ComputePipeline,
     integrate: wgpu::ComputePipeline,
@@ -595,6 +596,7 @@ impl Sim {
             forces_apply: pipeline(&solve_pl, &solve_module, "forces_apply"),
             div_kappa: pipeline(&solve_pl, &solve_module, "div_kappa"),
             div_apply: pipeline(&solve_pl, &solve_module, "div_apply"),
+            den_warm: pipeline(&solve_pl, &solve_module, "den_warm"),
             den_kappa: pipeline(&solve_pl, &solve_module, "den_kappa"),
             den_apply: pipeline(&solve_pl, &solve_module, "den_apply"),
             integrate: pipeline(&solve_pl, &solve_module, "integrate"),
@@ -1241,7 +1243,11 @@ impl Renderer {
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&s.forces_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
-                        for _ in 0..2 {
+                        pass.set_pipeline(&s.den_warm);
+                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.set_pipeline(&s.den_apply);
+                        pass.dispatch_workgroups(particles, 1, 1);
+                        for _ in 0..3 {
                             pass.set_pipeline(&s.den_kappa);
                             pass.dispatch_workgroups(particles, 1, 1);
                             pass.set_pipeline(&s.den_apply);
@@ -1559,7 +1565,11 @@ mod tests {
                     pass.dispatch_workgroups(particles, 1, 1);
                     pass.set_pipeline(&sim.forces_apply);
                     pass.dispatch_workgroups(particles, 1, 1);
-                    for _ in 0..2 {
+                    pass.set_pipeline(&sim.den_warm);
+                    pass.dispatch_workgroups(particles, 1, 1);
+                    pass.set_pipeline(&sim.den_apply);
+                    pass.dispatch_workgroups(particles, 1, 1);
+                    for _ in 0..3 {
                         pass.set_pipeline(&sim.den_kappa);
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&sim.den_apply);
@@ -1692,5 +1702,22 @@ mod tests {
             f[7],
             f[8]
         );
+    }
+    // Three seconds upright — the deepest column, the hydrostatic
+    // ringing case Jack saw flitter in. Still sloshing is fine;
+    // explosion or runaway pressure is not.
+    #[test]
+    fn three_seconds_upright_stay_bounded() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let f = read_stats(&device, &queue, &sim, 7, 360, [0.0, -9.81, 0.0]);
+        eprintln!(
+            "three seconds upright: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
+            f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9]
+        );
+        assert!(f[3] < 1.2 * sim::REST_DENSITY, "rho max {}", f[3]);
+        assert!(f[6] < 1.0, "v_max {}", f[6]);
+        assert!(f[4] >= 0.0 && f[5] < 1.0e4, "pressure {}..{}", f[4], f[5]);
     }
 }

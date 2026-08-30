@@ -305,6 +305,20 @@ fn div_apply(@builtin(global_invocation_id) id: vec3u) {
     apply_kappa(id.x);
 }
 
+// Warm start for the constant-density solve: last substep's converged
+// pressure, half-applied, is the canonical cure for hydrostatic
+// ringing — without it the solver re-fights gravity from zero every
+// substep and the settled fluid flickers.
+@compute @workgroup_size(256)
+fn den_warm(@builtin(global_invocation_id) id: vec3u) {
+    if id.x >= params.count {
+        return;
+    }
+    let k = 0.5 * prev_pressure[id.x] / density[id.x];
+    kappa[id.x] = k;
+    pressure[id.x] = k * density[id.x];
+}
+
 // One constant-density iteration, kappa half: predict rho* one dt ahead,
 // kappa = (rho* - rho0) * alpha / dt^2, clamped to push only. The
 // applied pressure kappa * rho accumulates for the stats and the
