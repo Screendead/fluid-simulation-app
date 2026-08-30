@@ -135,3 +135,10 @@ which the M4 screen-space water renderer consumes directly.
 
 **Dependencies.** None new: the prefix scan and reductions are
 hand-written WGSL in `fluid-core`.
+
+*Amended 2026-08-30, from the design review and stage 0.* The budget
+envelope resolves the slab depth at two particle layers at the chosen
+spacing; "3D" stands as quasi-3D — z motion and M4 depth exist, z
+eddies do not. 2D remains rejected. Wall boundaries are analytic planar
+kernel integrals, not boundary particles: six flat walls have a closed
+form. This decision closes O1.

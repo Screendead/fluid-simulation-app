@@ -69,7 +69,7 @@ to `docs/design/decisions.md`.
 
 | Id | Question | Where it is decided |
 |---|---|---|
-| O1 | The simulation method. Position-based fluids (PBF) on the GPU is the proposal: cheapest path to a convincing slosh, field colouring is free. MLS-MPM is the fidelity upgrade. Jack has not confirmed either. | M3 design record |
+| O1 | Decided 2026-08-30 → D5: DFSPH in a quasi-3D thin slab. Driven by Jack's accuracy directive; PBF and MLS-MPM rejections are in the record. | `docs/design/decisions.md` |
 | O2 | The performance budget at 120 Hz on the reference device. Provisional, from M1: frame interval p99 ≤ 8,400 µs sustained; CPU frame path p99 ≤ 2 ms; footprint ≤ 200 MB; thermal nominal over ten minutes. Firmed in the optimisation pass after M2. | Optimisation pass |
 | O3 | The name. "Fluid Box" is a working title; the iOS target is `FluidApp`, bundle `com.screendead.FluidApp`. | Jack |
 | O4 | Moot 2026-08-30: the web target is removed (D1 amendment). | — |

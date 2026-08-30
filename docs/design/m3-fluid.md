@@ -14,7 +14,7 @@ sprites and puts field statistics on screen.
 
 ## 2. What "1:1 with real water" means here
 
-Real water is ~10^25 molecules in this box. Every real-time method solves
+Real water is ~10^24 molecules in this box. Every real-time method solves
 the continuum equations instead. M3 solves incompressible Navier–Stokes
 with SPH at particle spacing d, with real SI constants and measured error.
 The deviations from reality, each deliberate and bounded:
@@ -22,14 +22,23 @@ The deviations from reality, each deliberate and bounded:
 | Deviation | Bound |
 |---|---|
 | Continuum at spacing d (1.5–3 mm; stage 0 fixes it) | Sub-d eddies and droplets do not exist |
-| Incompressibility to a target, not exactly | Density error target: 0.1% average, 1% max |
+| Incompressibility to a target, not exactly | Compression error — max(ρ/ρ₀ − 1, 0), so free-surface deficiency does not count — 0.1% average, 1% max |
+| z resolves two particle layers at the chosen spacing | Quasi-3D: particles move and pass in z and M4 gets depth, but z eddies do not exist. Three layers needs d ≤ 1.9 mm, which section 5 rules out on this device. |
 | CFL clamp on velocity per substep | Violations counted and shown on screen, never silent |
 | Air is vacuum; one-phase fluid | No bubbles, no drag from air |
 | Surface tension omitted in M3 | Millimetre droplets behave too heavily; revisit at M4 |
 
 Constants, all SI at 20 °C: density 998.2 kg/m³, dynamic viscosity
 1.002 mPa·s, gravity from the sensors (D3), heat capacity 4184 J/(kg·K),
-thermal conductivity 0.598 W/(m·K).
+thermal conductivity 0.598 W/(m·K), thermal expansion 2.07×10⁻⁴/K.
+
+Discretisation, fixed here because every number below depends on it:
+cubic-spline kernel, smoothing length h = 1.2 d, support radius
+2h = 2.4 d, particle mass ρ₀·d³, grid cell = one support radius. The
+seeder insets half a spacing from each wall, so the depth quantizes to
+⌊(7.65 mm − d)/d⌋ layers: two at d = 2.5 mm. The stage-0 d = 3 mm row
+was a single layer — a 2D lattice; its cost numbers stand, its physics
+does not.
 
 The box: the visible screen at physical size (458 ppi, M2's constant) by
 the device's 7.65 mm depth. The simulation is 3D in a thin slab — real
@@ -42,12 +51,14 @@ Temperature is transported per particle and is physically real, and its
 real signal is microkelvin. The arithmetic, so the lens design is a
 decision and not an apology:
 
-- Pressure work: ~0.018 K per MPa adiabatic; slosh pressures are kPa
-  (hydrostatic floor ~1.5 kPa) → sub-µK, and the incompressibility solve
-  drives the compression term toward zero anyway.
-- Viscous dissipation: µ·(∇v)² over c_p — µK/s at slosh shear.
-- Diffusion: SPH Laplacian with real conductivity.
-- Thermal expansion feedback on density: β ≈ 2.07×10⁻⁴/K × µK ≈ 10⁻¹⁰
+- Pressure work, built: T·β/(ρ·c_p) · Dp/Dt, with Dp/Dt the substep
+  pressure delta from the solve. The coefficient at the constants above
+  is 0.0145 K/MPa (0.018 is 25 °C water). The hydrostatic floor of
+  ~1.5 kPa upright gives ~22 µK — tens of microkelvin.
+- Viscous dissipation, built: µ·(∇v)² / (ρ·c_p) — the ρ is load-bearing;
+  without it the term is a thousandfold too hot. µK/s at slosh shear.
+- Diffusion, built: SPH Laplacian with real conductivity.
+- Thermal expansion feedback on density: β × tens of µK ≈ 10⁻⁸
   relative — negligible by arithmetic, recorded here, not built.
 
 The M5 temperature lens auto-scales its colour range to the live min–max,
@@ -55,24 +66,41 @@ so µK structure is visible without faking magnitudes.
 
 ## 4. The solver
 
-DFSPH (D5), one frame:
+DFSPH (D5). Per substep — the whole loop lives inside the substeps;
+nothing neighbour-dependent survives a position update:
 
-1. Neighbour grid: counting sort by cell (cell = support radius), with a
-   workgroup prefix scan written in WGSL. Validated in the simulator leg
-   before anything builds on it.
-2. Per substep, count from the CFL bound (dt ≤ 0.4·d/v_max, v_max from a
-   GPU reduction — no readback on the frame path):
-   density and DFSPH factor; divergence-free solve; semi-implicit Euler
-   under the body force and Morris viscosity; constant-density solve;
-   position update; temperature sources and diffusion.
-3. Draw with the M2 sprite pass, colour by speed, plus on-screen field
-   statistics: density error %, pressure min–max, temperature min–max,
-   substep count, CFL-clamp count. Every field has a reader from day one.
+1. Rebuild the neighbour grid: counting sort by cell, fused to four
+   dispatches (clear, count, one single-workgroup scan — serial per
+   thread over ≤ 32 cells each, enough for every grid this record
+   allows — and scatter). Validated on the device (scan against the CPU
+   reference: PASS, 9 configurations, 2026-08-30).
+2. Density and the DFSPH factor, with analytic planar-wall kernel
+   integrals for both: the box is six flat walls, so the truncated
+   support integral has a closed form in wall distance — no boundary
+   particles. Without this every particle in the slab under-reads
+   density, z-walls being nearer than one support everywhere.
+3. Divergence-free solve; semi-implicit Euler under the body force and
+   Morris viscosity; constant-density solve; position update;
+   temperature sources and diffusion (section 3).
 
-Per-substep uniforms go through push constants (`immediate_size`) if the
-device grants the feature — stage 0 verifies — else a params buffer with
-per-substep dynamic offsets. `Queue::write_buffer` allocates a staging
-buffer per call (wgpu 30 source) and does not belong in a substep loop.
+The substep count and each dt are CPU decisions at encode time, from
+the CFL bound dt ≤ 0.4·d/v_max. v_max crosses from the GPU by a
+one-frame-stale asynchronous readback — four bytes, the same
+non-blocking slot machinery as the timestamps, never a stall. Staleness
+is safe by construction: the GPU-side velocity clamp enforces the dt
+the CPU actually encoded, and every clamp is counted and shown.
+
+Per-substep uniforms go through push constants (`immediate_size`).
+There is no fallback branch: wgpu 30's Metal backend grants immediates
+unconditionally (wgpu-hal metal/adapter.rs), both targets are Metal,
+and a branch no run reaches is banned by CLAUDE.md section 7.
+`Queue::write_buffer` allocates a staging buffer per call (wgpu 30
+source) and does not belong in a substep loop.
+
+Then draw with the M2 sprite pass, colour by speed, plus on-screen
+field statistics: compression error %, pressure min–max, temperature
+min–max, substep count, clamp count. Every field has a reader from day
+one.
 
 ## 5. Resolution and budget — measured, not asserted
 
@@ -118,15 +146,19 @@ sweeps at 2,584; 34.1 ms / 100 at 9,200). The ceiling is then
 8.3 ms / (N × 36 ns) dispatches a frame, floored by ~50–90 µs of
 overhead per dispatch at small N.
 
-**The choice.** DFSPH spends roughly 14 dispatches a substep before
-fusion. Affordable clamp speed scales as 0.4·d·substeps/8.33 ms, so
-coarser spacing wins twice: fewer particles buy more substeps, and d
-itself widens the CFL bound. Start at **d = 2.5 mm**: ~1,600 particles
-half-fill, ~9 substeps a frame, velocity clamp ≈ 1.1 m/s — near the
-1.7 m/s free-fall peak, clamping only hard shakes, with the counter
-showing every clamp. d = 2 mm (~0.55 m/s clamp before fusion) is the
-stretch goal once dispatch fusion lands. d = 1.5 mm is out on this
-device: two substeps cannot integrate a slosh honestly.
+**The choice.** DFSPH spends roughly 14 solver dispatches a substep
+before fusion, plus 4 for the per-substep grid rebuild: ~18. Affordable
+clamp speed scales as 0.4·d·substeps/8.33 ms, so coarser spacing wins
+twice: fewer particles buy more substeps, and d itself widens the CFL
+bound. Start at **d = 2.5 mm**: ~1,600 particles seeded (the two-layer
+quantisation means this is ~60% of half the box's mass, not half),
+~7 substeps a frame, velocity clamp ≈ 0.9 m/s. Honesty about the
+clamp: a gravity fall reaches 0.9 m/s in ~41 mm, so any drop beyond a
+quarter of the screen clamps — not only hard shakes. The counter shows
+every clamp; raising the ceiling raises the clamp, which is what the
+d = 2 mm stretch goal and dispatch fusion are for. d = 1.5 mm is out
+on this device: two substeps cannot integrate a slosh honestly, and
+three z-layers (d ≤ 1.9 mm) costs more sweeps than the ceiling holds.
 
 ## 6. Deferrals, explicit
 
@@ -147,10 +179,14 @@ standing exercise of every computed field.
 
 ## 8. Exit
 
-- [ ] Stage-0 microbench table in this record; d and count chosen from it.
-- [ ] Prefix scan validated in the simulator against a CPU reference.
-- [ ] At rest: density error inside target; pressure reads hydrostatic
-      (~1.5 kPa floor); temperature drift bounded. Numbers in HANDOFF.
+- [x] Stage-0 microbench table in this record; d and count chosen from
+      it (2026-08-30).
+- [x] Prefix scan validated on the reference device against a CPU
+      reference (PASS, 9 configurations, 2026-08-30).
+- [ ] At rest, phone upright: compression error inside target; floor
+      pressure reads hydrostatic ~1.5 kPa (upright is the stated
+      orientation; flat reads ~75 Pa); temperature drift bounded.
+      Numbers in HANDOFF.
 - [ ] Under Jack's hand: a convincing slosh, 120 Hz interval p99 within
       budget over a minute, measured and in HANDOFF.
 - [ ] Gate and CI green.
