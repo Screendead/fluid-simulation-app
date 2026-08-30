@@ -122,6 +122,22 @@ Three measured facts about the wall integrals (quadrature,
   decorrelates and matches the continuum; the at-rest exit measurement
   reads this bias in the bottom particle row.
 
+### Stage-2 measurement
+
+Reference device, 2026-08-31, d = 2.5 mm (1,620 particles, 1,568
+cells), 7 substeps, 43 dispatches a frame (6 per substep + the
+reduction): interval p50 = p99 = 8,334 µs — 120 Hz held; gpu p50
+6,320 µs, p99 6,650 µs; encode p50 4,200 µs; 66.5 MB. Two findings:
+
+- The chain is verified twice over: a headless GPU test seeds the
+  lattice, runs one rebuild + density sweep and asserts the raw
+  density band (0.84 rho0 mean, 0.96 max — the half-full slab reads
+  under rest at seed, so clamped compression is honestly zero).
+- Pressure-less transport on a tilted phone slides every particle
+  into one corner point: the stat saturates at ~300 rho0, which is
+  1,620 coincident particles times m·W(0), exactly. The metric works;
+  the missing solve is the physics.
+
 ## 5. Resolution and budget — measured, not asserted
 
 CFL arithmetic at v_max = 2 m/s (hard shake): d = 0.33 mm → dt ≤ 66 µs →
