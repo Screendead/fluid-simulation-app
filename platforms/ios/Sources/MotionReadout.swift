@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct MotionReadout: View {
-    @State private var motion = MotionSource()
+    let motion: MotionSource
+    let statsLine: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -9,8 +10,12 @@ struct MotionReadout: View {
             row("user (g)", motion.userAcceleration.x, motion.userAcceleration.y, motion.userAcceleration.z)
             row("body force (m/s²)", Double(motion.bodyForce.x), Double(motion.bodyForce.y), Double(motion.bodyForce.z))
             Text("samples \(motion.sampleCount)")
+            Text(statsLine).font(.system(.caption2, design: .monospaced))
         }
         .font(.system(.body, design: .monospaced))
+        .foregroundStyle(.white)
+        .padding()
+        .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
         .padding()
     }
 

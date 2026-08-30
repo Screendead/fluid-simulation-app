@@ -26,6 +26,7 @@ targets:
       path: Sources/Info.plist
       properties:
         UILaunchScreen: {}
+        CADisableMinimumFrameDurationOnPhone: true
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
     settings:
       base:

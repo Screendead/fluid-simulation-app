@@ -129,6 +129,11 @@ impl Renderer {
                 } else {
                     wgpu::Features::empty()
                 },
+                // WebGPU's default limits overshoot small adapters (the
+                // simulator offers 15 inter-stage variables, the default
+                // asks 16). A clear needs only resolution.
+                required_limits: wgpu::Limits::downlevel_defaults()
+                    .using_resolution(adapter.limits()),
                 ..Default::default()
             })
             .await
