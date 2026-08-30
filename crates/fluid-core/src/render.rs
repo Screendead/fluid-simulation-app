@@ -647,8 +647,12 @@ impl Renderer {
             },
             // WebGPU's default limits overshoot small adapters (the
             // simulator offers 15 inter-stage variables, the default
-            // asks 16). A clear needs only resolution.
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+            // asks 16), so start from downlevel and raise what the code
+            // binds: the sim layouts hold five storage buffers a stage.
+            required_limits: wgpu::Limits {
+                max_storage_buffers_per_shader_stage: 5,
+                ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
+            },
             ..Default::default()
         }))
         .map_err(|e| e.to_string())?;
