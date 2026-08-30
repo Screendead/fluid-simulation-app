@@ -36,9 +36,6 @@ pub extern "C" fn fluid_body_force(gravity: FluidVec3, user_acceleration: FluidV
 }
 
 use std::ffi::c_void;
-use std::future::Future;
-use std::pin::pin;
-use std::task::{Context, Poll, Waker};
 
 /// The renderer behind the C ABI: an opaque box the Swift shell drives by
 /// pointer, on the main thread only.
@@ -54,15 +51,6 @@ pub struct FluidRenderStats {
     pub encode_p99_us: f32,
     pub gpu_p50_us: f32,
     pub gpu_p99_us: f32,
-}
-
-/// wgpu's native adapter and device futures are ready on the first poll
-/// (verified in the wgpu 30.0.1 source); Pending means that contract changed.
-fn expect_ready<T>(fut: impl Future<Output = T>) -> T {
-    match pin!(fut).poll(&mut Context::from_waker(Waker::noop())) {
-        Poll::Ready(v) => v,
-        Poll::Pending => unreachable!("wgpu native future was not ready"),
-    }
 }
 
 /// Builds the renderer on a layer. Returns null when GPU setup fails, with
@@ -87,7 +75,7 @@ pub unsafe extern "C" fn fluid_renderer_create(
             return std::ptr::null_mut();
         }
     };
-    match expect_ready(fluid_core::Renderer::new(instance, surface, width, height)) {
+    match fluid_core::Renderer::new(instance, surface, width, height) {
         Ok(renderer) => Box::into_raw(Box::new(FluidRenderer(renderer))),
         Err(e) => {
             eprintln!("fluid: no renderer: {e}");

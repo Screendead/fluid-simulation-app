@@ -4,9 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy -p fluid-web --target wasm32-unknown-unknown -- -D warnings
 cargo test --workspace
-cargo build -p fluid-web --target wasm32-unknown-unknown
 generated=$(mktemp)
 cbindgen --config crates/fluid-ffi/cbindgen.toml --quiet --output "$generated" crates/fluid-ffi
 diff -u crates/fluid-ffi/include/fluid_ffi.h "$generated"

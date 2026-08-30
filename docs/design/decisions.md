@@ -15,6 +15,13 @@ and Dawn (C++). wgpu's dual-target tooling is the cleaner of the two, and
 one WGSL file runs unchanged on both. WebGPU is on by default in Safari
 from iOS 26; the reference device has it.
 
+*Amended 2026-08-30, Jack's call.* The web target is removed entirely,
+mid-M1: the product is the iOS app alone. The stack stands — wgpu remains
+the GPU layer and WGSL its shader language, now for their own qualities
+rather than for a second platform. The original web motivation below no
+longer binds; `crates/fluid-web` and `platforms/web` live only in git
+history.
+
 **Rejected.** Unity: a heavy runtime, web compute still experimental, poor
 battery. Flutter: no compute shader access. Godot 4: WebGL 2 on the web, no
 compute. Kotlin Multiplatform: no GPU story. TypeScript plus WebGPU in a
@@ -39,6 +46,9 @@ builds for the simulator (`aarch64-apple-ios-sim`) as a compile, link and
 launch check, run by `scripts/run-sim.sh` and usable when the phone is
 away. The simulator still has no motion sensors and proves nothing about
 behaviour or performance; every measurement is on the reference device.
+
+*Amended 2026-08-30, Jack's call.* The web shell is removed with the web
+target (D1 amendment). The Swift shell paragraph alone binds.
 
 **Why.** "Feels like holding a box of liquid" is a latency and sample-rate
 requirement. CoreMotion's sensor fusion, delivered straight into the core
@@ -70,17 +80,18 @@ and later milestones want gravity alone (the box's "up" for rendering, and
 haptics). The body force needs only the difference, and the identity with
 the negated accelerometer reading is a test.
 
-**Pending.** The sign convention of the web conversion is verified on the
-reference device at the close of M0, not in emulation (`HANDOFF.md`).
+*Amended 2026-08-30, Jack's call.* The web conversion paragraph above and
+its pending sign check are moot: the web target is removed (D1
+amendment). Sensor input is CoreMotion alone.
 
 ## D4 — M1 dependencies (2026-08-30)
 
 **Decision.** M1 adds one workspace dependency: wgpu 30.0.1, default
-features off. Per-target features in `fluid-core`: native takes `std`,
-`metal`, `parking_lot`; wasm takes `std`, `webgpu`. `fluid-web` adds
-`wasm-bindgen-futures` to export an async constructor; it is the
-wasm-bindgen project's own crate, versioned in lockstep with the
-wasm-bindgen that D2 names, and wgpu's webgpu backend already pulls it.
+features off, features `std`, `metal`, `parking_lot`.
+
+*Amended 2026-08-30, Jack's call.* The wasm feature set and
+`wasm-bindgen-futures` left with the web target (D1 amendment). The
+paragraph above is the surviving decision; the rejections below stand.
 
 **Rejected.** `pollster`: not needed; wgpu 30's native adapter and device
 futures are ready on first poll (verified in source), and `fluid-ffi`
@@ -90,6 +101,4 @@ and the `CAMetalLayer` path (`SurfaceTargetUnsafe::CoreAnimationLayer`)
 needs neither. The `wgsl` feature: M1 has no shader; naga's WGSL frontend
 enters at M2 with the first shader.
 
-**Why the versions hold.** wgpu 30.0.1 requires wasm-bindgen ≥ 0.2.127,
-exactly the workspace pin, so the installed wasm-bindgen-cli 0.2.127
-remains valid.
+

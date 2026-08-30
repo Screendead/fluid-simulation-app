@@ -2,8 +2,11 @@
 //! Frame timing lands in fixed rings; nothing on the frame path allocates.
 
 use crate::MotionSample;
+use std::future::Future;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::task::{Context, Poll, Waker};
 
 const RING: usize = 240;
 
@@ -62,6 +65,16 @@ fn clear_colour(force: [f32; 3]) -> wgpu::Color {
     }
 }
 
+/// wgpu's native adapter and device futures are ready on the first poll
+/// (verified in the wgpu 30.0.1 source); Pending means that contract
+/// changed.
+fn ready<T>(fut: impl Future<Output = T>) -> T {
+    match pin!(fut).poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(v) => v,
+        Poll::Pending => unreachable!("wgpu future was not ready"),
+    }
+}
+
 const SLOT_FREE: u8 = 0;
 const SLOT_IN_FLIGHT: u8 = 1;
 const SLOT_READY: u8 = 2;
@@ -104,40 +117,34 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    /// The shells make the surface; wgpu types cross this boundary, platform
-    /// types do not. Ready on the first poll on native (wgpu returns ready
-    /// futures there); genuinely asynchronous on the web.
-    pub async fn new(
+    /// The shell makes the surface; wgpu types cross this boundary,
+    /// platform types do not.
+    pub fn new(
         instance: wgpu::Instance,
         surface: wgpu::Surface<'static>,
         width: u32,
         height: u32,
     ) -> Result<Renderer, String> {
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::LowPower,
-                compatible_surface: Some(&surface),
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+        let adapter = ready(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: Some(&surface),
+            ..Default::default()
+        }))
+        .map_err(|e| e.to_string())?;
         let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_features: if timestamps {
-                    wgpu::Features::TIMESTAMP_QUERY
-                } else {
-                    wgpu::Features::empty()
-                },
-                // WebGPU's default limits overshoot small adapters (the
-                // simulator offers 15 inter-stage variables, the default
-                // asks 16). A clear needs only resolution.
-                required_limits: wgpu::Limits::downlevel_defaults()
-                    .using_resolution(adapter.limits()),
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+        let (device, queue) = ready(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: if timestamps {
+                wgpu::Features::TIMESTAMP_QUERY
+            } else {
+                wgpu::Features::empty()
+            },
+            // WebGPU's default limits overshoot small adapters (the
+            // simulator offers 15 inter-stage variables, the default
+            // asks 16). A clear needs only resolution.
+            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+            ..Default::default()
+        }))
+        .map_err(|e| e.to_string())?;
 
         let caps = surface.get_capabilities(&adapter);
         let config = wgpu::SurfaceConfiguration {
@@ -200,17 +207,17 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// `now_ms` is the shell's frame timestamp: `CADisplayLink.timestamp` in
-    /// milliseconds on iOS, the rAF argument on the web. One clock per
-    /// platform, monotonic, only differences are taken.
+    /// `now_ms` is `CADisplayLink.timestamp` in milliseconds; only
+    /// differences are taken.
     pub fn frame(&mut self, sample: MotionSample, now_ms: f64) {
-        if self.frames > 0 {
-            self.interval_us
-                .push(((now_ms - self.last_frame_ms) * 1_000.0) as f32);
+        // A gap after a pause is not a frame interval; half a second cuts
+        // off resumes without hiding real hitches.
+        let interval_us = ((now_ms - self.last_frame_ms) * 1_000.0) as f32;
+        if self.frames > 0 && interval_us < 500_000.0 {
+            self.interval_us.push(interval_us);
         }
         self.last_frame_ms = now_ms;
 
-        #[cfg(not(target_arch = "wasm32"))]
         let started = std::time::Instant::now();
 
         let texture = match self.surface.get_current_texture() {
@@ -284,13 +291,10 @@ impl Renderer {
                     );
                 });
         }
-        // The web pumps map callbacks from its own event loop.
-        #[cfg(not(target_arch = "wasm32"))]
         if self.gpu_timing.is_some() {
             let _ = self.device.poll(wgpu::PollType::Poll);
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
         self.encode_us
             .push(started.elapsed().as_secs_f32() * 1_000_000.0);
         self.frames += 1;

@@ -10,8 +10,8 @@ and HANDOFF disagree about state, HANDOFF wins.**
 
 A box of liquid you hold. The app runs a fluid simulation on the GPU, driven
 by the phone's motion sensors, and renders it as water, as particles, or
-coloured by a field such as density, pressure, temperature or velocity. One
-Rust source builds the iOS app and the website.
+coloured by a field such as density, pressure, temperature or velocity. The
+source is Rust; the product is an iOS app.
 
 The oracle is real-time performance and efficiency on the reference device
 (section 5). Every design choice answers to it. Jack's rule, 2026-08-30:
@@ -29,9 +29,7 @@ State, in one line: M0, the toolchain slice, is in progress. Read
 |---|---|
 | `crates/fluid-core/` | The simulation and rendering core. Pure Rust. No platform type crosses its boundary. |
 | `crates/fluid-ffi/` | The C ABI the iOS shell links, built as a static library. `include/fluid_ffi.h` is generated. |
-| `crates/fluid-web/` | The wasm-bindgen surface the website calls. |
 | `platforms/ios/` | The Swift shell. XcodeGen builds the project from `project.yml`. |
-| `platforms/web/` | The page and its JavaScript glue. |
 | `scripts/` | The gate, and the build and run scripts. |
 | `docs/design/` | The decision slate and the per-milestone design records. |
 | `.github/workflows/` | CI. The authority on what the gate runs. |
@@ -41,11 +39,9 @@ State, in one line: M0, the toolchain slice, is in progress. Read
 Run these from the repository root. `rust-toolchain.toml` pins the toolchain.
 
 ```sh
-scripts/gate.sh        # fmt, clippy, tests, wasm build, header drift, iOS static library
+scripts/gate.sh        # fmt, clippy, tests, header drift, iOS static library
 scripts/run-ios.sh     # build, sign, install and launch on the reference device
 scripts/run-sim.sh     # build and launch in the simulator: a link-and-launch check only
-scripts/build-web.sh   # build the wasm and bind it into platforms/web/pkg
-scripts/serve-web.sh   # serve platforms/web on http://localhost:8080
 ```
 
 CI runs the gate on every push and pull request, then builds the iOS app
@@ -97,10 +93,10 @@ when the work is already done; say so.
 
 - `fluid-core` holds the simulation and the rendering. It has no platform
   type and no platform dependency. Sensor input enters as `MotionSample`.
-- Shaders are WGSL, one source for Metal and WebGPU. No Metal Shading
-  Language, no GLSL.
-- A platform shell does what only the platform can do: sensors, the drawing
-  surface, permissions, haptics, the app lifecycle. Nothing else.
+- Shaders are WGSL, wgpu's shading language. No Metal Shading Language,
+  no GLSL.
+- The platform shell does what only the platform can do: sensors, the
+  drawing surface, permissions, haptics, the app lifecycle. Nothing else.
 - The simulation reads the sensors of the device that runs it. Sensor data
   never crosses devices: no forwarding phone to laptop or laptop to phone,
   in any variant, ever. Jack's rule, 2026-08-30.
@@ -111,7 +107,7 @@ when the work is already done; say so.
   GPU-resident state, and no allocation in the per-frame path.
 - A change to a hot path carries a measurement on the reference device:
   before, after, and how it was taken.
-- Idle costs nothing. A still phone, or a hidden page, runs no simulation
+- Idle costs nothing. A still or backgrounded phone runs no simulation
   step.
 
 ### Comments
@@ -160,7 +156,6 @@ Do not edit these by hand.
 |---|---|
 | `crates/fluid-ffi/include/fluid_ffi.h` | `cbindgen --config crates/fluid-ffi/cbindgen.toml --output crates/fluid-ffi/include/fluid_ffi.h crates/fluid-ffi`; the gate rejects drift |
 | `platforms/ios/FluidApp.xcodeproj`, `platforms/ios/Sources/Info.plist` | `xcodegen generate` in `platforms/ios/`; ignored by git |
-| `platforms/web/pkg/` | `scripts/build-web.sh`; ignored by git |
 
 ## 8. Workflow
 
