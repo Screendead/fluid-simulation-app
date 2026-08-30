@@ -172,8 +172,12 @@ Do not edit these by hand.
   it in HANDOFF or the design record with the rejected options and their
   costs, and continue. Jack can overturn it; silence lets it stand.
 - Write short, imperative, jargonless commit messages.
-- Hand-pick the model for every subagent. A cheap model does search and
-  mechanical edits; design and review need a top-tier model.
+- Hand-pick the model for every subagent, workflow agents included: set
+  the model on every `agent()` call. Jack's directive, 2026-08-30. The
+  cheapest model does mechanical checks — a quote exists, a file
+  matches. A mid model does standard verification and mechanical edits.
+  Only design, review lenses and physics judgment get the top model, and
+  mechanical stages run at low effort.
 - A multi-agent refactor gets an independent adversarial review before
   merge. The reviewer starts with fresh context and reads the diff and the
   repository, never the author's plan. Every finding cites `file:line` and
