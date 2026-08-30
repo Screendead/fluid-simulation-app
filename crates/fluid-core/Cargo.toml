@@ -9,4 +9,4 @@ publish.workspace = true
 crate-type = ["rlib"]
 
 [dependencies]
-wgpu = { workspace = true, features = ["std", "metal", "parking_lot"] }
+wgpu = { workspace = true, features = ["std", "metal", "parking_lot", "wgsl"] }

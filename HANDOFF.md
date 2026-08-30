@@ -43,9 +43,10 @@ particle buffer, integration under the body force, box collision, and
 point rendering — tilt the phone and tens of thousands of particles
 slosh. The first WGSL shaders and the `wgsl` feature enter here.
 
-Start with the design record, `docs/design/m2-particles.md`. After the
-visuals land, the heavy-optimisation pass: firm budget O2, run the
-battery bound, run the frame-latency-1 experiment
+The design record is `docs/design/m2-particles.md`. Work on branch
+`m2-particles`, stacked on `m1-surface`: master lacks M1 while its merge
+waits on Jack. After the visuals land, the heavy-optimisation pass: firm
+budget O2, run the battery bound, run the frame-latency-1 experiment
 (`docs/design/m1-surface.md` section 6).
 
 ## Open decisions
@@ -73,10 +74,17 @@ the reference device and `HANDOFF.md` records the measurement.
 | M1 Surface | wgpu owns a `CAMetalLayer` from `fluid-core`; clear and present at display rate; frame-time capture | 120 Hz stable, idle draw measured, budget O2 set. **Done 2026-08-30.** |
 | M2 Particles | GPU particle buffer, integration under the body force, box collision, point rendering | Tilt and push the phone; particles behave; particle count at budget recorded |
 | M3 Fluid | The method from O1: neighbour search on the GPU, incompressibility, viscosity | A convincing slosh inside budget; incompressibility measured |
-| M4 Water | Screen-space fluid rendering: depth, smoothing, normals, refraction; the box itself | Looks like water; inside budget |
-| M5 Views | Colour by density, pressure, velocity, acceleration; temperature as an added field | Each view switches with no frame drop |
+| M4 Water | The default view: screen-space fluid rendering — depth, smoothing, normals, refraction; the box itself | Looks like water; better than real time; inside budget |
+| M5 Lenses | Field lenses behind a dropdown menu: velocity, density, acceleration, pressure; temperature as an added field | Each lens switches with no frame drop |
 | M6 Headroom | Adaptive substeps, sleep when still, thermal response; power measured | Battery draw recorded against a target |
 | M7 Feel | Sensor-to-frame latency measured and tuned; haptics; rotation (O6) | Latency number recorded; Jack's hand says it feels right |
+
+Jack's directive, 2026-08-30, binds M4 and M5. His words: "the various
+different lenses (e.g. velocity, density, acceleration, temperature,
+pressure, etc) should be behind a dropdown menu. the default should be as
+photorealistic of a water renderer as possible while being
+better-than-realtime rendering." The water renderer is the default view;
+every field lens sits behind a dropdown.
 
 ## Rules that bind future work
 
