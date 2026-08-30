@@ -165,6 +165,26 @@ reduction): interval p50 = p99 = 8,334 µs — 120 Hz held; gpu p50
   1,620 coincident particles times m·W(0), exactly. The metric works;
   the missing solve is the physics.
 
+### Stage-3 measurement
+
+Reference device, 2026-08-31, d = 2.5 mm, cap 7 substeps, ~15
+dispatches a substep. After ~26 s of live motion: compression avg
+0.017% max 0.63% — inside the exit target while moving; rho 268–1005;
+pressure 0–475 Pa; temperature −610..+244 µK; n breathing 3–6;
+interval p50 = p99 = 8,334 µs; gpu p50 3.3–7.3 ms. Two defects found
+by measurement, both now pinned by tests:
+
+- The fused forces pass read neighbour velocities while writing its
+  own — a same-dispatch race, invisible at the uniform seed state. It
+  is now an eval/apply split; the one-second settle test guards it.
+- Frame zero encodes dt = 0 by design, and kappa divides by dt
+  squared: max(0,0)/0 is NaN, and clamp(NaN, lo, hi) parked all 1,620
+  particles at the box corner. Every prior "corner dot" deploy was
+  this. A zero dt now encodes no solve.
+
+The one-second flat settle on the Mac GPU: compression max 0.13%,
+rho max 999.5, pressure max 127 Pa, zero clamps.
+
 ## 5. Resolution and budget — measured, not asserted
 
 CFL arithmetic at v_max = 2 m/s (hard shake): d = 0.33 mm → dt ≤ 66 µs →

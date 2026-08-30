@@ -24,7 +24,16 @@ the same commit that closes a milestone or a task. Git holds the history.*
 | M1 surface | Done 2026-08-30 on the reference device; measurements below. | `docs/design/m1-surface.md` |
 | M2 particles | Done 2026-08-30 by Jack's call: visuals landed and hand-tested; the budget ramp was cut with the pivot to M3. Measurements below. | `docs/design/m2-particles.md` |
 
-Test baseline: 8 Rust tests pass, 2026-08-30.
+M3 state, 2026-08-31: the full DFSPH solver runs on the device — grid
+rebuild, wall-corrected density and factor, divergence-free and
+constant-density solves, Morris viscosity, temperature, dynamic
+substeps. Verified live: compression avg 0.017% max 0.63% in motion,
+pressure 0..475 Pa, temperature within microkelvin, 120 Hz held.
+Numbers and the two test-pinned defects are in the M3 record. Left
+for M3 exit: the settled upright measurement, the minute hand-test,
+and the resolution ramp.
+
+Test baseline: 21 Rust tests pass, 2026-08-31.
 
 ## M1 measurements (reference device, 2026-08-30, Release)
 
