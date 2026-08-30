@@ -200,6 +200,19 @@ The default stays 2.5 mm: the only config that holds the cadence
 clean. 2.0 mm is the next step and waits on the optimisation pass —
 its CPU encode alone spikes to 22 ms at high substep counts.
 
+### The visual layer — one-pixel tracers
+
+Jack's directive, 2026-08-31: each particle no more than one pixel.
+The solver cannot carry a hundredfold more particles, so the visuals
+decouple: 262,144 massless tracers advect through the solved velocity
+field and draw as single-pixel points, colour by speed. The field is
+splatted once a frame to the neighbour grid (16.16 fixed point — f32
+storage has no atomic add) and sampled trilinearly, so the whole layer
+is four dispatches a frame and never enters a substep. An unsampled
+tracer sits still until the fluid returns to it; re-seeding is
+deferred. FLUID_TRACERS sets the count; zero restores the solver
+sprites.
+
 ## 5. Resolution and budget — measured, not asserted
 
 CFL arithmetic at v_max = 2 m/s (hard shake): d = 0.33 mm → dt ≤ 66 µs →
