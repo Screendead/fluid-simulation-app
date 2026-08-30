@@ -21,7 +21,8 @@ the same commit that closes a milestone or a task. Git holds the history.*
 | The gate | Green 2026-08-30 (8 tests) | `scripts/gate.sh` |
 | The web target | Removed 2026-08-30, Jack's call, mid-M1. Git history holds the code; the D1 amendment holds the record. | `docs/design/decisions.md` |
 | M0 toolchain slice | Done 2026-08-30: Rust-computed body force on the phone, Jack confirmed the readout | — |
-| M1 surface | Done 2026-08-30 on the reference device; measurements below. CI on the branch pending push. | `docs/design/m1-surface.md` |
+| M1 surface | Done 2026-08-30 on the reference device; measurements below. | `docs/design/m1-surface.md` |
+| M2 particles | Done 2026-08-30 by Jack's call: visuals landed and hand-tested; the budget ramp was cut with the pivot to M3. Measurements below. | `docs/design/m2-particles.md` |
 
 Test baseline: 8 Rust tests pass, 2026-08-30.
 
@@ -35,19 +36,31 @@ dropped frame), ~2 s startup transient. CPU encode+submit+present p50
 `TIMESTAMP_QUERY`; GPU pass time reads 0 until a finer probe exists.
 Idle verified: stats freeze when backgrounded, resume on foreground.
 
-## The next task — M2, the particles
+## M2 measurements (reference device, 2026-08-30, Release, 50,000 particles at 0.6 mm)
 
-Jack's directive, 2026-08-30: something visual and satisfying on the
-phone as soon as possible, then optimise heavily. That is M2: a GPU
-particle buffer, integration under the body force, box collision, and
-point rendering — tilt the phone and tens of thousands of particles
-slosh. The first WGSL shaders and the `wgsl` feature enter here.
+From Jack's hand test via the on-screen stats; the minute-long ramp
+protocol was cut with the pivot to M3. Interval p50 8,334 µs (120 Hz),
+p99 16,668 µs: the settled pile drops occasional frames. GPU pass p50
+5,275–5,710 µs. CPU frame path p50 1.7 ms spread, 6.1 ms piled (drawable
+back-pressure). `phys_footprint` 78–83 MB. Battery 100%, thermal nominal.
+The stats call costs 102 µs once a second, off the frame path. GPU
+timestamps read real values on this device in M2; the M1 note that the
+adapter lacks `TIMESTAMP_QUERY` did not hold — trust the M2 observation.
 
-The design record is `docs/design/m2-particles.md`. Work on branch
-`m2-particles`, stacked on `m1-surface`: master lacks M1 while its merge
-waits on Jack. After the visuals land, the heavy-optimisation pass: firm
-budget O2, run the battery bound, run the frame-latency-1 experiment
-(`docs/design/m1-surface.md` section 6).
+## The next task — M3, the fluid
+
+Jack's directive, 2026-08-30, verbatim: "full fluid sim, physically
+accurate, calculated pressure, density, velocity, acceleration,
+temperature (increasing/decreasing due to pressure), etc. leave out the
+physically accurate specular/water-style shader for now. just make the
+underlying sim as physically accurate as possible, 1:1 with physical
+reality of real water while taking into account the physical size of the
+iphone 13 pro max i'm running it on."
+
+Start with the design record, `docs/design/m3-fluid.md`, and the method
+decision D5. Work on branch `m3-fluid`, stacked on `m2-particles`. The
+optimisation pass (budget O2, battery bound, frame-latency-1 experiment)
+moves behind M3 with the ramp.
 
 ## Open decisions
 

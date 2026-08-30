@@ -43,6 +43,11 @@ No inter-particle forces: that is M3.
   rotation leaks particles up a wall the force runs nearly parallel to —
   a subset gains a net upward component and settles in the wrong corner.
   The force now varies in magnitude only (0.9 to 1.1).
+- **Idle is deferred, explicitly.** CLAUDE.md section 7 says a still
+  phone runs no simulation step. M2's placeholder integrates every
+  foregrounded tick; backgrounding pauses the display link. Stillness
+  sleep arrives with M6, as the roadmap has always planned; this sentence
+  is the explicit deferral, on the record for Jack.
 - **Compute then draw, one encoder.** Integrate, damp, reflect off the
   four walls with restitution. Render as instanced four-vertex strips,
   vertex-pulled from the particle buffer: soft circular sprites, additive
@@ -65,15 +70,20 @@ HANDOFF with device and date.
 ## 4. Tested and exercised
 
 The seeding function is pure and tested: count, bounds, upper-half
-placement. The shader is exercised on the device and simulator, untested;
-its logic is kept minimal for that reason. The M1 stats machinery is
-reused unchanged. The shell's stats call moves off the frame path (it ran
-every tick in M1 — a bug against the M1 record's own line; fixed here and
-measured for the ledger).
+placement. The shaders are untested and exercised: the simulator run and
+the reference-device runs of 2026-08-30, Jack's hand among them. Their
+logic is kept minimal for that reason. The M1 stats machinery is reused
+unchanged. The shell's stats call moved off the frame path (it ran every
+tick in M1 — a bug against the M1 record's own line). Measured on the
+reference device, 2026-08-30, Release: 102 µs a call, now paid once per
+120 ticks instead of every tick — about 101 µs a frame saved.
 
 ## 5. Exit
 
-- [ ] Shader validates in the simulator leg (cheap loop for WGSL errors).
-- [ ] Particles rain, slosh and splash on the phone under Jack's hand.
-- [ ] Ramp run: count and radius at budget recorded in HANDOFF.
-- [ ] Gate and CI green.
+- [x] Shader validates in the simulator leg (2026-08-30).
+- [x] Particles rain, slosh and pool on the phone under Jack's hand
+      (2026-08-30; three artifacts observed and fixed, section 2).
+- [ ] Ramp run — cut 2026-08-30, Jack's call: progress straight to M3.
+      A budget ramp of a placeholder loop M3 replaces has no value; M3
+      carries the budget work. Hand-test frame numbers are in HANDOFF.
+- [x] Gate green at every commit; CI green on the branch.

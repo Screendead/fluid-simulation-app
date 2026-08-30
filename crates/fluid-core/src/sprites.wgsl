@@ -12,7 +12,6 @@ struct Params {
     radius: f32,
     extent: vec2f,
     count: u32,
-    _pad: u32,
 }
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;

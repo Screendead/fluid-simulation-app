@@ -1,5 +1,6 @@
-//! One clear pass whose colour is the body force, presented at display rate.
-//! Frame timing lands in fixed rings; nothing on the frame path allocates.
+//! The particle pass: integrate under the body force in compute, draw the
+//! sprites over the body-force tint, present at display rate. Frame timing
+//! lands in fixed rings.
 
 use crate::MotionSample;
 use crate::particles;
@@ -134,6 +135,9 @@ impl Particles {
         radius: f32,
         extent: [f32; 2],
     ) -> Particles {
+        // A radius near the half-extent turns the wall clamp inside out; no
+        // sane sprite approaches a fifth of the box.
+        let radius = radius.min(0.2 * extent[0].min(extent[1]));
         // The buffer handle is dropped here; the bind groups keep the
         // resource alive.
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -483,9 +487,17 @@ impl Renderer {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         {
+            // The GPU span opens here and closes at the end of the render
+            // pass, so gpu_us covers simulation and draw together.
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
-                timestamp_writes: None,
+                timestamp_writes: self.gpu_timing.as_ref().and_then(|t| {
+                    slot.map(|_| wgpu::ComputePassTimestampWrites {
+                        query_set: &t.queries,
+                        beginning_of_pass_write_index: Some(0),
+                        end_of_pass_write_index: None,
+                    })
+                }),
             });
             pass.set_pipeline(&self.particles.integrate);
             pass.set_bind_group(0, &self.particles.integrate_bind, &[]);
@@ -507,7 +519,7 @@ impl Renderer {
                 timestamp_writes: self.gpu_timing.as_ref().and_then(|t| {
                     slot.map(|_| wgpu::RenderPassTimestampWrites {
                         query_set: &t.queries,
-                        beginning_of_pass_write_index: Some(0),
+                        beginning_of_pass_write_index: None,
                         end_of_pass_write_index: Some(1),
                     })
                 }),
