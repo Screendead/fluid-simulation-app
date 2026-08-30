@@ -4,6 +4,7 @@
 
 use crate::MotionSample;
 use crate::particles;
+use crate::sim;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
@@ -278,6 +279,307 @@ impl Particles {
     }
 }
 
+/// Knobs the shell passes through `fluid_renderer_create`. A nonzero
+/// `bench_sweeps` replaces the demo with the M3 stage-0 microbench.
+pub struct RenderOptions {
+    pub particle_count: u32,
+    pub sprite_radius: f32,
+    pub bench_sweeps: u32,
+    pub bench_spacing: f32,
+}
+
+enum Mode {
+    Demo(Box<Particles>),
+    Bench(Box<Bench>),
+}
+
+struct Validation {
+    seeded: Vec<f32>,
+    grid: sim::Grid,
+    starts: wgpu::Buffer,
+    staging: wgpu::Buffer,
+}
+
+struct Bench {
+    clear_counts: wgpu::ComputePipeline,
+    count: wgpu::ComputePipeline,
+    scan_blocks: wgpu::ComputePipeline,
+    scan_sums: wgpu::ComputePipeline,
+    add_back: wgpu::ComputePipeline,
+    scatter: wgpu::ComputePipeline,
+    density_sweep: wgpu::ComputePipeline,
+    grid_bind: wgpu::BindGroup,
+    scan_bind: wgpu::BindGroup,
+    density_bind: wgpu::BindGroup,
+    sweeps: u32,
+    particle_groups: u32,
+    cell_groups: u32,
+    validation: Option<Validation>,
+}
+
+impl Bench {
+    fn new(device: &wgpu::Device, extent: [f32; 2], options: &RenderOptions) -> Bench {
+        let spacing = options.bench_spacing.clamp(0.001, 0.01);
+        let h = 1.2 * spacing;
+        let grid = sim::Grid::new(extent, 2.0 * h);
+        let cells = grid.cell_count();
+        // The scan's second pass is one workgroup over the block sums.
+        assert!(cells <= 65_536, "the scan handles 256 blocks of 256");
+        let seeded = sim::seed_slab(spacing, extent, 0.5);
+        let count = (seeded.len() / 4) as u32;
+        let mass = sim::REST_DENSITY * spacing * spacing * spacing;
+        eprintln!(
+            "bench: {count} particles, {cells} cells, {} sweeps, spacing {spacing} m",
+            options.bench_sweeps
+        );
+
+        let storage = |label: &str, size: u64, extra: wgpu::BufferUsages| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | extra,
+                mapped_at_creation: false,
+            })
+        };
+        let none = wgpu::BufferUsages::empty();
+        let positions = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("positions"),
+            size: u64::from(count) * 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        });
+        let mut bytes = Vec::with_capacity(seeded.len() * 4);
+        for v in &seeded {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        positions
+            .get_mapped_range_mut(..)
+            .expect("mapped at creation")
+            .copy_from_slice(&bytes);
+        positions.unmap();
+        let density = storage("density", u64::from(count) * 4, none);
+        let counts = storage("counts", u64::from(cells) * 4, none);
+        let starts = storage("starts", u64::from(cells) * 4, wgpu::BufferUsages::COPY_SRC);
+        let cursors = storage("cursors", u64::from(cells) * 4, none);
+        let block_sums = storage("block_sums", u64::from(cells.div_ceil(256)) * 4, none);
+        let sorted = storage("sorted", u64::from(count) * 4, none);
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sim params"),
+            size: 48,
+            usage: wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: true,
+        });
+        params
+            .get_mapped_range_mut(..)
+            .expect("mapped at creation")
+            .copy_from_slice(&sim::pack_sim_params(&grid, count, h, mass));
+        params.unmap();
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scan staging"),
+            size: u64::from(cells) * 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let compute = wgpu::ShaderStages::COMPUTE;
+        let uniform = |b| buffer_entry(b, compute, wgpu::BufferBindingType::Uniform);
+        let ro = |b| {
+            buffer_entry(
+                b,
+                compute,
+                wgpu::BufferBindingType::Storage { read_only: true },
+            )
+        };
+        let rw = |b| {
+            buffer_entry(
+                b,
+                compute,
+                wgpu::BufferBindingType::Storage { read_only: false },
+            )
+        };
+        let layout = |label, entries: &[wgpu::BindGroupLayoutEntry]| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some(label),
+                entries,
+            })
+        };
+        let grid_layout = layout("grid", &[uniform(0), ro(1), rw(2), ro(3), rw(4), rw(5)]);
+        let scan_layout = layout("scan", &[uniform(0), ro(1), rw(2), rw(3), rw(4)]);
+        let density_layout = layout("density", &[uniform(0), ro(1), ro(2), ro(3), ro(4), rw(5)]);
+        fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: buffer.as_entire_binding(),
+            }
+        }
+        let bind = |label, layout: &wgpu::BindGroupLayout, entries: &[wgpu::BindGroupEntry]| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout,
+                entries,
+            })
+        };
+        let grid_bind = bind(
+            "grid",
+            &grid_layout,
+            &[
+                entry(0, &params),
+                entry(1, &positions),
+                entry(2, &counts),
+                entry(3, &starts),
+                entry(4, &cursors),
+                entry(5, &sorted),
+            ],
+        );
+        let scan_bind = bind(
+            "scan",
+            &scan_layout,
+            &[
+                entry(0, &params),
+                entry(1, &counts),
+                entry(2, &starts),
+                entry(3, &block_sums),
+                entry(4, &cursors),
+            ],
+        );
+        let density_bind = bind(
+            "density",
+            &density_layout,
+            &[
+                entry(0, &params),
+                entry(1, &positions),
+                entry(2, &counts),
+                entry(3, &starts),
+                entry(4, &sorted),
+                entry(5, &density),
+            ],
+        );
+
+        let module = |label, source: &'static str| {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(label),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            })
+        };
+        let grid_module = module("sim_grid", include_str!("sim_grid.wgsl"));
+        let scan_module = module("sim_scan", include_str!("sim_scan.wgsl"));
+        let density_module = module("sim_density", include_str!("sim_density.wgsl"));
+        let pipe_layout = |layout: &wgpu::BindGroupLayout| {
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(layout)],
+                immediate_size: 0,
+            })
+        };
+        let grid_pl = pipe_layout(&grid_layout);
+        let scan_pl = pipe_layout(&scan_layout);
+        let density_pl = pipe_layout(&density_layout);
+        let pipeline =
+            |layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, entry_point: &str| {
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(entry_point),
+                    layout: Some(layout),
+                    module,
+                    entry_point: Some(entry_point),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+            };
+
+        Bench {
+            clear_counts: pipeline(&grid_pl, &grid_module, "clear_counts"),
+            count: pipeline(&grid_pl, &grid_module, "count"),
+            scan_blocks: pipeline(&scan_pl, &scan_module, "scan_blocks"),
+            scan_sums: pipeline(&scan_pl, &scan_module, "scan_sums"),
+            add_back: pipeline(&scan_pl, &scan_module, "add_back"),
+            scatter: pipeline(&grid_pl, &grid_module, "scatter"),
+            density_sweep: pipeline(&density_pl, &density_module, "density_sweep"),
+            grid_bind,
+            scan_bind,
+            density_bind,
+            sweeps: options.bench_sweeps,
+            particle_groups: count.div_ceil(256),
+            cell_groups: cells.div_ceil(256),
+            validation: Some(Validation {
+                seeded,
+                grid,
+                starts,
+                staging,
+            }),
+        }
+    }
+
+    /// Dispatch order is the data dependency; WebGPU orders storage
+    /// writes between dispatches in one pass.
+    fn encode(&self, pass: &mut wgpu::ComputePass<'_>) {
+        pass.set_bind_group(0, &self.grid_bind, &[]);
+        pass.set_pipeline(&self.clear_counts);
+        pass.dispatch_workgroups(self.cell_groups, 1, 1);
+        pass.set_pipeline(&self.count);
+        pass.dispatch_workgroups(self.particle_groups, 1, 1);
+        pass.set_bind_group(0, &self.scan_bind, &[]);
+        pass.set_pipeline(&self.scan_blocks);
+        pass.dispatch_workgroups(self.cell_groups, 1, 1);
+        pass.set_pipeline(&self.scan_sums);
+        pass.dispatch_workgroups(1, 1, 1);
+        pass.set_pipeline(&self.add_back);
+        pass.dispatch_workgroups(self.cell_groups, 1, 1);
+        pass.set_bind_group(0, &self.grid_bind, &[]);
+        pass.set_pipeline(&self.scatter);
+        pass.dispatch_workgroups(self.particle_groups, 1, 1);
+        pass.set_bind_group(0, &self.density_bind, &[]);
+        pass.set_pipeline(&self.density_sweep);
+        for _ in 0..self.sweeps {
+            pass.dispatch_workgroups(self.particle_groups, 1, 1);
+        }
+    }
+}
+
+/// Blocks once, on the bench's first frame, never on the steady path.
+fn validate_scan(device: &wgpu::Device, queue: &wgpu::Queue, v: &Validation) {
+    let cells = v.grid.cell_count() as usize;
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_buffer_to_buffer(&v.starts, 0, &v.staging, 0, (cells * 4) as u64);
+    queue.submit(std::iter::once(encoder.finish()));
+    let done = Arc::new(AtomicU8::new(0));
+    let flag = done.clone();
+    v.staging.map_async(wgpu::MapMode::Read, .., move |r| {
+        flag.store(if r.is_ok() { 1 } else { 2 }, Ordering::Release);
+    });
+    let _ = device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    });
+    if done.load(Ordering::Acquire) != 1 {
+        eprintln!("scan validation: map failed");
+        return;
+    }
+    let gpu: Vec<u32> = {
+        let bytes = v.staging.get_mapped_range(..).expect("mapped");
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
+            .collect()
+    };
+    v.staging.unmap();
+    let mut expect = vec![0u32; cells];
+    for p in v.seeded.as_chunks::<4>().0 {
+        expect[v.grid.cell_of([p[0], p[1], p[2]]) as usize] += 1;
+    }
+    let mut run = 0u32;
+    for e in &mut expect {
+        let c = *e;
+        *e = run;
+        run += c;
+    }
+    eprintln!(
+        "scan validation: {}",
+        if gpu == expect { "PASS" } else { "FAIL" }
+    );
+}
+
 const SLOT_FREE: u8 = 0;
 const SLOT_IN_FLIGHT: u8 = 1;
 const SLOT_READY: u8 = 2;
@@ -315,7 +617,7 @@ pub struct Renderer {
     encode_us: Ring,
     gpu_us: Ring,
     gpu_timing: Option<GpuTiming>,
-    particles: Particles,
+    mode: Mode,
     frames: u64,
     last_frame_ms: f64,
 }
@@ -328,8 +630,7 @@ impl Renderer {
         surface: wgpu::Surface<'static>,
         width: u32,
         height: u32,
-        particle_count: u32,
-        sprite_radius: f32,
+        options: RenderOptions,
     ) -> Result<Renderer, String> {
         let adapter = ready(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
@@ -370,13 +671,17 @@ impl Renderer {
             width as f32 * 0.5 * METRES_PER_PIXEL,
             height as f32 * 0.5 * METRES_PER_PIXEL,
         ];
-        let particles = Particles::new(
-            &device,
-            config.format,
-            particle_count.max(1),
-            sprite_radius,
-            extent,
-        );
+        let mode = if options.bench_sweeps > 0 {
+            Mode::Bench(Box::new(Bench::new(&device, extent, &options)))
+        } else {
+            Mode::Demo(Box::new(Particles::new(
+                &device,
+                config.format,
+                options.particle_count.max(1),
+                options.sprite_radius,
+                extent,
+            )))
+        };
 
         let gpu_timing = timestamps.then(|| GpuTiming {
             queries: device.create_query_set(&wgpu::QuerySetDescriptor {
@@ -411,7 +716,7 @@ impl Renderer {
             encode_us: Ring::new(),
             gpu_us: Ring::new(),
             gpu_timing,
-            particles,
+            mode,
             frames: 0,
             last_frame_ms: 0.0,
         })
@@ -423,10 +728,12 @@ impl Renderer {
         }
         self.config.width = width;
         self.config.height = height;
-        self.particles.extent = [
-            width as f32 * 0.5 * METRES_PER_PIXEL,
-            height as f32 * 0.5 * METRES_PER_PIXEL,
-        ];
+        if let Mode::Demo(p) = &mut self.mode {
+            p.extent = [
+                width as f32 * 0.5 * METRES_PER_PIXEL,
+                height as f32 * 0.5 * METRES_PER_PIXEL,
+            ];
+        }
         self.surface.configure(&self.device, &self.config);
     }
 
@@ -468,17 +775,13 @@ impl Renderer {
                 .position(|s| s.state.load(Ordering::Acquire) == SLOT_FREE)
         });
 
-        self.queue.write_buffer(
-            &self.particles.params,
-            0,
-            &particles::pack_params(
-                [force[0], force[1]],
-                dt,
-                self.particles.radius,
-                self.particles.extent,
-                self.particles.count,
-            ),
-        );
+        if let Mode::Demo(p) = &self.mode {
+            self.queue.write_buffer(
+                &p.params,
+                0,
+                &particles::pack_params([force[0], force[1]], dt, p.radius, p.extent, p.count),
+            );
+        }
 
         let view = texture
             .texture
@@ -499,9 +802,14 @@ impl Renderer {
                     })
                 }),
             });
-            pass.set_pipeline(&self.particles.integrate);
-            pass.set_bind_group(0, &self.particles.integrate_bind, &[]);
-            pass.dispatch_workgroups(self.particles.count.div_ceil(64), 1, 1);
+            match &self.mode {
+                Mode::Demo(p) => {
+                    pass.set_pipeline(&p.integrate);
+                    pass.set_bind_group(0, &p.integrate_bind, &[]);
+                    pass.dispatch_workgroups(p.count.div_ceil(64), 1, 1);
+                }
+                Mode::Bench(b) => b.encode(&mut pass),
+            }
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -526,9 +834,11 @@ impl Renderer {
                 occlusion_query_set: None,
                 ..Default::default()
             });
-            pass.set_pipeline(&self.particles.sprites);
-            pass.set_bind_group(0, &self.particles.sprite_bind, &[]);
-            pass.draw(0..4, 0..self.particles.count);
+            if let Mode::Demo(p) = &self.mode {
+                pass.set_pipeline(&p.sprites);
+                pass.set_bind_group(0, &p.sprite_bind, &[]);
+                pass.draw(0..4, 0..p.count);
+            }
         }
         if let (Some(t), Some(slot)) = (self.gpu_timing.as_ref(), slot) {
             encoder.resolve_query_set(&t.queries, 0..2, &t.resolve, 0);
@@ -559,6 +869,12 @@ impl Renderer {
         self.encode_us
             .push(started.elapsed().as_secs_f32() * 1_000_000.0);
         self.frames += 1;
+
+        if let Mode::Bench(b) = &mut self.mode
+            && let Some(v) = b.validation.take()
+        {
+            validate_scan(&self.device, &self.queue, &v);
+        }
     }
 
     fn drain_ready_slots(&mut self) {

@@ -43,8 +43,9 @@ struct FluidVec3 fluid_body_force(struct FluidVec3 gravity, struct FluidVec3 use
 
 /**
  * Builds the renderer on a layer: `particle_count` sprites of
- * `sprite_radius` metres. Returns null when GPU setup fails, with the
- * reason on stderr.
+ * `sprite_radius` metres, or, when `bench_sweeps` is nonzero, the M3
+ * stage-0 microbench at `bench_spacing` metres. Returns null when GPU
+ * setup fails, with the reason on stderr.
  *
  * # Safety
  *
@@ -55,7 +56,9 @@ struct FluidRenderer *fluid_renderer_create(void *metal_layer,
                                             uint32_t width,
                                             uint32_t height,
                                             uint32_t particle_count,
-                                            float sprite_radius);
+                                            float sprite_radius,
+                                            uint32_t bench_sweeps,
+                                            float bench_spacing);
 
 /**
  * One frame: integrate the particles, draw them over the body-force tint,

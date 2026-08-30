@@ -30,8 +30,11 @@ final class FrameDriver {
         let env = ProcessInfo.processInfo.environment
         let count = env["FLUID_PARTICLES"].flatMap(UInt32.init) ?? 50_000
         let radius = env["FLUID_RADIUS"].flatMap(Float.init) ?? 0.0006
+        let bench = env["FLUID_BENCH"].flatMap(UInt32.init) ?? 0
+        let spacing = env["FLUID_SPACING"].flatMap(Float.init) ?? 0.002
         renderer = fluid_renderer_create(
-            Unmanaged.passUnretained(layer).toOpaque(), width, height, count, radius)
+            Unmanaged.passUnretained(layer).toOpaque(), width, height, count, radius,
+            bench, spacing)
         guard renderer != nil else {
             statsLine = "renderer failed; see the console"
             return

@@ -9,4 +9,6 @@ scripts/build-ios.sh "$config"
 xcrun devicectl device install app --device "$device" "platforms/ios/build/Build/Products/$config-iphoneos/FluidApp.app"
 DEVICECTL_CHILD_FLUID_PARTICLES="${FLUID_PARTICLES:-}" \
 DEVICECTL_CHILD_FLUID_RADIUS="${FLUID_RADIUS:-}" \
+DEVICECTL_CHILD_FLUID_BENCH="${FLUID_BENCH:-}" \
+DEVICECTL_CHILD_FLUID_SPACING="${FLUID_SPACING:-}" \
 xcrun devicectl device process launch --device "$device" com.screendead.FluidApp

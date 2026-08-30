@@ -48,4 +48,5 @@ mod tests {
 
 mod particles;
 mod render;
-pub use render::{RenderStats, Renderer};
+mod sim;
+pub use render::{RenderOptions, RenderStats, Renderer};

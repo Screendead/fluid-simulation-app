@@ -54,8 +54,9 @@ pub struct FluidRenderStats {
 }
 
 /// Builds the renderer on a layer: `particle_count` sprites of
-/// `sprite_radius` metres. Returns null when GPU setup fails, with the
-/// reason on stderr.
+/// `sprite_radius` metres, or, when `bench_sweeps` is nonzero, the M3
+/// stage-0 microbench at `bench_spacing` metres. Returns null when GPU
+/// setup fails, with the reason on stderr.
 ///
 /// # Safety
 ///
@@ -68,6 +69,8 @@ pub unsafe extern "C" fn fluid_renderer_create(
     height: u32,
     particle_count: u32,
     sprite_radius: f32,
+    bench_sweeps: u32,
+    bench_spacing: f32,
 ) -> *mut FluidRenderer {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(metal_layer);
@@ -78,14 +81,13 @@ pub unsafe extern "C" fn fluid_renderer_create(
             return std::ptr::null_mut();
         }
     };
-    match fluid_core::Renderer::new(
-        instance,
-        surface,
-        width,
-        height,
+    let options = fluid_core::RenderOptions {
         particle_count,
         sprite_radius,
-    ) {
+        bench_sweeps,
+        bench_spacing,
+    };
+    match fluid_core::Renderer::new(instance, surface, width, height, options) {
         Ok(renderer) => Box::into_raw(Box::new(FluidRenderer(renderer))),
         Err(e) => {
             eprintln!("fluid: no renderer: {e}");

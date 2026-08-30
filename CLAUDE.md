@@ -48,9 +48,10 @@ CI runs the gate on every push and pull request, then builds the iOS app
 unsigned. Run the gate before you push. Three notes:
 
 - The gate is strict. One clippy warning or one unformatted file fails it.
-- Measure on the physical device only. A simulator build proves the shell
-  compiles, links and launches; the simulator has no motion sensors, so it
-  proves nothing else.
+- The phone is the default target for every run: measurement, validation,
+  eyeballing. Jack's call, 2026-08-30. A simulator build proves the shell
+  compiles, links and launches, and is the fallback when the phone is
+  away; it has no motion sensors and proves nothing else.
 - Xcode is a toolchain here, not an editor. Everything builds from the
   terminal or from VS Code. Open Xcode for the Metal debugger and GPU frame
   capture, and for nothing else.
