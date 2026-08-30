@@ -7,3 +7,9 @@ publish.workspace = true
 
 [lib]
 crate-type = ["rlib"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wgpu = { workspace = true, features = ["std", "metal", "parking_lot"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { workspace = true, features = ["std", "webgpu"] }

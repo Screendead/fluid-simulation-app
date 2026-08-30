@@ -11,3 +11,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 fluid-core.workspace = true
 wasm-bindgen.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures.workspace = true
+wgpu = { workspace = true, features = ["std", "webgpu"] }

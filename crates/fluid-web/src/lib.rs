@@ -45,3 +45,8 @@ mod tests {
         assert!((x + 1.0).abs() < 1e-5 && (y - 2.0).abs() < 1e-5 && (z + 9.0).abs() < 1e-5);
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+mod renderer;
+#[cfg(target_arch = "wasm32")]
+pub use renderer::{WebRenderer, create_renderer};

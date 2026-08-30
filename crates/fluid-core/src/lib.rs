@@ -45,3 +45,6 @@ mod tests {
         assert_eq!(x, -0.5 * STANDARD_GRAVITY);
     }
 }
+
+mod render;
+pub use render::{RenderStats, Renderer};

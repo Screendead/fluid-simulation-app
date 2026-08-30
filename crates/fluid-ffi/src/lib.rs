@@ -34,3 +34,122 @@ pub extern "C" fn fluid_body_force(gravity: FluidVec3, user_acceleration: FluidV
     .body_force()
     .into()
 }
+
+use std::ffi::c_void;
+use std::future::Future;
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
+
+/// The renderer behind the C ABI: an opaque box the Swift shell drives by
+/// pointer, on the main thread only.
+pub struct FluidRenderer(fluid_core::Renderer);
+
+#[repr(C)]
+pub struct FluidRenderStats {
+    pub frames: u64,
+    pub interval_p50_us: f32,
+    pub interval_p99_us: f32,
+    pub interval_max_us: f32,
+    pub encode_p50_us: f32,
+    pub encode_p99_us: f32,
+    pub gpu_p50_us: f32,
+    pub gpu_p99_us: f32,
+}
+
+/// wgpu's native adapter and device futures are ready on the first poll
+/// (verified in the wgpu 30.0.1 source); Pending means that contract changed.
+fn expect_ready<T>(fut: impl Future<Output = T>) -> T {
+    match pin!(fut).poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(v) => v,
+        Poll::Pending => unreachable!("wgpu native future was not ready"),
+    }
+}
+
+/// Builds the renderer on a layer. Returns null when GPU setup fails, with
+/// the reason on stderr.
+///
+/// # Safety
+///
+/// `metal_layer` must be a `CAMetalLayer` pointer, kept alive until
+/// `fluid_renderer_destroy`. Call on the main thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fluid_renderer_create(
+    metal_layer: *mut c_void,
+    width: u32,
+    height: u32,
+) -> *mut FluidRenderer {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(metal_layer);
+    let surface = match unsafe { instance.create_surface_unsafe(target) } {
+        Ok(surface) => surface,
+        Err(e) => {
+            eprintln!("fluid: no surface on the layer: {e}");
+            return std::ptr::null_mut();
+        }
+    };
+    match expect_ready(fluid_core::Renderer::new(instance, surface, width, height)) {
+        Ok(renderer) => Box::into_raw(Box::new(FluidRenderer(renderer))),
+        Err(e) => {
+            eprintln!("fluid: no renderer: {e}");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// One frame: clear to the body-force colour and present. `now_ms` is
+/// `CADisplayLink.timestamp` in milliseconds.
+///
+/// # Safety
+///
+/// `renderer` must be a live pointer from `fluid_renderer_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fluid_renderer_frame(
+    renderer: *mut FluidRenderer,
+    gravity: FluidVec3,
+    user_acceleration: FluidVec3,
+    now_ms: f64,
+) {
+    let sample = MotionSample {
+        gravity: gravity.into(),
+        user_acceleration: user_acceleration.into(),
+    };
+    unsafe { &mut *renderer }.0.frame(sample, now_ms);
+}
+
+/// # Safety
+///
+/// `renderer` must be a live pointer from `fluid_renderer_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fluid_renderer_resize(
+    renderer: *mut FluidRenderer,
+    width: u32,
+    height: u32,
+) {
+    unsafe { &mut *renderer }.0.resize(width, height);
+}
+
+/// # Safety
+///
+/// `renderer` must be a live pointer from `fluid_renderer_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fluid_renderer_stats(renderer: *const FluidRenderer) -> FluidRenderStats {
+    let stats = unsafe { &*renderer }.0.stats();
+    FluidRenderStats {
+        frames: stats.frames,
+        interval_p50_us: stats.interval_p50_us,
+        interval_p99_us: stats.interval_p99_us,
+        interval_max_us: stats.interval_max_us,
+        encode_p50_us: stats.encode_p50_us,
+        encode_p99_us: stats.encode_p99_us,
+        gpu_p50_us: stats.gpu_p50_us,
+        gpu_p99_us: stats.gpu_p99_us,
+    }
+}
+
+/// # Safety
+///
+/// `renderer` must come from `fluid_renderer_create`; it is dead afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fluid_renderer_destroy(renderer: *mut FluidRenderer) {
+    drop(unsafe { Box::from_raw(renderer) });
+}

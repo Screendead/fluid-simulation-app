@@ -8,11 +8,28 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * The renderer behind the C ABI: an opaque box the Swift shell drives by
+ * pointer, on the main thread only.
+ */
+typedef struct FluidRenderer FluidRenderer;
+
 typedef struct FluidVec3 {
   float x;
   float y;
   float z;
 } FluidVec3;
+
+typedef struct FluidRenderStats {
+  uint64_t frames;
+  float interval_p50_us;
+  float interval_p99_us;
+  float interval_max_us;
+  float encode_p50_us;
+  float encode_p99_us;
+  float gpu_p50_us;
+  float gpu_p99_us;
+} FluidRenderStats;
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,6 +40,51 @@ extern "C" {
  * `gravity` and `userAcceleration` (both in g).
  */
 struct FluidVec3 fluid_body_force(struct FluidVec3 gravity, struct FluidVec3 user_acceleration);
+
+/**
+ * Builds the renderer on a layer. Returns null when GPU setup fails, with
+ * the reason on stderr.
+ *
+ * # Safety
+ *
+ * `metal_layer` must be a `CAMetalLayer` pointer, kept alive until
+ * `fluid_renderer_destroy`. Call on the main thread.
+ */
+struct FluidRenderer *fluid_renderer_create(void *metal_layer, uint32_t width, uint32_t height);
+
+/**
+ * One frame: clear to the body-force colour and present. `now_ms` is
+ * `CADisplayLink.timestamp` in milliseconds.
+ *
+ * # Safety
+ *
+ * `renderer` must be a live pointer from `fluid_renderer_create`.
+ */
+void fluid_renderer_frame(struct FluidRenderer *renderer,
+                          struct FluidVec3 gravity,
+                          struct FluidVec3 user_acceleration,
+                          double now_ms);
+
+/**
+ * # Safety
+ *
+ * `renderer` must be a live pointer from `fluid_renderer_create`.
+ */
+void fluid_renderer_resize(struct FluidRenderer *renderer, uint32_t width, uint32_t height);
+
+/**
+ * # Safety
+ *
+ * `renderer` must be a live pointer from `fluid_renderer_create`.
+ */
+struct FluidRenderStats fluid_renderer_stats(const struct FluidRenderer *renderer);
+
+/**
+ * # Safety
+ *
+ * `renderer` must come from `fluid_renderer_create`; it is dead afterwards.
+ */
+void fluid_renderer_destroy(struct FluidRenderer *renderer);
 
 #ifdef __cplusplus
 }  // extern "C"

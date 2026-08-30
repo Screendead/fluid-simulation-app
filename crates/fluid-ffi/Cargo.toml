@@ -10,3 +10,4 @@ crate-type = ["staticlib"]
 
 [dependencies]
 fluid-core.workspace = true
+wgpu = { workspace = true, features = ["std", "metal", "parking_lot"] }

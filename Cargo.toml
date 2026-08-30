@@ -11,6 +11,8 @@ publish = false
 [workspace.dependencies]
 fluid-core = { path = "crates/fluid-core" }
 wasm-bindgen = "0.2.127"
+wasm-bindgen-futures = "0.4.77"
+wgpu = { version = "30.0.1", default-features = false }
 
 [profile.release]
 lto = "fat"
