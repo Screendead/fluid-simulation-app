@@ -27,6 +27,15 @@ No inter-particle forces: that is M3.
 - **Deterministic seeding.** A lattice filling the upper half of the box,
   jittered by an inline index hash. No RNG dependency; launch is the
   demo — the block collapses.
+- **Hash-decohered dynamics.** Observed on the reference device,
+  2026-08-30: with no inter-particle forces, identical dynamics collapse
+  every particle onto one point — same force, same drag, same wall clamp —
+  and the demo becomes a single dot. Until M3 brings real volume
+  exclusion, each particle gets a hash-derived personal wall inset
+  (squared, so density peaks at the wall), restitution, and a slightly
+  tilted, scaled force. No extra memory; a few ALU ops in the compute
+  shader. Rejected: a neighbour grid (that is M3), per-frame jitter alone
+  (a shimmering dot, still one point).
 - **Compute then draw, one encoder.** Integrate, damp, reflect off the
   four walls with restitution. Render as instanced four-vertex strips,
   vertex-pulled from the particle buffer: soft circular sprites, additive
