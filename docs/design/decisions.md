@@ -72,3 +72,24 @@ the negated accelerometer reading is a test.
 
 **Pending.** The sign convention of the web conversion is verified on the
 reference device at the close of M0, not in emulation (`HANDOFF.md`).
+
+## D4 — M1 dependencies (2026-08-30)
+
+**Decision.** M1 adds one workspace dependency: wgpu 30.0.1, default
+features off. Per-target features in `fluid-core`: native takes `std`,
+`metal`, `parking_lot`; wasm takes `std`, `webgpu`. `fluid-web` adds
+`wasm-bindgen-futures` to export an async constructor; it is the
+wasm-bindgen project's own crate, versioned in lockstep with the
+wasm-bindgen that D2 names, and wgpu's webgpu backend already pulls it.
+
+**Rejected.** `pollster`: not needed; wgpu 30's native adapter and device
+futures are ready on first poll (verified in source), and `fluid-ffi`
+resolves them with a noop waker. `raw-window-handle` and `web-sys` as
+direct dependencies: wgpu re-exports both (`wgpu::rwh`, `wgpu::web_sys`),
+and the `CAMetalLayer` path (`SurfaceTargetUnsafe::CoreAnimationLayer`)
+needs neither. The `wgsl` feature: M1 has no shader; naga's WGSL frontend
+enters at M2 with the first shader.
+
+**Why the versions hold.** wgpu 30.0.1 requires wasm-bindgen ≥ 0.2.127,
+exactly the workspace pin, so the installed wasm-bindgen-cli 0.2.127
+remains valid.
