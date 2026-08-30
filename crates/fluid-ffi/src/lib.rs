@@ -84,6 +84,7 @@ pub unsafe extern "C" fn fluid_renderer_create(
     bench_sweeps: u32,
     bench_spacing: f32,
     sim_substeps: u32,
+    tracers: u32,
 ) -> *mut FluidRenderer {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(metal_layer);
@@ -100,6 +101,7 @@ pub unsafe extern "C" fn fluid_renderer_create(
         bench_sweeps,
         bench_spacing,
         sim_substeps,
+        tracers,
     };
     match fluid_core::Renderer::new(instance, surface, width, height, options) {
         Ok(renderer) => Box::into_raw(Box::new(FluidRenderer(renderer))),

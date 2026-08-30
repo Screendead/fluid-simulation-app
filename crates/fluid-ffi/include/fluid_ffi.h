@@ -71,7 +71,8 @@ struct FluidRenderer *fluid_renderer_create(void *metal_layer,
                                             float sprite_radius,
                                             uint32_t bench_sweeps,
                                             float bench_spacing,
-                                            uint32_t sim_substeps);
+                                            uint32_t sim_substeps,
+                                            uint32_t tracers);
 
 /**
  * One frame: integrate the particles, draw them over the body-force tint,

@@ -93,6 +93,27 @@ pub(crate) fn seed_slab(spacing: f32, extent: [f32; 2], fill: f32) -> Vec<f32> {
     out
 }
 
+/// Uniform hash-driven seeding over the same region seed_slab fills, for
+/// the visual tracers: massless, so no lattice is needed.
+pub(crate) fn seed_tracers(count: u32, extent: [f32; 2], fill: f32) -> Vec<f32> {
+    let half = [
+        extent[0] - 0.001,
+        extent[1] - 0.001,
+        0.5 * SLAB_DEPTH - 0.001,
+    ];
+    let unit = |h: u32| h as f32 / u32::MAX as f32;
+    let mut out = Vec::with_capacity(count as usize * 4);
+    for i in 0..count {
+        out.extend_from_slice(&[
+            (unit(hash(i * 3)) * 2.0 - 1.0) * half[0],
+            -half[1] + unit(hash(i * 3 + 1)) * 2.0 * half[1] * fill,
+            (unit(hash(i * 3 + 2)) * 2.0 - 1.0) * half[2],
+            0.0,
+        ]);
+    }
+    out
+}
+
 /// The Step immediates block in sim_solve.wgsl: force on 16-byte vec3
 /// alignment, dt in the vec3 tail slot, the CFL clamp speed after it,
 /// then padding to the struct's 32-byte size.
@@ -300,6 +321,16 @@ mod tests {
             // bias belongs to the pristine seeded state alone.
             let err = (half + REST_DENSITY * wall_density(z0 / h) - bulk) / bulk;
             assert!(err.abs() < 0.03, "layer {layer}: err {err}");
+        }
+    }
+
+    #[test]
+    fn tracers_seed_inside_the_fluid_region() {
+        let extent = [0.0357, 0.0774];
+        let seeded = seed_tracers(1000, extent, 0.5);
+        for p in seeded.as_chunks::<4>().0 {
+            assert!(p[0].abs() < extent[0] && p[2].abs() < 0.5 * SLAB_DEPTH);
+            assert!(p[1] > -extent[1] && p[1] < 0.0 + 0.001);
         }
     }
 

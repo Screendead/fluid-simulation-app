@@ -287,6 +287,7 @@ pub struct RenderOptions {
     pub bench_sweeps: u32,
     pub bench_spacing: f32,
     pub sim_substeps: u32,
+    pub tracers: u32,
 }
 
 enum Mode {
@@ -314,6 +315,12 @@ struct Sim {
     integrate: wgpu::ComputePipeline,
     reduce_stats: wgpu::ComputePipeline,
     sprites: wgpu::RenderPipeline,
+    clear_vel: wgpu::ComputePipeline,
+    splat: wgpu::ComputePipeline,
+    advect: wgpu::ComputePipeline,
+    points: wgpu::RenderPipeline,
+    tracer_bind: wgpu::BindGroup,
+    tracer_draw_bind: wgpu::BindGroup,
     grid_bind: wgpu::BindGroup,
     scan_bind: wgpu::BindGroup,
     solve_bind: wgpu::BindGroup,
@@ -322,6 +329,8 @@ struct Sim {
     stats_staging: [StagingSlot; 3],
     stats: [f32; 10],
     spacing: f32,
+    tracer_count: u32,
+    vel_groups: u32,
     count: u32,
     cell_groups: u32,
     max_substeps: u32,
@@ -335,6 +344,7 @@ impl Sim {
         extent: [f32; 2],
         substeps: u32,
         spacing: f32,
+        tracer_count: u32,
     ) -> Sim {
         let h = 1.2 * spacing;
         let grid = sim::Grid::new(extent, 2.0 * h);
@@ -399,6 +409,25 @@ impl Sim {
             .expect("mapped at creation")
             .copy_from_slice(&warm);
         temperature.unmap();
+        let vel_grid = storage("sim vel grid", u64::from(cells) * 16, none);
+        let tracers = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sim tracers"),
+            size: u64::from(tracer_count.max(1)) * 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        });
+        if tracer_count > 0 {
+            let seeded_tracers = sim::seed_tracers(tracer_count, extent, 0.5);
+            let mut tracer_bytes = Vec::with_capacity(seeded_tracers.len() * 4);
+            for v in &seeded_tracers {
+                tracer_bytes.extend_from_slice(&v.to_le_bytes());
+            }
+            tracers
+                .get_mapped_range_mut(..)
+                .expect("mapped at creation")
+                .copy_from_slice(&tracer_bytes);
+        }
+        tracers.unmap();
         let stats_staging = std::array::from_fn(|_| StagingSlot {
             buffer: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("sim stats staging"),
@@ -469,6 +498,18 @@ impl Sim {
                 rw(12),
                 rw(13),
                 rw(14),
+            ],
+        );
+        let tracer_layout = layout("sim tracers", &[uniform(0), ro(1), ro(2), rw(3), rw(4)]);
+        let tracer_draw_layout = layout(
+            "sim tracer draw",
+            &[
+                buffer_entry(0, vertex, wgpu::BufferBindingType::Uniform),
+                buffer_entry(
+                    3,
+                    vertex,
+                    wgpu::BufferBindingType::Storage { read_only: true },
+                ),
             ],
         );
         let sprite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -543,6 +584,22 @@ impl Sim {
                 entry(14, &accel),
             ],
         );
+        let tracer_bind = bind(
+            "sim tracers",
+            &tracer_layout,
+            &[
+                entry(0, &params),
+                entry(1, &positions),
+                entry(2, &velocities),
+                entry(3, &vel_grid),
+                entry(4, &tracers),
+            ],
+        );
+        let tracer_draw_bind = bind(
+            "sim tracer draw",
+            &tracer_draw_layout,
+            &[entry(0, &params), entry(3, &tracers)],
+        );
         let sprite_bind = bind(
             "sim sprites",
             &sprite_layout,
@@ -563,6 +620,7 @@ impl Sim {
         let scan_module = module("sim_scan", include_str!("sim_scan.wgsl"));
         let solve_module = module("sim_solve", include_str!("sim_solve.wgsl"));
         let sprite_module = module("sim_sprites", include_str!("sim_sprites.wgsl"));
+        let tracer_module = module("sim_tracers", include_str!("sim_tracers.wgsl"));
         let pipe_layout = |label, layout: &wgpu::BindGroupLayout, immediate_size: u32| {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
@@ -574,6 +632,8 @@ impl Sim {
         let scan_pl = pipe_layout("sim scan", &scan_layout, 0);
         let solve_pl = pipe_layout("sim solve", &solve_layout, 32);
         let sprite_pl = pipe_layout("sim sprites", &sprite_layout, 0);
+        let tracer_pl = pipe_layout("sim tracers", &tracer_layout, 32);
+        let tracer_draw_pl = pipe_layout("sim tracer draw", &tracer_draw_layout, 0);
         let pipeline =
             |layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, entry_point: &str| {
                 device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -629,6 +689,39 @@ impl Sim {
                 multiview_mask: None,
                 cache: None,
             }),
+            clear_vel: pipeline(&tracer_pl, &tracer_module, "clear_vel"),
+            splat: pipeline(&tracer_pl, &tracer_module, "splat"),
+            advect: pipeline(&tracer_pl, &tracer_module, "advect"),
+            points: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim points"),
+                layout: Some(&tracer_draw_pl),
+                vertex: wgpu::VertexState {
+                    module: &sprite_module,
+                    entry_point: Some("point"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::PointList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &sprite_module,
+                    entry_point: Some("dot_frag"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(ADDITIVE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            }),
+            tracer_bind,
+            tracer_draw_bind,
             grid_bind,
             scan_bind,
             solve_bind,
@@ -637,6 +730,8 @@ impl Sim {
             stats_staging,
             stats: [0.0; 10],
             spacing,
+            tracer_count,
+            vel_groups: (cells * 4).div_ceil(256),
             count,
             cell_groups: cells.div_ceil(256),
             max_substeps: substeps,
@@ -1062,6 +1157,7 @@ impl Renderer {
                 extent,
                 options.sim_substeps,
                 spacing,
+                options.tracers,
             )))
         } else {
             Mode::Demo(Box::new(Particles::new(
@@ -1258,6 +1354,18 @@ impl Renderer {
                     }
                     pass.set_pipeline(&s.reduce_stats);
                     pass.dispatch_workgroups(1, 1, 1);
+                    if s.tracer_count > 0 {
+                        // The visual layer advects once a frame on the
+                        // solved end-of-frame field, with the frame dt.
+                        pass.set_bind_group(0, &s.tracer_bind, &[]);
+                        pass.set_pipeline(&s.clear_vel);
+                        pass.set_immediates(0, &sim::pack_step(force, dt, 0.0));
+                        pass.dispatch_workgroups(s.vel_groups, 1, 1);
+                        pass.set_pipeline(&s.splat);
+                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.set_pipeline(&s.advect);
+                        pass.dispatch_workgroups(s.tracer_count.div_ceil(256), 1, 1);
+                    }
                 }
                 Mode::Sim(_) => {}
             }
@@ -1292,9 +1400,15 @@ impl Renderer {
                     pass.draw(0..4, 0..p.count);
                 }
                 Mode::Sim(s) => {
-                    pass.set_pipeline(&s.sprites);
-                    pass.set_bind_group(0, &s.sprite_bind, &[]);
-                    pass.draw(0..4, 0..s.count);
+                    if s.tracer_count > 0 {
+                        pass.set_pipeline(&s.points);
+                        pass.set_bind_group(0, &s.tracer_draw_bind, &[]);
+                        pass.draw(0..s.tracer_count, 0..1);
+                    } else {
+                        pass.set_pipeline(&s.sprites);
+                        pass.set_bind_group(0, &s.sprite_bind, &[]);
+                        pass.draw(0..4, 0..s.count);
+                    }
                 }
                 Mode::Bench(_) => {}
             }
@@ -1510,6 +1624,7 @@ mod tests {
             [0.0357, 0.0774],
             7,
             SIM_SPACING,
+            4096,
         );
         Some((device, queue, sim))
     }

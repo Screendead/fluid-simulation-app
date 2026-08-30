@@ -47,3 +47,27 @@ fn glow(in: SpriteVertex) -> @location(0) vec4f {
     let a = falloff * falloff;
     return vec4f(in.colour * a, a);
 }
+
+@group(0) @binding(3) var<storage, read> tracers: array<vec4f>;
+
+struct PointVertex {
+    @builtin(position) clip: vec4f,
+    @location(0) colour: vec3f,
+}
+
+// The one-pixel tracer draw; the tracer buffer is read-only here so the
+// vertex stage needs no writable-storage feature.
+@vertex
+fn point(@builtin(vertex_index) i: u32) -> PointVertex {
+    let extent = -(params.box_min.xy + vec2f(params.cell));
+    let t = tracers[i];
+    var out: PointVertex;
+    out.clip = vec4f(t.xy / extent, 0.0, 1.0);
+    out.colour = mix(CALM, LIVELY, clamp(t.w / FULL_SPEED, 0.0, 1.0));
+    return out;
+}
+
+@fragment
+fn dot_frag(in: PointVertex) -> @location(0) vec4f {
+    return vec4f(in.colour * 0.55, 0.55);
+}

@@ -33,9 +33,10 @@ final class FrameDriver {
         let bench = env["FLUID_BENCH"].flatMap(UInt32.init) ?? 0
         let spacing = env["FLUID_SPACING"].flatMap(Float.init) ?? 0
         let sim = env["FLUID_SIM"].flatMap(UInt32.init) ?? 0
+        let tracers = env["FLUID_TRACERS"].flatMap(UInt32.init) ?? 262_144
         renderer = fluid_renderer_create(
             Unmanaged.passUnretained(layer).toOpaque(), width, height, count, radius,
-            bench, spacing, sim)
+            bench, spacing, sim, tracers)
         guard renderer != nil else {
             statsLine = "renderer failed; see the console"
             return
