@@ -83,9 +83,50 @@ d = 2 mm → ~21. d = 3 mm → ~14. Counts in the slab (interior ≈ 154 × 71 �
 
 Stage 0 is a microbenchmark on the reference device before the solver
 exists: seed N, build the grid, run K density sweeps per frame; ramp N
-and K; read the GPU timestamp span. Cost per sweep × substeps × solver
-iterations then fixes d and the particle count arithmetically, and this
-record gains the measured table before the solver stages begin.
+and K; read the GPU timestamp span.
+
+Measured, reference device, 2026-08-30, Release (grid build + K density
+sweeps per frame; scan validation PASS in all runs):
+
+| d | particles | cells | k=1 gpu p50 | k=9 | k=25 |
+|---|---|---|---|---|---|
+| 3 mm | 550 | 1,152 | 169 µs | 1,296 µs | 3,152 µs |
+| 2 mm | 2,584 | 2,380 | 411 µs | 3,403 µs | 6,512 µs |
+| 1.5 mm | 9,200 | 4,950 | 1,157 µs | 6,602 µs | 6,532 µs |
+
+Two findings bind the budget protocol. First, dispatch overhead
+dominates small dispatches: per-particle sweep cost falls three-fold
+from 550 to 9,200 particles, so the solver must prefer fewer, fatter
+dispatches. Second, the wall-clock GPU span measures the frequency the
+governor chose, not the work: every heavy configuration above holds a
+perfect 120 Hz while reading the same ~6.5 ms span — the governor
+clocks the GPU to finish just inside the display cadence. The span is
+therefore not a work meter below saturation. The M3 budget meter is the
+cadence ceiling: raise the per-frame work until interval p99 breaks
+8,334 µs; the largest work that holds is the budget.
+
+The ceiling, measured the same day (interval p50/p99 in µs):
+
+| d | particles | k=25 | k=50 | k=100 | k=200 |
+|---|---|---|---|---|---|
+| 2 mm | 2,584 | 8,334/8,334 | 8,334/8,334 | 8,334/16,668 | 16,668/33,335 |
+| 1.5 mm | 9,200 | 8,334/8,334 | 14,149/20,908 | 33,335/43,396 | 66,815/77,687 |
+
+At saturation the span becomes a work meter again, and both spacings
+agree on the true cost: ~36 ns per particle per sweep (18.1 ms / 200
+sweeps at 2,584; 34.1 ms / 100 at 9,200). The ceiling is then
+8.3 ms / (N × 36 ns) dispatches a frame, floored by ~50–90 µs of
+overhead per dispatch at small N.
+
+**The choice.** DFSPH spends roughly 14 dispatches a substep before
+fusion. Affordable clamp speed scales as 0.4·d·substeps/8.33 ms, so
+coarser spacing wins twice: fewer particles buy more substeps, and d
+itself widens the CFL bound. Start at **d = 2.5 mm**: ~1,600 particles
+half-fill, ~9 substeps a frame, velocity clamp ≈ 1.1 m/s — near the
+1.7 m/s free-fall peak, clamping only hard shakes, with the counter
+showing every clamp. d = 2 mm (~0.55 m/s clamp before fusion) is the
+stretch goal once dispatch fusion lands. d = 1.5 mm is out on this
+device: two substeps cannot integrate a slosh honestly.
 
 ## 6. Deferrals, explicit
 
