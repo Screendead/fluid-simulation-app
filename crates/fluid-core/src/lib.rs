@@ -28,13 +28,19 @@ mod tests {
 
     #[test]
     fn at_rest_face_up_the_fluid_falls_into_the_screen() {
-        let sample = MotionSample { gravity: [0.0, 0.0, -1.0], user_acceleration: [0.0; 3] };
+        let sample = MotionSample {
+            gravity: [0.0, 0.0, -1.0],
+            user_acceleration: [0.0; 3],
+        };
         assert_eq!(sample.body_force(), [0.0, 0.0, -STANDARD_GRAVITY]);
     }
 
     #[test]
     fn pushing_right_throws_the_fluid_left() {
-        let sample = MotionSample { gravity: [0.0, 0.0, -1.0], user_acceleration: [0.5, 0.0, 0.0] };
+        let sample = MotionSample {
+            gravity: [0.0, 0.0, -1.0],
+            user_acceleration: [0.5, 0.0, 0.0],
+        };
         let [x, _, _] = sample.body_force();
         assert_eq!(x, -0.5 * STANDARD_GRAVITY);
     }

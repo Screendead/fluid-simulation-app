@@ -6,9 +6,14 @@ use wasm_bindgen::prelude::*;
 /// Converts the two `DeviceMotionEvent` vectors, in metres per second
 /// squared, to a sample. `accelerationIncludingGravity` is the reaction to
 /// gravity, so a phone face up reads z = +9.8: the opposite sign to CoreMotion.
-pub fn sample_from_device_motion(including_gravity: [f32; 3], acceleration: [f32; 3]) -> MotionSample {
+pub fn sample_from_device_motion(
+    including_gravity: [f32; 3],
+    acceleration: [f32; 3],
+) -> MotionSample {
     MotionSample {
-        gravity: std::array::from_fn(|i| (acceleration[i] - including_gravity[i]) / STANDARD_GRAVITY),
+        gravity: std::array::from_fn(|i| {
+            (acceleration[i] - including_gravity[i]) / STANDARD_GRAVITY
+        }),
         user_acceleration: acceleration.map(|a| a / STANDARD_GRAVITY),
     }
 }
@@ -17,7 +22,9 @@ pub fn sample_from_device_motion(including_gravity: [f32; 3], acceleration: [f32
 /// `DeviceMotionEvent.accelerationIncludingGravity` and `.acceleration`.
 #[wasm_bindgen]
 pub fn body_force(gx: f32, gy: f32, gz: f32, ax: f32, ay: f32, az: f32) -> Vec<f32> {
-    sample_from_device_motion([gx, gy, gz], [ax, ay, az]).body_force().to_vec()
+    sample_from_device_motion([gx, gy, gz], [ax, ay, az])
+        .body_force()
+        .to_vec()
 }
 
 #[cfg(test)]

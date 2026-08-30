@@ -1,0 +1,4 @@
+[toolchain]
+channel = "1.98.0"
+targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim", "wasm32-unknown-unknown"]
+components = ["clippy", "rustfmt"]

@@ -27,7 +27,10 @@ impl From<[f32; 3]> for FluidVec3 {
 /// `gravity` and `userAcceleration` (both in g).
 #[unsafe(no_mangle)]
 pub extern "C" fn fluid_body_force(gravity: FluidVec3, user_acceleration: FluidVec3) -> FluidVec3 {
-    MotionSample { gravity: gravity.into(), user_acceleration: user_acceleration.into() }
-        .body_force()
-        .into()
+    MotionSample {
+        gravity: gravity.into(),
+        user_acceleration: user_acceleration.into(),
+    }
+    .body_force()
+    .into()
 }
