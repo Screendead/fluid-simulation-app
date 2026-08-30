@@ -35,7 +35,14 @@ No inter-particle forces: that is M3.
   (squared, so density peaks at the wall), restitution, and a slightly
   tilted, scaled force. No extra memory; a few ALU ops in the compute
   shader. Rejected: a neighbour grid (that is M3), per-frame jitter alone
-  (a shimmering dot, still one point).
+  (a shimmering dot, still one point). Second observation, Jack,
+  2026-08-30: per-axis insets proportional to the extents settle into a
+  screen-aspect rectangle. The offsets now sample a quarter disc in
+  physical units, densest at the wall, so a settled cluster is a rounded
+  pool. Third observation, Jack's screenshot, 2026-08-30: a fixed force
+  rotation leaks particles up a wall the force runs nearly parallel to —
+  a subset gains a net upward component and settles in the wrong corner.
+  The force now varies in magnitude only (0.9 to 1.1).
 - **Compute then draw, one encoder.** Integrate, damp, reflect off the
   four walls with restitution. Render as instanced four-vertex strips,
   vertex-pulled from the particle buffer: soft circular sprites, additive

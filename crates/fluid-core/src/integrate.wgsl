@@ -22,10 +22,16 @@ const DRAG_PER_SECOND: f32 = 0.6;
 
 // Without inter-particle forces (M3), identical dynamics collapse every
 // particle onto one point: same force, same drag, same wall clamp. Each
-// particle therefore gets a hash-derived personal wall inset (squared, so
-// density peaks at the wall and a pile reads as a pool), restitution, and
-// a slightly tilted, scaled force so a falling stream fans out.
-const MAX_INSET: f32 = 0.35;
+// particle therefore gets a hash-derived personal rest offset, restitution
+// and a scaled force (0.9 to 1.1) so a falling stream stretches out. A
+// rotated force is rejected: with the force nearly wall-parallel a fixed
+// tilt sends a subset of particles up the wall into the wrong corner
+// (observed on the device, 2026-08-30). The
+// offsets sample a quarter disc in physical units, densest at the wall: a
+// per-axis inset settles into a screen-aspect rectangle (observed on the
+// device, 2026-08-30), a disc settles into a rounded pool. The disc radius
+// is a fraction of the box's short half-extent.
+const POOL_RADIUS_FRACTION: f32 = 0.5;
 
 fn hash(x: u32) -> u32 {
     var h = x * 0x9E3779B9u;
@@ -47,12 +53,12 @@ fn integrate(@builtin(global_invocation_id) id: vec3u) {
     let h1 = unit(hash(i * 3u + 1u));
     let h2 = unit(hash(i * 3u + 2u));
     let h3 = unit(hash(i * 3u + 3u));
-    let angle = (h1 - 0.5) * 0.25;
-    let force = mat2x2f(vec2f(cos(angle), sin(angle)), vec2f(-sin(angle), cos(angle)))
-        * params.force * (0.9 + 0.2 * h2);
+    let force = params.force * (0.9 + 0.2 * h3);
     let restitution = 0.3 + 0.4 * h3;
+    let pool = POOL_RADIUS_FRACTION * min(params.extent.x, params.extent.y);
+    let theta = h2 * 1.5707963;
     let limit = params.extent - vec2f(params.radius)
-        - params.extent * MAX_INSET * vec2f(h1 * h1, h2 * h2);
+        - pool * h1 * vec2f(cos(theta), sin(theta));
 
     var p = particles[i];
     p.vel = (p.vel + force * params.dt) * (1.0 - DRAG_PER_SECOND * params.dt);
