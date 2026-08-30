@@ -62,7 +62,7 @@ fn density_sweep(@builtin(global_invocation_id) id: vec3u) {
     density[id.x] = rho;
 }
 
-@group(0) @binding(6) var<storage, read_write> stats: array<f32, 2>;
+@group(0) @binding(6) var<storage, read_write> stats: array<f32, 4>;
 
 // Mirrors sim.rs::wall_density exactly; a divergence is a bug.
 fn wall_density(t: f32) -> f32 {
@@ -119,30 +119,44 @@ fn density_walls(@builtin(global_invocation_id) id: vec3u) {
 
 var<workgroup> red_sum: array<f32, 256>;
 var<workgroup> red_max: array<f32, 256>;
+var<workgroup> red_lo: array<f32, 256>;
+var<workgroup> red_hi: array<f32, 256>;
 
-// Compression error max(rho/rho0 - 1, 0): the free surface reads as
-// deficiency and must not count. One workgroup strides the particles.
+// Compression error max(rho/rho0 - 1, 0) plus raw density min-max: the
+// free surface reads as deficiency and must not count against the
+// compression target, so the raw band is the only view of it. One
+// workgroup strides the particles.
 @compute @workgroup_size(256)
 fn reduce_compression(@builtin(local_invocation_id) local: vec3u) {
     var s = 0.0;
     var m = 0.0;
+    var lo = 1e30;
+    var hi = 0.0;
     for (var i = local.x; i < params.count; i += 256u) {
-        let c = max(density[i] / params.rho0 - 1.0, 0.0);
-        s += c;
-        m = max(m, c);
+        let rho = density[i];
+        s += max(rho / params.rho0 - 1.0, 0.0);
+        m = max(m, rho / params.rho0 - 1.0);
+        lo = min(lo, rho);
+        hi = max(hi, rho);
     }
     red_sum[local.x] = s;
-    red_max[local.x] = m;
+    red_max[local.x] = max(m, 0.0);
+    red_lo[local.x] = lo;
+    red_hi[local.x] = hi;
     workgroupBarrier();
     for (var off = 128u; off > 0u; off >>= 1u) {
         if local.x < off {
             red_sum[local.x] += red_sum[local.x + off];
             red_max[local.x] = max(red_max[local.x], red_max[local.x + off]);
+            red_lo[local.x] = min(red_lo[local.x], red_lo[local.x + off]);
+            red_hi[local.x] = max(red_hi[local.x], red_hi[local.x + off]);
         }
         workgroupBarrier();
     }
     if local.x == 0u {
         stats[0] = red_sum[0] / f32(params.count);
         stats[1] = red_max[0];
+        stats[2] = red_lo[0];
+        stats[3] = red_hi[0];
     }
 }

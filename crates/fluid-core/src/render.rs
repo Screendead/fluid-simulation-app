@@ -316,6 +316,8 @@ struct Sim {
     stats_staging: [StagingSlot; 3],
     compression_avg: f32,
     compression_max: f32,
+    density_min: f32,
+    density_max: f32,
     count: u32,
     cell_groups: u32,
     substeps: u32,
@@ -368,11 +370,11 @@ impl Sim {
         let cursors = storage("sim cursors", u64::from(cells) * 4, none);
         let sorted = storage("sim sorted", u64::from(count) * 4, none);
         let density = storage("sim density", u64::from(count) * 4, none);
-        let stats_src = storage("sim stats", 8, wgpu::BufferUsages::COPY_SRC);
+        let stats_src = storage("sim stats", 16, wgpu::BufferUsages::COPY_SRC);
         let stats_staging = std::array::from_fn(|_| StagingSlot {
             buffer: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("sim stats staging"),
-                size: 8,
+                size: 16,
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -589,6 +591,8 @@ impl Sim {
             stats_staging,
             compression_avg: 0.0,
             compression_max: 0.0,
+            density_min: 0.0,
+            density_max: 0.0,
             count,
             cell_groups: cells.div_ceil(256),
             substeps,
@@ -911,6 +915,8 @@ pub struct RenderStats {
     pub gpu_p99_us: f32,
     pub compression_avg: f32,
     pub compression_max: f32,
+    pub density_min: f32,
+    pub density_max: f32,
 }
 
 pub struct Renderer {
@@ -1208,7 +1214,7 @@ impl Renderer {
                 .iter()
                 .position(|x| x.state.load(Ordering::Acquire) == SLOT_FREE);
             if let Some(i) = free {
-                encoder.copy_buffer_to_buffer(&s.stats_src, 0, &s.stats_staging[i].buffer, 0, 8);
+                encoder.copy_buffer_to_buffer(&s.stats_src, 0, &s.stats_staging[i].buffer, 0, 16);
             }
             free
         } else {
@@ -1275,12 +1281,14 @@ impl Renderer {
                         .get_mapped_range(..)
                         .expect("mapped by the map_async callback");
                     let f = |o: usize| f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
-                    [f(0), f(4)]
+                    [f(0), f(4), f(8), f(12)]
                 };
                 slot.buffer.unmap();
                 slot.state.store(SLOT_FREE, Ordering::Release);
                 s.compression_avg = vals[0];
                 s.compression_max = vals[1];
+                s.density_min = vals[2];
+                s.density_max = vals[3];
             }
         }
         let Some(t) = self.gpu_timing.as_ref() else {
@@ -1314,13 +1322,20 @@ impl Renderer {
 
     /// Off the frame path; the shells call this about once per second.
     pub fn stats(&self) -> RenderStats {
-        let (compression_avg, compression_max) = match &self.mode {
-            Mode::Sim(s) => (s.compression_avg, s.compression_max),
-            _ => (0.0, 0.0),
+        let (compression_avg, compression_max, density_min, density_max) = match &self.mode {
+            Mode::Sim(s) => (
+                s.compression_avg,
+                s.compression_max,
+                s.density_min,
+                s.density_max,
+            ),
+            _ => (0.0, 0.0, 0.0, 0.0),
         };
         RenderStats {
             compression_avg,
             compression_max,
+            density_min,
+            density_max,
             frames: self.frames,
             interval_p50_us: self.interval_us.percentile(0.5),
             interval_p99_us: self.interval_us.percentile(0.99),
@@ -1412,5 +1427,81 @@ mod tests {
             .expect("poll");
         let err = ready(scope.pop());
         assert!(err.is_none(), "{err:?}");
+    }
+
+    // Seeds the real lattice, runs one grid rebuild and density sweep on
+    // this machine's GPU, and reads the result back: the whole solver
+    // chain, not just its compilation. Mid-slab must read near the rest
+    // density; a binding or scatter bug reads hundreds of times it.
+    #[test]
+    fn one_density_sweep_reads_near_rest_density() {
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) = ready(instance.request_adapter(&Default::default())) else {
+            eprintln!("no GPU adapter; skipping");
+            return;
+        };
+        let (device, queue) = ready(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: wgpu::Features::IMMEDIATES,
+            required_limits: wgpu::Limits {
+                max_storage_buffers_per_shader_stage: 6,
+                max_immediate_size: 16,
+                ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
+            },
+            ..Default::default()
+        }))
+        .expect("device");
+        let extent = [0.0357, 0.0774];
+        let sim = Sim::new(&device, wgpu::TextureFormat::Bgra8Unorm, extent, 7);
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stats staging"),
+            size: 16,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            let particles = sim.count.div_ceil(256);
+            pass.set_bind_group(0, &sim.grid_bind, &[]);
+            pass.set_pipeline(&sim.clear_counts);
+            pass.dispatch_workgroups(sim.cell_groups, 1, 1);
+            pass.set_pipeline(&sim.count_cells);
+            pass.dispatch_workgroups(particles, 1, 1);
+            pass.set_bind_group(0, &sim.scan_bind, &[]);
+            pass.set_pipeline(&sim.scan_single);
+            pass.dispatch_workgroups(1, 1, 1);
+            pass.set_bind_group(0, &sim.grid_bind, &[]);
+            pass.set_pipeline(&sim.scatter);
+            pass.dispatch_workgroups(particles, 1, 1);
+            pass.set_bind_group(0, &sim.density_bind, &[]);
+            pass.set_pipeline(&sim.density_walls);
+            pass.dispatch_workgroups(particles, 1, 1);
+            pass.set_pipeline(&sim.reduce_compression);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &staging, 0, 16);
+        queue.submit(std::iter::once(encoder.finish()));
+        staging.map_async(wgpu::MapMode::Read, .., |_| {});
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let bytes = staging.get_mapped_range(..).expect("mapped");
+        let f = |o: usize| f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
+        let (avg, max, lo, hi) = (f(0), f(4), f(8), f(12));
+        eprintln!("seeded slab: compr avg {avg:.4} max {max:.4}, rho {lo:.1}..{hi:.1}");
+        // The half-full slab reads under rest everywhere: free-surface
+        // particles lose half their support, and nobody is compressed at
+        // seed. A scatter or binding bug reads hundreds of rest
+        // densities; dropped neighbours read pure wall fill, under 0.4.
+        assert!(avg == 0.0 && max == 0.0, "compr {avg} {max}");
+        assert!(lo > 0.4 * sim::REST_DENSITY && lo < hi, "min {lo}");
+        assert!(
+            hi > 0.9 * sim::REST_DENSITY && hi < 1.1 * sim::REST_DENSITY,
+            "max {hi}"
+        );
     }
 }
