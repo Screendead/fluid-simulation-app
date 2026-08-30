@@ -17,55 +17,34 @@ the same commit that closes a milestone or a task. Git holds the history.*
 | Item | State | Where |
 |---|---|---|
 | Stack, shells, frame and units (D1 to D3) | Decided 2026-08-30 | `docs/design/decisions.md` |
-| Rust workspace, three crates, the gate, CI, VS Code config | Written 2026-08-30; gate not yet run | `Cargo.toml`, `crates/`, `scripts/gate.sh`, `.github/workflows/ci.yml` |
-| iOS shell, the motion readout | Written 2026-08-30; not yet built | `platforms/ios/` |
-| Web page, the motion readout | Written 2026-08-30; not yet built | `platforms/web/` |
-| First commit | **Not made.** Jack has not yet said to commit. | — |
+| Toolchain: Rust 1.98.0 pinned, all three cross-targets, cbindgen 0.29.4, wasm-bindgen-cli 0.2.127, Xcode 26.6 with the iOS 26.5 platform | Done 2026-08-30 | `rust-toolchain.toml` |
+| The gate | Green 2026-08-30 (4 tests) | `scripts/gate.sh` |
+| iOS shell on the phone | Built, signed, installed, launched 2026-08-30; Jack's visual check of the readout pending | `platforms/ios/`, `scripts/run-ios.sh` |
+| iOS shell in the simulator | Launched headless 2026-08-30 (iPhone 15 Plus, iOS 26.5, "FluidSim") | `scripts/run-sim.sh` |
+| Web page | Wasm built; verified in desktop Chrome with synthetic `devicemotion` events: face-up gives (0, 0, -9.81), push right gives x negative | `platforms/web/`, `scripts/build-web.sh` |
 | M1 onward | Not started | — |
 
-Test baseline: none measured yet. Performance baseline: none measured yet.
-
-## In flight on 2026-08-30
-
-Work that was running when this file was written. Check each before you
-continue.
-
-1. **Toolchain.** `rustup update stable` was running (from 1.83.0). When it
-   is done: write `rust-toolchain.toml` with the exact version, then
-   `cargo install cbindgen wasm-bindgen-cli@0.2.127`. The wasm-bindgen CLI
-   must match the crate version in `Cargo.toml` exactly; 0.2.84 was
-   installed before.
-2. **Xcode.** `xcodebuild -downloadPlatform iOS` was running. Xcode 26.6 was
-   installed without the iOS 26.5 platform, and a device build fails until
-   it lands. Check with `xcodebuild -showsdks` and a device build.
-3. **The gate has not run.** Expect `cargo fmt` to reflow the crate sources
-   once; commit the reflowed form. Generate `crates/fluid-ffi/include/fluid_ffi.h`
-   with the command in CLAUDE.md section 7 before the first gate run.
-4. **Nothing has run on the phone.** The signing chain is proven up to the
-   build step: a current "Apple Development: Jack Lusher" certificate
-   (expires 2027-07-22), the Personal Team in Xcode, the phone paired with
-   Developer Mode on.
+Test baseline: 4 Rust tests pass, measured 2026-08-30. Performance
+baseline: none measured yet; O2 sets it at M1.
 
 ## The next task — close M0
 
 M0 is closed when the body force computed in Rust is on the phone screen
-and in a browser, and the signs are right. Steps:
+and in a browser, and the signs are right. Done so far: the gate is green,
+the app runs on the phone and in the simulator, and the web page is
+verified with synthetic events in desktop Chrome. Two checks remain:
 
-1. Finish the two in-flight installs above and run `scripts/gate.sh` green.
-2. `scripts/run-ios.sh`. The readout shows CoreMotion's gravity and user
-   acceleration and the body force from `fluid_body_force`. Face up at rest,
-   body force reads about (0, 0, -9.81). Push the phone right: the x body
-   force goes negative.
-3. `scripts/build-web.sh && scripts/serve-web.sh`, then open the page in
-   Chrome and drive the DevTools sensor panel. Face up at rest reads
-   (0, 0, -9.81) too.
-4. **Verify the web sign convention on the phone, not in emulation.** The
+1. **Jack's visual check of the phone readout.** Face up at rest, body
+   force reads about (0, 0, -9.81). Push the phone right: the x body force
+   goes negative.
+2. **Verify the web sign convention on the phone, not in emulation.** The
    conversion in `crates/fluid-web/src/lib.rs` rests on the W3C spec, and
    iOS Safari has had a sign quirk on `DeviceMotionEvent.acceleration`.
    Serve over TLS on the LAN (see O4), open the page on the reference
    device, and compare each row against the native app. If a sign differs,
    the fix is in `sample_from_device_motion` with a test, not in the page.
-5. Record the observed numbers here and mark M0 done in the table above.
+
+Record the observed numbers here and mark M0 done in the table above.
 
 ## Open decisions
 

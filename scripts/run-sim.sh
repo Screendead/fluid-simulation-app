@@ -9,7 +9,13 @@ scripts/build-ios.sh "$config" sim
 sim=$(xcrun simctl list devices available -j | python3 -c '
 import json, sys
 devices = json.load(sys.stdin)["devices"]
-print(next(d["udid"] for runtime, ds in devices.items() if "iOS" in runtime for d in ds if "iPhone" in d["name"]))')
+udids = [d["udid"] for runtime, ds in devices.items() if "iOS" in runtime for d in ds if "iPhone" in d["name"]]
+print(udids[0] if udids else "")')
+if [[ -z "$sim" ]]; then
+  devtype=$(xcrun simctl list devicetypes | grep -oE 'com.apple.CoreSimulator.SimDeviceType.iPhone-1[5-9][^)]*' | tail -1)
+  runtime=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; print(json.load(sys.stdin)["runtimes"][-1]["identifier"])')
+  sim=$(xcrun simctl create FluidSim "$devtype" "$runtime")
+fi
 xcrun simctl boot "$sim" 2>/dev/null || true
 open -a Simulator
 xcrun simctl install "$sim" "platforms/ios/build/Build/Products/$config-iphonesimulator/FluidApp.app"

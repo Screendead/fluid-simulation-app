@@ -8,6 +8,8 @@ let samples = 0;
 function show(event) {
   const g = event.accelerationIncludingGravity;
   const a = event.acceleration;
+  // A browser without sensor data still fires the event, with null vectors.
+  if (g?.x == null || a?.x == null) return;
   const f = body_force(g.x, g.y, g.z, a.x, a.y, a.z);
   samples += 1;
   readout.textContent =
