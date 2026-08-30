@@ -15,6 +15,7 @@ struct SimParams {
     count: u32,
     h: f32,
     mass: f32,
+    rho0: f32,
 }
 
 var<immediate> step: Step;

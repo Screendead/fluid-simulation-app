@@ -8,6 +8,7 @@ struct SimParams {
     count: u32,
     h: f32,
     mass: f32,
+    rho0: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: SimParams;

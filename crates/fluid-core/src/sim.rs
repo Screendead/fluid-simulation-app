@@ -103,6 +103,43 @@ pub(crate) fn pack_step(force: [f32; 3], dt: f32) -> [u8; 16] {
     raw
 }
 
+/// Kernel mass in the half-space beyond a flat wall at distance `d`,
+/// as a fraction of the whole kernel: multiply by the rest density to
+/// fill the missing region with fluid at rest. Closed-form integral of
+/// the cubic spline over a plane-clipped support ball, in t = d/h;
+/// the quadrature test pins every coefficient. The runtime copy lives
+/// in sim_density.wgsl; this is the CPU reference the tests hold it to.
+#[cfg(test)]
+pub(crate) fn wall_density(t: f32) -> f32 {
+    if t >= 2.0 {
+        return 0.0;
+    }
+    if t < 1.0 {
+        let t3 = t * t * t;
+        0.5 + t * (-0.7) + t3 * (1.0 / 3.0 + t * t * (-0.15 + t * 0.05))
+    } else {
+        let t3 = t * t * t;
+        8.0 / 15.0 + t * (-0.8) + t3 * (2.0 / 3.0 + t * (-0.5 + t * (0.15 - t / 60.0)))
+    }
+}
+
+/// Magnitude of the kernel-gradient integral over the same clipped
+/// region, times h: divide by h and point along the wall normal. Closed
+/// form via the divergence theorem — the kernel's flux through the wall
+/// plane.
+#[cfg(test)]
+pub(crate) fn wall_gradient(t: f32) -> f32 {
+    if t >= 2.0 {
+        return 0.0;
+    }
+    let t2 = t * t;
+    if t < 1.0 {
+        0.7 + t2 * (-1.0 + t2 * (0.75 - t * 0.3))
+    } else {
+        0.8 + t2 * (-2.0 + t * (2.0 + t * (-0.75 + t * 0.1)))
+    }
+}
+
 fn hash(x: u32) -> u32 {
     let mut h = x.wrapping_mul(0x9E37_79B9);
     h ^= h >> 16;
@@ -121,6 +158,7 @@ pub(crate) fn pack_sim_params(grid: &Grid, count: u32, h: f32, mass: f32) -> [u8
     put_f(12, grid.cell);
     put_f(32, h);
     put_f(36, mass);
+    put_f(40, REST_DENSITY);
     for (i, v) in grid.dims.iter().enumerate() {
         raw[16 + i * 4..20 + i * 4].copy_from_slice(&v.to_le_bytes());
     }
@@ -193,6 +231,74 @@ mod tests {
         assert_eq!(c, a + grid.dims[0]);
     }
 
+    // Both wall integrals reduce to 1D radial integrals: the cap area
+    // 2*pi*r*(r-d) for the mass, the plane flux 2*pi*r for the gradient.
+    fn wall_quadrature(d: f32, gradient: bool) -> f32 {
+        let n = 20_000;
+        let dr = (2.0 - d) / n as f32;
+        (0..n)
+            .map(|i| {
+                let r = d + (i as f32 + 0.5) * dr;
+                let cap = if gradient { 1.0 } else { r - d };
+                kernel(r, 1.0) * 2.0 * std::f32::consts::PI * r * cap * dr
+            })
+            .sum()
+    }
+
+    #[test]
+    fn wall_integrals_match_quadrature() {
+        for i in 0..40 {
+            let d = i as f32 * 0.05;
+            assert!(
+                (wall_density(d) - wall_quadrature(d, false)).abs() < 1e-4,
+                "V({d})"
+            );
+            assert!(
+                (wall_gradient(d) - wall_quadrature(d, true)).abs() < 1e-4,
+                "G({d})"
+            );
+        }
+        assert_eq!(wall_density(2.0), 0.0);
+        assert_eq!(wall_gradient(2.0), 0.0);
+    }
+
+    // The wall term must close the gap between a half-space lattice and
+    // the full lattice: comparing against the bulk sum, not the rest
+    // density, isolates the wall integral from the ~2% discrete-sum bias
+    // the bulk test already tolerates. The residual is the continuum
+    // fill standing in for a discrete lattice.
+    #[test]
+    fn the_wall_term_closes_the_half_lattice_gap() {
+        let d = 0.0025_f32;
+        let h = 1.2 * d;
+        let mass = REST_DENSITY * d * d * d;
+        for layer in 0..4 {
+            let z0 = (layer as f32 + 0.5) * d;
+            let mut half = 0.0;
+            let mut bulk = 0.0;
+            for x in -3i32..=3 {
+                for y in -3i32..=3 {
+                    for z in -6i32..=6 {
+                        let (dx, dy) = (x as f32 * d, y as f32 * d);
+                        let dz = (z as f32 + 0.5) * d - z0;
+                        let w = mass * kernel((dx * dx + dy * dy + dz * dz).sqrt(), h);
+                        bulk += w;
+                        if z >= 0 {
+                            half += w;
+                        }
+                    }
+                }
+            }
+            // The 3% bound is honest, not loose: the fill overshoots the
+            // missing lattice by ~2.2% at the wall-adjacent layer, pure
+            // midpoint-rule undershoot of the steep kernel at distance d.
+            // A flowing fluid decorrelates and matches the continuum; the
+            // bias belongs to the pristine seeded state alone.
+            let err = (half + REST_DENSITY * wall_density(z0 / h) - bulk) / bulk;
+            assert!(err.abs() < 0.03, "layer {layer}: err {err}");
+        }
+    }
+
     #[test]
     fn step_immediates_land_at_the_shader_offsets() {
         let raw = pack_step([1.0, 2.0, 3.0], 4.0);
@@ -214,7 +320,7 @@ mod tests {
         let u = |off: usize| u32::from_le_bytes(raw[off..off + 4].try_into().unwrap());
         assert_eq!([f(0), f(4), f(8), f(12)], [1.0, 2.0, 3.0, 4.0]);
         assert_eq!([u(16), u(20), u(24), u(28)], [5, 6, 7, 8]);
-        assert_eq!([f(32), f(36)], [9.0, 10.0]);
-        assert_eq!(&raw[40..48], &[0u8; 8]);
+        assert_eq!([f(32), f(36), f(40)], [9.0, 10.0, REST_DENSITY]);
+        assert_eq!(&raw[44..48], &[0u8; 4]);
     }
 }

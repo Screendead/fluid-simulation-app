@@ -51,6 +51,8 @@ pub struct FluidRenderStats {
     pub encode_p99_us: f32,
     pub gpu_p50_us: f32,
     pub gpu_p99_us: f32,
+    pub compression_avg: f32,
+    pub compression_max: f32,
 }
 
 /// Builds the renderer on a layer: `particle_count` sprites of
@@ -146,6 +148,8 @@ pub unsafe extern "C" fn fluid_renderer_stats(renderer: *const FluidRenderer) ->
         encode_p99_us: stats.encode_p99_us,
         gpu_p50_us: stats.gpu_p50_us,
         gpu_p99_us: stats.gpu_p99_us,
+        compression_avg: stats.compression_avg,
+        compression_max: stats.compression_max,
     }
 }
 

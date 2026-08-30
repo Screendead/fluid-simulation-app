@@ -11,6 +11,7 @@ struct SimParams {
     count: u32,
     h: f32,
     mass: f32,
+    rho0: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: SimParams;
@@ -86,4 +87,30 @@ fn add_back(@builtin(global_invocation_id) id: vec3u, @builtin(workgroup_id) gro
     let start = starts[id.x] + block_sums[group.x];
     starts[id.x] = start;
     cursors[id.x] = 0u;
+}
+
+// The solver's per-substep scan: one workgroup, each thread serial over
+// a 32-cell chunk, so the whole rebuild is one dispatch instead of
+// three. Caps the grid at 8,192 cells; the Rust side asserts it.
+const SCAN_CHUNK: u32 = 32u;
+
+@compute @workgroup_size(256)
+fn scan_single(@builtin(local_invocation_id) local: vec3u) {
+    let cells = params.dims.x * params.dims.y * params.dims.z;
+    let base = local.x * SCAN_CHUNK;
+    var sum = 0u;
+    for (var i = 0u; i < SCAN_CHUNK; i++) {
+        if base + i < cells {
+            sum += counts[base + i];
+        }
+    }
+    var run = workgroup_exclusive_scan(local.x, sum);
+    for (var i = 0u; i < SCAN_CHUNK; i++) {
+        let c = base + i;
+        if c < cells {
+            starts[c] = run;
+            cursors[c] = 0u;
+            run += counts[c];
+        }
+    }
 }

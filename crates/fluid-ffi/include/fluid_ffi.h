@@ -29,6 +29,8 @@ typedef struct FluidRenderStats {
   float encode_p99_us;
   float gpu_p50_us;
   float gpu_p99_us;
+  float compression_avg;
+  float compression_max;
 } FluidRenderStats;
 
 #ifdef __cplusplus

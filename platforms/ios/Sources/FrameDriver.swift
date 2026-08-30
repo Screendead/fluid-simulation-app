@@ -67,11 +67,12 @@ final class FrameDriver {
         let battery = UIDevice.current.batteryLevel * 100
         let thermal = ["nominal", "fair", "serious", "critical"][ProcessInfo.processInfo.thermalState.rawValue]
         statsLine = String(
-            format: "frames %llu | interval µs p50 %.0f p99 %.0f max %.0f | cpu µs p50 %.0f p99 %.0f | gpu µs p50 %.0f p99 %.0f | mem %.1f MB | batt %.0f%% %@ | stats µs %.0f",
+            format: "frames %llu | interval µs p50 %.0f p99 %.0f max %.0f | cpu µs p50 %.0f p99 %.0f | gpu µs p50 %.0f p99 %.0f | compr %% avg %.3f max %.3f | mem %.1f MB | batt %.0f%% %@ | stats µs %.0f",
             stats.frames,
             stats.interval_p50_us, stats.interval_p99_us, stats.interval_max_us,
             stats.encode_p50_us, stats.encode_p99_us,
             stats.gpu_p50_us, stats.gpu_p99_us,
+            stats.compression_avg * 100, stats.compression_max * 100,
             memory, battery, thermal, statsUs)
         print(statsLine)
     }
