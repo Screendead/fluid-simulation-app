@@ -185,6 +185,21 @@ by measurement, both now pinned by tests:
 The one-second flat settle on the Mac GPU: compression max 0.13%,
 rho max 999.5, pressure max 127 Pa, zero clamps.
 
+### The solver ramp
+
+Reference device, 2026-08-31, full solver, cap 7, FLUID_SPACING knob:
+
+| d | particles | interval p50 / p99 µs | compression, settled |
+|---|---|---|---|
+| 2.5 mm | 1,620 | 8,334 / 8,334 | 0.017% avg, 0.63% max |
+| 2.0 mm | 2,584 | 8,334 / 22,399 | in target; drops frames in slosh |
+| 1.75 mm | 5,031 | 8,334 / 47,057 | 47% max in slosh — solver saturates |
+| 1.5 mm | 9,200 | 77,128 / 95,993 | broken; thermal "serious" |
+
+The default stays 2.5 mm: the only config that holds the cadence
+clean. 2.0 mm is the next step and waits on the optimisation pass —
+its CPU encode alone spikes to 22 ms at high substep counts.
+
 ## 5. Resolution and budget — measured, not asserted
 
 CFL arithmetic at v_max = 2 m/s (hard shake): d = 0.33 mm → dt ≤ 66 µs →

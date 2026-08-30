@@ -30,8 +30,9 @@ constant-density solves, Morris viscosity, temperature, dynamic
 substeps. Verified live: compression avg 0.017% max 0.63% in motion,
 pressure 0..475 Pa, temperature within microkelvin, 120 Hz held.
 Numbers and the two test-pinned defects are in the M3 record. Left
-for M3 exit: the settled upright measurement, the minute hand-test,
-and the resolution ramp.
+for M3 exit: the settled upright measurement and the minute
+hand-test. The ramp is measured (M3 record): 2.5 mm holds 120 Hz
+clean and stays the default; 2.0 mm waits on the optimisation pass.
 
 Test baseline: 21 Rust tests pass, 2026-08-31.
 
