@@ -101,6 +101,9 @@ when the work is already done; say so.
   Language, no GLSL.
 - A platform shell does what only the platform can do: sensors, the drawing
   surface, permissions, haptics, the app lifecycle. Nothing else.
+- The simulation reads the sensors of the device that runs it. Sensor data
+  never crosses devices: no forwarding phone to laptop or laptop to phone,
+  in any variant, ever. Jack's rule, 2026-08-30.
 
 ### Performance
 

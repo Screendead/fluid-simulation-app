@@ -23,6 +23,10 @@ const fmt = (v) => (v >= 0 ? "+" : "") + v.toFixed(2).padStart(6);
 
 // iOS Safari grants DeviceMotion only from a user gesture on a secure origin.
 document.getElementById("enable").addEventListener("click", async () => {
+  if (!window.isSecureContext || !("DeviceMotionEvent" in window)) {
+    readout.textContent = "motion needs a secure origin (https or localhost) and a browser with sensors";
+    return;
+  }
   if (typeof DeviceMotionEvent.requestPermission === "function") {
     const state = await DeviceMotionEvent.requestPermission();
     if (state !== "granted") {
@@ -31,4 +35,10 @@ document.getElementById("enable").addEventListener("click", async () => {
     }
   }
   window.addEventListener("devicemotion", show);
+  readout.textContent = "listening; no sample yet";
+  setTimeout(() => {
+    if (samples === 0) {
+      readout.textContent = "no motion samples: this device has no motion sensors, or the browser withholds them; open the page on a phone";
+    }
+  }, 2000);
 });
