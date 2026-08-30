@@ -838,6 +838,7 @@ impl Renderer {
             // binds: the sim layouts hold five storage buffers a stage.
             required_limits: wgpu::Limits {
                 max_storage_buffers_per_shader_stage: 5,
+                max_immediate_size: 16,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
             ..Default::default()
@@ -1195,12 +1196,13 @@ mod tests {
             required_features: wgpu::Features::IMMEDIATES,
             required_limits: wgpu::Limits {
                 max_storage_buffers_per_shader_stage: 5,
+                max_immediate_size: 16,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
             ..Default::default()
         }))
         .expect("device");
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         Sim::new(
             &device,
             wgpu::TextureFormat::Bgra8Unorm,
@@ -1213,6 +1215,7 @@ mod tests {
                 timeout: None,
             })
             .expect("poll");
-        assert_eq!(ready(device.pop_error_scope()), None);
+        let err = ready(scope.pop());
+        assert!(err.is_none(), "{err:?}");
     }
 }
