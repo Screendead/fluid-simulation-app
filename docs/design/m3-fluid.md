@@ -100,7 +100,27 @@ source) and does not belong in a substep loop.
 Then draw with the M2 sprite pass, colour by speed, plus on-screen
 field statistics: compression error %, pressure min–max, temperature
 min–max, substep count, clamp count. Every field has a reader from day
-one.
+one. Reader order follows from that rule: the DFSPH factor joins the
+density sweep when the divergence-free solve arrives to read it, not
+before.
+
+Three measured facts about the wall integrals (quadrature,
+2026-08-30):
+
+- The closed forms are exact for a plane: the piecewise polynomials in
+  `sim.rs::wall_density` match brute quadrature to 1e-4 at 40 wall
+  distances, and the gradient form to the same bound.
+- The additive per-wall sum double-counts where two clip regions
+  overlap inside one support ball. The band is the 6 mm perimeter:
+  +1–2% density at a side-wall edge, +3.6% at a three-wall corner.
+  Opposite z-walls never overlap, so the slab interior is exact.
+  Accepted and recorded; the rejected fix is a pairwise-overlap table
+  (~0.6% residual, one more lookup per particle per substep).
+- The continuum fill overshoots the pristine seeded lattice by ~2.2%
+  at the wall-adjacent layer — midpoint-rule undershoot of the steep
+  kernel at one spacing, not an algebra error. A flowing fluid
+  decorrelates and matches the continuum; the at-rest exit measurement
+  reads this bias in the bottom particle row.
 
 ## 5. Resolution and budget — measured, not asserted
 
