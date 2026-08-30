@@ -295,7 +295,7 @@ enum Mode {
     Sim(Box<Sim>),
 }
 
-/// The M3 record fixes the starting spacing; the ramp revisits it.
+/// The M3 record's starting spacing, used when FLUID_SPACING is unset.
 const SIM_SPACING: f32 = 0.0025;
 
 struct Sim {
@@ -320,6 +320,7 @@ struct Sim {
     stats_src: wgpu::Buffer,
     stats_staging: [StagingSlot; 3],
     stats: [f32; 10],
+    spacing: f32,
     count: u32,
     cell_groups: u32,
     max_substeps: u32,
@@ -332,15 +333,16 @@ impl Sim {
         format: wgpu::TextureFormat,
         extent: [f32; 2],
         substeps: u32,
+        spacing: f32,
     ) -> Sim {
-        let h = 1.2 * SIM_SPACING;
+        let h = 1.2 * spacing;
         let grid = sim::Grid::new(extent, 2.0 * h);
         let cells = grid.cell_count();
         // scan_single serialises 32 cells per thread in one workgroup.
         assert!(cells <= 8_192, "the solver scan covers 8,192 cells");
-        let seeded = sim::seed_slab(SIM_SPACING, extent, 0.5);
+        let seeded = sim::seed_slab(spacing, extent, 0.5);
         let count = (seeded.len() / 4) as u32;
-        eprintln!("sim: {count} particles, {cells} cells, {substeps} substeps");
+        eprintln!("sim: {count} particles, {cells} cells, cap {substeps}, spacing {spacing} m");
 
         let storage = |label: &str, size: u64, extra: wgpu::BufferUsages| {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -418,7 +420,7 @@ impl Sim {
                 &grid,
                 count,
                 h,
-                sim::REST_DENSITY * SIM_SPACING * SIM_SPACING * SIM_SPACING,
+                sim::REST_DENSITY * spacing * spacing * spacing,
             ));
         params.unmap();
 
@@ -632,6 +634,7 @@ impl Sim {
             stats_src,
             stats_staging,
             stats: [0.0; 10],
+            spacing,
             count,
             cell_groups: cells.div_ceil(256),
             max_substeps: substeps,
@@ -666,7 +669,12 @@ struct Bench {
 
 impl Bench {
     fn new(device: &wgpu::Device, extent: [f32; 2], options: &RenderOptions) -> Bench {
-        let spacing = options.bench_spacing.clamp(0.001, 0.01);
+        let spacing = if options.bench_spacing > 0.0 {
+            options.bench_spacing
+        } else {
+            0.002
+        }
+        .clamp(0.001, 0.01);
         let h = 1.2 * spacing;
         let grid = sim::Grid::new(extent, 2.0 * h);
         let cells = grid.cell_count();
@@ -1040,11 +1048,18 @@ impl Renderer {
         let mode = if options.bench_sweeps > 0 {
             Mode::Bench(Box::new(Bench::new(&device, extent, &options)))
         } else if options.sim_substeps > 0 {
+            // FLUID_SPACING serves both modes; zero means the default.
+            let spacing = if options.bench_spacing > 0.0 {
+                options.bench_spacing.clamp(0.001, 0.01)
+            } else {
+                SIM_SPACING
+            };
             Mode::Sim(Box::new(Sim::new(
                 &device,
                 config.format,
                 extent,
                 options.sim_substeps,
+                spacing,
             )))
         } else {
             Mode::Demo(Box::new(Particles::new(
@@ -1131,7 +1146,7 @@ impl Renderer {
             // the stats readback drained. The GPU clamp enforces the dt
             // actually encoded.
             s.substeps_used = if dt > 0.0 {
-                ((dt * s.stats[6] / (0.4 * SIM_SPACING)).ceil() as u32).clamp(1, s.max_substeps)
+                ((dt * s.stats[6] / (0.4 * s.spacing)).ceil() as u32).clamp(1, s.max_substeps)
             } else {
                 0
             };
@@ -1199,7 +1214,7 @@ impl Renderer {
                 Mode::Sim(s) if dt > 0.0 => {
                     let n = s.substeps_used;
                     let dt_sub = dt / n as f32;
-                    let v_clamp = 0.4 * SIM_SPACING / dt_sub;
+                    let v_clamp = 0.4 * s.spacing / dt_sub;
                     let step = sim::pack_step(force, dt_sub, v_clamp);
                     let particles = s.count.div_ceil(256);
                     for _ in 0..n {
@@ -1488,6 +1503,7 @@ mod tests {
             wgpu::TextureFormat::Bgra8Unorm,
             [0.0357, 0.0774],
             7,
+            SIM_SPACING,
         );
         Some((device, queue, sim))
     }
