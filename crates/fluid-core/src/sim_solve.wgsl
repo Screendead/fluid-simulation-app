@@ -38,6 +38,7 @@ var<immediate> step: Step;
 @group(0) @binding(11) var<storage, read_write> temperature: array<f32>;
 @group(0) @binding(12) var<storage, read_write> stats: array<f32, 10>;
 @group(0) @binding(13) var<storage, read_write> clamp_count: atomic<u32>;
+@group(0) @binding(14) var<storage, read_write> accel: array<vec4f>;
 
 const DYNAMIC_VISCOSITY: f32 = 1.002e-3;
 const HEAT_CAPACITY: f32 = 4184.0;
@@ -176,11 +177,12 @@ fn density_factor(@builtin(global_invocation_id) id: vec3u) {
     pressure[id.x] = 0.0;
 }
 
-// Body force, Morris viscosity, and the two neighbour-sweep temperature
-// sources share one pass. 0.01 h^2 in the denominators is the standard
-// singularity guard.
+// Morris viscosity and the two neighbour-sweep temperature sources
+// share one pass, written to scratch: applying in the same dispatch
+// would race the neighbour reads. 0.01 h^2 in the denominators is the
+// standard singularity guard.
 @compute @workgroup_size(256)
-fn forces(@builtin(global_invocation_id) id: vec3u) {
+fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= params.count {
         return;
     }
@@ -219,8 +221,17 @@ fn forces(@builtin(global_invocation_id) id: vec3u) {
             }
         }
     }
-    velocities[id.x] = vec4f(vel + step.dt * (step.force + visc), 0.0);
-    temperature[id.x] = temp + step.dt * heat;
+    accel[id.x] = vec4f(visc, heat);
+}
+
+@compute @workgroup_size(256)
+fn forces_apply(@builtin(global_invocation_id) id: vec3u) {
+    if id.x >= params.count {
+        return;
+    }
+    let a = accel[id.x];
+    velocities[id.x] = vec4f(velocities[id.x].xyz + step.dt * (step.force + a.xyz), 0.0);
+    temperature[id.x] += step.dt * a.w;
 }
 
 // One divergence-free iteration, kappa half: Drho/Dt from the predicted

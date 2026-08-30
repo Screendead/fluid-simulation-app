@@ -304,7 +304,8 @@ struct Sim {
     scan_single: wgpu::ComputePipeline,
     scatter: wgpu::ComputePipeline,
     density_factor: wgpu::ComputePipeline,
-    forces: wgpu::ComputePipeline,
+    forces_eval: wgpu::ComputePipeline,
+    forces_apply: wgpu::ComputePipeline,
     div_kappa: wgpu::ComputePipeline,
     div_apply: wgpu::ComputePipeline,
     den_kappa: wgpu::ComputePipeline,
@@ -377,6 +378,7 @@ impl Sim {
         let pressure = storage("sim pressure", u64::from(count) * 4, none);
         let prev_pressure = storage("sim prev pressure", u64::from(count) * 4, none);
         let clamps = storage("sim clamps", 4, none);
+        let accel = storage("sim accel", u64::from(count) * 16, none);
         let stats_src = storage("sim stats", 40, wgpu::BufferUsages::COPY_SRC);
         // The box starts at the lab constants' temperature, 20 C.
         let temperature = device.create_buffer(&wgpu::BufferDescriptor {
@@ -463,6 +465,7 @@ impl Sim {
                 rw(11),
                 rw(12),
                 rw(13),
+                rw(14),
             ],
         );
         let sprite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -534,6 +537,7 @@ impl Sim {
                 entry(11, &temperature),
                 entry(12, &stats_src),
                 entry(13, &clamps),
+                entry(14, &accel),
             ],
         );
         let sprite_bind = bind(
@@ -585,7 +589,8 @@ impl Sim {
             scan_single: pipeline(&scan_pl, &scan_module, "scan_single"),
             scatter: pipeline(&grid_pl, &grid_module, "scatter"),
             density_factor: pipeline(&solve_pl, &solve_module, "density_factor"),
-            forces: pipeline(&solve_pl, &solve_module, "forces"),
+            forces_eval: pipeline(&solve_pl, &solve_module, "forces_eval"),
+            forces_apply: pipeline(&solve_pl, &solve_module, "forces_apply"),
             div_kappa: pipeline(&solve_pl, &solve_module, "div_kappa"),
             div_apply: pipeline(&solve_pl, &solve_module, "div_apply"),
             den_kappa: pipeline(&solve_pl, &solve_module, "den_kappa"),
@@ -1006,7 +1011,7 @@ impl Renderer {
             // asks 16), so start from downlevel and raise what the code
             // binds: the sim layouts hold five storage buffers a stage.
             required_limits: wgpu::Limits {
-                max_storage_buffers_per_shader_stage: 13,
+                max_storage_buffers_per_shader_stage: 14,
                 max_immediate_size: 32,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
@@ -1218,7 +1223,9 @@ impl Renderer {
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&s.div_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
-                        pass.set_pipeline(&s.forces);
+                        pass.set_pipeline(&s.forces_eval);
+                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.set_pipeline(&s.forces_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
                         for _ in 0..2 {
                             pass.set_pipeline(&s.den_kappa);
@@ -1469,7 +1476,7 @@ mod tests {
             label: None,
             required_features: wgpu::Features::IMMEDIATES,
             required_limits: wgpu::Limits {
-                max_storage_buffers_per_shader_stage: 13,
+                max_storage_buffers_per_shader_stage: 14,
                 max_immediate_size: 32,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
@@ -1534,7 +1541,9 @@ mod tests {
                     pass.dispatch_workgroups(particles, 1, 1);
                     pass.set_pipeline(&sim.div_apply);
                     pass.dispatch_workgroups(particles, 1, 1);
-                    pass.set_pipeline(&sim.forces);
+                    pass.set_pipeline(&sim.forces_eval);
+                    pass.dispatch_workgroups(particles, 1, 1);
+                    pass.set_pipeline(&sim.forces_apply);
                     pass.dispatch_workgroups(particles, 1, 1);
                     for _ in 0..2 {
                         pass.set_pipeline(&sim.den_kappa);
