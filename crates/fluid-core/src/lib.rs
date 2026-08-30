@@ -46,5 +46,6 @@ mod tests {
     }
 }
 
+mod particles;
 mod render;
 pub use render::{RenderStats, Renderer};

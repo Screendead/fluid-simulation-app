@@ -42,19 +42,24 @@ extern "C" {
 struct FluidVec3 fluid_body_force(struct FluidVec3 gravity, struct FluidVec3 user_acceleration);
 
 /**
- * Builds the renderer on a layer. Returns null when GPU setup fails, with
- * the reason on stderr.
+ * Builds the renderer on a layer: `particle_count` sprites of
+ * `sprite_radius` metres. Returns null when GPU setup fails, with the
+ * reason on stderr.
  *
  * # Safety
  *
  * `metal_layer` must be a `CAMetalLayer` pointer, kept alive until
  * `fluid_renderer_destroy`. Call on the main thread.
  */
-struct FluidRenderer *fluid_renderer_create(void *metal_layer, uint32_t width, uint32_t height);
+struct FluidRenderer *fluid_renderer_create(void *metal_layer,
+                                            uint32_t width,
+                                            uint32_t height,
+                                            uint32_t particle_count,
+                                            float sprite_radius);
 
 /**
- * One frame: clear to the body-force colour and present. `now_ms` is
- * `CADisplayLink.timestamp` in milliseconds.
+ * One frame: integrate the particles, draw them over the body-force tint,
+ * present. `now_ms` is `CADisplayLink.timestamp` in milliseconds.
  *
  * # Safety
  *

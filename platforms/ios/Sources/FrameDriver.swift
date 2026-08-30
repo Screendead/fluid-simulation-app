@@ -14,6 +14,7 @@ final class FrameDriver {
 
     private var renderer: OpaquePointer?
     private var link: CADisplayLink?
+    private var ticks = 0
 
     init() {
         UIDevice.current.isBatteryMonitoringEnabled = true
@@ -26,7 +27,11 @@ final class FrameDriver {
             fluid_renderer_resize(renderer, width, height)
             return
         }
-        renderer = fluid_renderer_create(Unmanaged.passUnretained(layer).toOpaque(), width, height)
+        let env = ProcessInfo.processInfo.environment
+        let count = env["FLUID_PARTICLES"].flatMap(UInt32.init) ?? 50_000
+        let radius = env["FLUID_RADIUS"].flatMap(Float.init) ?? 0.0006
+        renderer = fluid_renderer_create(
+            Unmanaged.passUnretained(layer).toOpaque(), width, height, count, radius)
         guard renderer != nil else {
             statsLine = "renderer failed; see the console"
             return
@@ -45,21 +50,25 @@ final class FrameDriver {
             FluidVec3(motion.gravity),
             FluidVec3(motion.userAcceleration),
             link.timestamp * 1000.0)
-        let stats = fluid_renderer_stats(renderer)
-        if stats.frames % 120 == 0 { report(stats) }
+        ticks += 1
+        if ticks % 120 == 0 {
+            let before = CACurrentMediaTime()
+            let stats = fluid_renderer_stats(renderer)
+            report(stats, statsUs: (CACurrentMediaTime() - before) * 1_000_000)
+        }
     }
 
-    private func report(_ stats: FluidRenderStats) {
+    private func report(_ stats: FluidRenderStats, statsUs: Double) {
         let memory = Double(physFootprint()) / 1_048_576.0
         let battery = UIDevice.current.batteryLevel * 100
         let thermal = ["nominal", "fair", "serious", "critical"][ProcessInfo.processInfo.thermalState.rawValue]
         statsLine = String(
-            format: "frames %llu | interval µs p50 %.0f p99 %.0f max %.0f | cpu µs p50 %.0f p99 %.0f | gpu µs p50 %.0f p99 %.0f | mem %.1f MB | batt %.0f%% %@",
+            format: "frames %llu | interval µs p50 %.0f p99 %.0f max %.0f | cpu µs p50 %.0f p99 %.0f | gpu µs p50 %.0f p99 %.0f | mem %.1f MB | batt %.0f%% %@ | stats µs %.0f",
             stats.frames,
             stats.interval_p50_us, stats.interval_p99_us, stats.interval_max_us,
             stats.encode_p50_us, stats.encode_p99_us,
             stats.gpu_p50_us, stats.gpu_p99_us,
-            memory, battery, thermal)
+            memory, battery, thermal, statsUs)
         print(statsLine)
     }
 

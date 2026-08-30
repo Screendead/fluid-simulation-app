@@ -2,6 +2,7 @@
 //! Frame timing lands in fixed rings; nothing on the frame path allocates.
 
 use crate::MotionSample;
+use crate::particles;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
@@ -9,6 +10,14 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::task::{Context, Poll, Waker};
 
 const RING: usize = 240;
+
+/// The reference device's 458 ppi (CLAUDE.md section 5); a second device
+/// would bring its own density in through the shell.
+const METRES_PER_PIXEL: f32 = 0.0254 / 458.0;
+
+/// One integration step never exceeds two 60 Hz frames, so a resume after
+/// a pause cannot fling the particles.
+const MAX_DT: f32 = 1.0 / 30.0;
 
 struct Ring {
     samples: [f32; RING],
@@ -50,12 +59,13 @@ impl Ring {
     }
 }
 
-/// One g moves a channel a quarter of its range: a tilt is unmissable and a
-/// hard shake saturates. z drives blue with the sign flipped so rest reads
-/// as water, not mud.
+/// One g moves a channel a quarter of its range, so a tilt is unmissable
+/// and a hard shake saturates; the whole tint sits at quarter brightness so
+/// the sprites carry the scene. z drives blue with the sign flipped so rest
+/// reads as water, not mud.
 fn clear_colour(force: [f32; 3]) -> wgpu::Color {
     let channel = |f: f32, sign: f32| {
-        f64::from((0.5 + sign * f / (4.0 * crate::STANDARD_GRAVITY)).clamp(0.0, 1.0))
+        f64::from((0.5 + sign * f / (4.0 * crate::STANDARD_GRAVITY)).clamp(0.0, 1.0)) * 0.25
     };
     wgpu::Color {
         r: channel(force[0], 1.0),
@@ -72,6 +82,195 @@ fn ready<T>(fut: impl Future<Output = T>) -> T {
     match pin!(fut).poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(v) => v,
         Poll::Pending => unreachable!("wgpu future was not ready"),
+    }
+}
+
+fn buffer_entry(
+    binding: u32,
+    visibility: wgpu::ShaderStages,
+    ty: wgpu::BufferBindingType,
+) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+const ADDITIVE: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
+struct Particles {
+    params: wgpu::Buffer,
+    integrate: wgpu::ComputePipeline,
+    sprites: wgpu::RenderPipeline,
+    integrate_bind: wgpu::BindGroup,
+    sprite_bind: wgpu::BindGroup,
+    count: u32,
+    radius: f32,
+    extent: [f32; 2],
+}
+
+impl Particles {
+    fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        count: u32,
+        radius: f32,
+        extent: [f32; 2],
+    ) -> Particles {
+        // The buffer handle is dropped here; the bind groups keep the
+        // resource alive.
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("particles"),
+            size: u64::from(count) * 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        });
+        let mut seeded = Vec::with_capacity(count as usize * 16);
+        for v in particles::seed(count, extent) {
+            seeded.extend_from_slice(&v.to_le_bytes());
+        }
+        buffer
+            .get_mapped_range_mut(..)
+            .expect("mapped at creation")
+            .copy_from_slice(&seeded);
+        buffer.unmap();
+
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("params"),
+            size: 32,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let integrate_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("integrate"),
+            entries: &[
+                buffer_entry(
+                    0,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Storage { read_only: false },
+                ),
+                buffer_entry(
+                    1,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Uniform,
+                ),
+            ],
+        });
+        let sprite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sprites"),
+            entries: &[
+                buffer_entry(
+                    0,
+                    wgpu::ShaderStages::VERTEX,
+                    wgpu::BufferBindingType::Storage { read_only: true },
+                ),
+                buffer_entry(
+                    1,
+                    wgpu::ShaderStages::VERTEX,
+                    wgpu::BufferBindingType::Uniform,
+                ),
+            ],
+        });
+        let bind = |layout: &wgpu::BindGroupLayout| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: params.as_entire_binding(),
+                    },
+                ],
+            })
+        };
+        let pipeline_layout = |layout: &wgpu::BindGroupLayout| {
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(layout)],
+                immediate_size: 0,
+            })
+        };
+
+        let integrate_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("integrate"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("integrate.wgsl").into()),
+        });
+        let sprites_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sprites"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("sprites.wgsl").into()),
+        });
+
+        let integrate = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("integrate"),
+            layout: Some(&pipeline_layout(&integrate_layout)),
+            module: &integrate_module,
+            entry_point: None,
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let sprites = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("sprites"),
+            layout: Some(&pipeline_layout(&sprite_layout)),
+            vertex: wgpu::VertexState {
+                module: &sprites_module,
+                entry_point: None,
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &sprites_module,
+                entry_point: None,
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(ADDITIVE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let integrate_bind = bind(&integrate_layout);
+        let sprite_bind = bind(&sprite_layout);
+        Particles {
+            params,
+            integrate,
+            sprites,
+            integrate_bind,
+            sprite_bind,
+            count,
+            radius,
+            extent,
+        }
     }
 }
 
@@ -112,6 +311,7 @@ pub struct Renderer {
     encode_us: Ring,
     gpu_us: Ring,
     gpu_timing: Option<GpuTiming>,
+    particles: Particles,
     frames: u64,
     last_frame_ms: f64,
 }
@@ -124,6 +324,8 @@ impl Renderer {
         surface: wgpu::Surface<'static>,
         width: u32,
         height: u32,
+        particle_count: u32,
+        sprite_radius: f32,
     ) -> Result<Renderer, String> {
         let adapter = ready(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
@@ -160,6 +362,18 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
+        let extent = [
+            width as f32 * 0.5 * METRES_PER_PIXEL,
+            height as f32 * 0.5 * METRES_PER_PIXEL,
+        ];
+        let particles = Particles::new(
+            &device,
+            config.format,
+            particle_count.max(1),
+            sprite_radius,
+            extent,
+        );
+
         let gpu_timing = timestamps.then(|| GpuTiming {
             queries: device.create_query_set(&wgpu::QuerySetDescriptor {
                 label: None,
@@ -193,6 +407,7 @@ impl Renderer {
             encode_us: Ring::new(),
             gpu_us: Ring::new(),
             gpu_timing,
+            particles,
             frames: 0,
             last_frame_ms: 0.0,
         })
@@ -204,6 +419,10 @@ impl Renderer {
         }
         self.config.width = width;
         self.config.height = height;
+        self.particles.extent = [
+            width as f32 * 0.5 * METRES_PER_PIXEL,
+            height as f32 * 0.5 * METRES_PER_PIXEL,
+        ];
         self.surface.configure(&self.device, &self.config);
     }
 
@@ -217,6 +436,12 @@ impl Renderer {
             self.interval_us.push(interval_us);
         }
         self.last_frame_ms = now_ms;
+        let dt = if self.frames == 0 {
+            0.0
+        } else {
+            (interval_us / 1_000_000.0).clamp(0.0, MAX_DT)
+        };
+        let force = sample.body_force();
 
         let started = std::time::Instant::now();
 
@@ -239,6 +464,18 @@ impl Renderer {
                 .position(|s| s.state.load(Ordering::Acquire) == SLOT_FREE)
         });
 
+        self.queue.write_buffer(
+            &self.particles.params,
+            0,
+            &particles::pack_params(
+                [force[0], force[1]],
+                dt,
+                self.particles.radius,
+                self.particles.extent,
+                self.particles.count,
+            ),
+        );
+
         let view = texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -246,14 +483,23 @@ impl Renderer {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.particles.integrate);
+            pass.set_bind_group(0, &self.particles.integrate_bind, &[]);
+            pass.dispatch_workgroups(self.particles.count.div_ceil(64), 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear_colour(sample.body_force())),
+                        load: wgpu::LoadOp::Clear(clear_colour(force)),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -268,6 +514,9 @@ impl Renderer {
                 occlusion_query_set: None,
                 ..Default::default()
             });
+            pass.set_pipeline(&self.particles.sprites);
+            pass.set_bind_group(0, &self.particles.sprite_bind, &[]);
+            pass.draw(0..4, 0..self.particles.count);
         }
         if let (Some(t), Some(slot)) = (self.gpu_timing.as_ref(), slot) {
             encoder.resolve_query_set(&t.queries, 0..2, &t.resolve, 0);
@@ -356,13 +605,13 @@ mod tests {
             }
             .body_force(),
         );
-        assert_eq!((colour.r, colour.g, colour.b), (0.5, 0.5, 0.75));
+        assert_eq!((colour.r, colour.g, colour.b), (0.125, 0.125, 0.1875));
     }
 
     #[test]
     fn a_hard_shake_saturates_instead_of_wrapping() {
         let colour = clear_colour([100.0, -100.0, 0.0]);
-        assert_eq!((colour.r, colour.g, colour.b), (1.0, 0.0, 0.5));
+        assert_eq!((colour.r, colour.g, colour.b), (0.25, 0.0, 0.125));
     }
 
     #[test]

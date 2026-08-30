@@ -53,8 +53,9 @@ pub struct FluidRenderStats {
     pub gpu_p99_us: f32,
 }
 
-/// Builds the renderer on a layer. Returns null when GPU setup fails, with
-/// the reason on stderr.
+/// Builds the renderer on a layer: `particle_count` sprites of
+/// `sprite_radius` metres. Returns null when GPU setup fails, with the
+/// reason on stderr.
 ///
 /// # Safety
 ///
@@ -65,6 +66,8 @@ pub unsafe extern "C" fn fluid_renderer_create(
     metal_layer: *mut c_void,
     width: u32,
     height: u32,
+    particle_count: u32,
+    sprite_radius: f32,
 ) -> *mut FluidRenderer {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(metal_layer);
@@ -75,7 +78,14 @@ pub unsafe extern "C" fn fluid_renderer_create(
             return std::ptr::null_mut();
         }
     };
-    match fluid_core::Renderer::new(instance, surface, width, height) {
+    match fluid_core::Renderer::new(
+        instance,
+        surface,
+        width,
+        height,
+        particle_count,
+        sprite_radius,
+    ) {
         Ok(renderer) => Box::into_raw(Box::new(FluidRenderer(renderer))),
         Err(e) => {
             eprintln!("fluid: no renderer: {e}");
@@ -84,8 +94,8 @@ pub unsafe extern "C" fn fluid_renderer_create(
     }
 }
 
-/// One frame: clear to the body-force colour and present. `now_ms` is
-/// `CADisplayLink.timestamp` in milliseconds.
+/// One frame: integrate the particles, draw them over the body-force tint,
+/// present. `now_ms` is `CADisplayLink.timestamp` in milliseconds.
 ///
 /// # Safety
 ///

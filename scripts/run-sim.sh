@@ -19,4 +19,6 @@ fi
 xcrun simctl boot "$sim" 2>/dev/null || true
 open -a Simulator
 xcrun simctl install "$sim" "platforms/ios/build/Build/Products/$config-iphonesimulator/FluidApp.app"
+SIMCTL_CHILD_FLUID_PARTICLES="${FLUID_PARTICLES:-}" \
+SIMCTL_CHILD_FLUID_RADIUS="${FLUID_RADIUS:-}" \
 xcrun simctl launch "$sim" com.screendead.FluidApp
