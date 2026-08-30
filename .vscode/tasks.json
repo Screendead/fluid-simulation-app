@@ -4,6 +4,7 @@
     { "label": "gate", "type": "shell", "command": "scripts/gate.sh", "group": { "kind": "test", "isDefault": true }, "problemMatcher": ["$rustc"] },
     { "label": "run ios (debug)", "type": "shell", "command": "scripts/run-ios.sh Debug", "group": { "kind": "build", "isDefault": true } },
     { "label": "run ios (release)", "type": "shell", "command": "scripts/run-ios.sh Release", "group": "build" },
+    { "label": "run simulator (debug)", "type": "shell", "command": "scripts/run-sim.sh Debug", "group": "build" },
     { "label": "build web", "type": "shell", "command": "scripts/build-web.sh", "group": "build" },
     { "label": "serve web", "type": "shell", "command": "scripts/serve-web.sh", "isBackground": true, "problemMatcher": [] }
   ]

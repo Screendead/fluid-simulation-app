@@ -30,9 +30,15 @@ the Xcode project from `project.yml`; the generated project is not
 committed. The web build is `fluid-web` through wasm-bindgen with a plain
 JavaScript page that owns permissions and the canvas.
 
-The deployment target is iOS 17.0. There is no simulator target: the
-simulator has no motion sensors. The reference device is CLAUDE.md
+The deployment target is iOS 17.0. The reference device is CLAUDE.md
 section 5.
+
+*Amended 2026-08-30, Jack's call.* The original text read "There is no
+simulator target: the simulator has no motion sensors." The project now
+builds for the simulator (`aarch64-apple-ios-sim`) as a compile, link and
+launch check, run by `scripts/run-sim.sh` and usable when the phone is
+away. The simulator still has no motion sensors and proves nothing about
+behaviour or performance; every measurement is on the reference device.
 
 **Why.** "Feels like holding a box of liquid" is a latency and sample-rate
 requirement. CoreMotion's sensor fusion, delivered straight into the core

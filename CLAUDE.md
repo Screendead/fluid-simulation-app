@@ -43,6 +43,7 @@ Run these from the repository root. `rust-toolchain.toml` pins the toolchain.
 ```sh
 scripts/gate.sh        # fmt, clippy, tests, wasm build, header drift, iOS static library
 scripts/run-ios.sh     # build, sign, install and launch on the reference device
+scripts/run-sim.sh     # build and launch in the simulator: a link-and-launch check only
 scripts/build-web.sh   # build the wasm and bind it into platforms/web/pkg
 scripts/serve-web.sh   # serve platforms/web on http://localhost:8080
 ```
@@ -51,8 +52,9 @@ CI runs the gate on every push and pull request, then builds the iOS app
 unsigned. Run the gate before you push. Three notes:
 
 - The gate is strict. One clippy warning or one unformatted file fails it.
-- The app runs on a physical device only. The simulator has no motion
-  sensors, and the project has no simulator target.
+- Measure on the physical device only. A simulator build proves the shell
+  compiles, links and launches; the simulator has no motion sensors, so it
+  proves nothing else.
 - Xcode is a toolchain here, not an editor. Everything builds from the
   terminal or from VS Code. Open Xcode for the Metal debugger and GPU frame
   capture, and for nothing else.
@@ -159,15 +161,18 @@ Do not edit these by hand.
 
 ## 8. Workflow
 
-- Branch off master with a topic slug, for example `m1-surface`. Do not
-  commit to master.
-- Commit to a topic branch and push it without asking. Ask before you open a
-  pull request: that call is Jack's. So is the merge.
+- Through the close of M0, commit straight to master and push; no pull
+  requests. Jack's call, 2026-08-30, "while we're getting set up".
+- From M1, branch off master with a topic slug, for example `m1-surface`,
+  and do not commit to master. Commit to the topic branch and push it
+  without asking. Ask before you open a pull request: that call is Jack's.
+  So is the merge.
+- Commit as you go. Each commit leaves every component working.
 - Run the gate before every push. CI must pass before a merge.
 - A decision with one viable option does not stop and wait. Take it, record
   it in HANDOFF or the design record with the rejected options and their
   costs, and continue. Jack can overturn it; silence lets it stand.
-- Make atomic commits. Write short, imperative, jargonless messages.
+- Write short, imperative, jargonless commit messages.
 - Hand-pick the model for every subagent. A cheap model does search and
   mechanical edits; design and review need a top-tier model.
 - A multi-agent refactor gets an independent adversarial review before

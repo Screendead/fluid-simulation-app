@@ -8,11 +8,14 @@ settings:
     DEVELOPMENT_TEAM: 8N575942RT
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
+    FLUID_RUST_TARGET[sdk=iphoneos*]: aarch64-apple-ios
+    FLUID_RUST_TARGET[sdk=iphonesimulator*]: aarch64-apple-ios-sim
+    LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../target/$(FLUID_RUST_TARGET)/$(FLUID_RUST_PROFILE)
   configs:
     Debug:
-      LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../target/aarch64-apple-ios/debug
+      FLUID_RUST_PROFILE: debug
     Release:
-      LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../target/aarch64-apple-ios/release
+      FLUID_RUST_PROFILE: release
 targets:
   FluidApp:
     type: application

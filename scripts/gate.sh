@@ -10,5 +10,5 @@ cargo build -p fluid-web --target wasm32-unknown-unknown
 generated=$(mktemp)
 cbindgen --config crates/fluid-ffi/cbindgen.toml --quiet --output "$generated" crates/fluid-ffi
 diff -u crates/fluid-ffi/include/fluid_ffi.h "$generated"
-[[ "$(uname)" == Darwin ]] && cargo build -p fluid-ffi --target aarch64-apple-ios
+[[ "$(uname)" == Darwin ]] && cargo build -p fluid-ffi --target aarch64-apple-ios --target aarch64-apple-ios-sim
 echo "gate: green"
