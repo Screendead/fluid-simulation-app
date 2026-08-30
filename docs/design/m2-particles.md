@@ -86,4 +86,6 @@ reference device, 2026-08-30, Release: 102 µs a call, now paid once per
 - [ ] Ramp run — cut 2026-08-30, Jack's call: progress straight to M3.
       A budget ramp of a placeholder loop M3 replaces has no value; M3
       carries the budget work. Hand-test frame numbers are in HANDOFF.
-- [x] Gate green at every commit; CI green on the branch.
+- [x] Gate green at every commit. CI never ran on this branch: the push
+      trigger was master-only, against the CLAUDE.md section 4
+      description. Widened 2026-08-30; the m3-fluid runs cover this tree.
