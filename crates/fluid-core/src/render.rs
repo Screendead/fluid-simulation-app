@@ -286,11 +286,195 @@ pub struct RenderOptions {
     pub sprite_radius: f32,
     pub bench_sweeps: u32,
     pub bench_spacing: f32,
+    pub sim_substeps: u32,
 }
 
 enum Mode {
     Demo(Box<Particles>),
     Bench(Box<Bench>),
+    Sim(Box<Sim>),
+}
+
+/// The M3 record fixes the starting spacing; the ramp revisits it.
+const SIM_SPACING: f32 = 0.0025;
+
+struct Sim {
+    substep: wgpu::ComputePipeline,
+    sprites: wgpu::RenderPipeline,
+    step_bind: wgpu::BindGroup,
+    sprite_bind: wgpu::BindGroup,
+    count: u32,
+    substeps: u32,
+}
+
+impl Sim {
+    fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        extent: [f32; 2],
+        substeps: u32,
+    ) -> Sim {
+        let h = 1.2 * SIM_SPACING;
+        let grid = sim::Grid::new(extent, 2.0 * h);
+        let seeded = sim::seed_slab(SIM_SPACING, extent, 0.5);
+        let count = (seeded.len() / 4) as u32;
+        eprintln!("sim: {count} particles, {substeps} substeps, spacing {SIM_SPACING} m");
+
+        let positions = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sim positions"),
+            size: u64::from(count) * 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        });
+        let mut bytes = Vec::with_capacity(seeded.len() * 4);
+        for v in &seeded {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        positions
+            .get_mapped_range_mut(..)
+            .expect("mapped at creation")
+            .copy_from_slice(&bytes);
+        positions.unmap();
+        // wgpu zero-initialises buffers: the fluid starts at rest.
+        let velocities = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sim velocities"),
+            size: u64::from(count) * 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sim params"),
+            size: 48,
+            usage: wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: true,
+        });
+        params
+            .get_mapped_range_mut(..)
+            .expect("mapped at creation")
+            .copy_from_slice(&sim::pack_sim_params(
+                &grid,
+                count,
+                h,
+                sim::REST_DENSITY * SIM_SPACING * SIM_SPACING * SIM_SPACING,
+            ));
+        params.unmap();
+
+        let compute = wgpu::ShaderStages::COMPUTE;
+        let vertex = wgpu::ShaderStages::VERTEX;
+        let step_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sim step"),
+            entries: &[
+                buffer_entry(0, compute, wgpu::BufferBindingType::Uniform),
+                buffer_entry(
+                    1,
+                    compute,
+                    wgpu::BufferBindingType::Storage { read_only: false },
+                ),
+                buffer_entry(
+                    2,
+                    compute,
+                    wgpu::BufferBindingType::Storage { read_only: false },
+                ),
+            ],
+        });
+        let sprite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sim sprites"),
+            entries: &[
+                buffer_entry(0, vertex, wgpu::BufferBindingType::Uniform),
+                buffer_entry(
+                    1,
+                    vertex,
+                    wgpu::BufferBindingType::Storage { read_only: true },
+                ),
+                buffer_entry(
+                    2,
+                    vertex,
+                    wgpu::BufferBindingType::Storage { read_only: true },
+                ),
+            ],
+        });
+        fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: buffer.as_entire_binding(),
+            }
+        }
+        let bind = |label, layout: &wgpu::BindGroupLayout| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout,
+                entries: &[
+                    entry(0, &params),
+                    entry(1, &positions),
+                    entry(2, &velocities),
+                ],
+            })
+        };
+        let step_bind = bind("sim step", &step_layout);
+        let sprite_bind = bind("sim sprites", &sprite_layout);
+
+        let step_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sim_step"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("sim_step.wgsl").into()),
+        });
+        let sprite_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sim_sprites"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("sim_sprites.wgsl").into()),
+        });
+        let step_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("sim step"),
+            bind_group_layouts: &[Some(&step_layout)],
+            immediate_size: 16,
+        });
+        let sprite_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("sim sprites"),
+            bind_group_layouts: &[Some(&sprite_layout)],
+            immediate_size: 0,
+        });
+
+        Sim {
+            substep: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("substep"),
+                layout: Some(&step_pl),
+                module: &step_module,
+                entry_point: None,
+                compilation_options: Default::default(),
+                cache: None,
+            }),
+            sprites: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim sprites"),
+                layout: Some(&sprite_pl),
+                vertex: wgpu::VertexState {
+                    module: &sprite_module,
+                    entry_point: Some("sprite"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &sprite_module,
+                    entry_point: Some("glow"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(ADDITIVE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            }),
+            step_bind,
+            sprite_bind,
+            count,
+            substeps,
+        }
+    }
 }
 
 struct Validation {
@@ -640,11 +824,14 @@ impl Renderer {
         .map_err(|e| e.to_string())?;
         let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let (device, queue) = ready(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: if timestamps {
-                wgpu::Features::TIMESTAMP_QUERY
-            } else {
-                wgpu::Features::empty()
-            },
+            // IMMEDIATES is unconditional: Metal always grants it, and
+            // the M3 record forbids a fallback branch no run reaches.
+            required_features: wgpu::Features::IMMEDIATES
+                | if timestamps {
+                    wgpu::Features::TIMESTAMP_QUERY
+                } else {
+                    wgpu::Features::empty()
+                },
             // WebGPU's default limits overshoot small adapters (the
             // simulator offers 15 inter-stage variables, the default
             // asks 16), so start from downlevel and raise what the code
@@ -677,6 +864,13 @@ impl Renderer {
         ];
         let mode = if options.bench_sweeps > 0 {
             Mode::Bench(Box::new(Bench::new(&device, extent, &options)))
+        } else if options.sim_substeps > 0 {
+            Mode::Sim(Box::new(Sim::new(
+                &device,
+                config.format,
+                extent,
+                options.sim_substeps,
+            )))
         } else {
             Mode::Demo(Box::new(Particles::new(
                 &device,
@@ -814,6 +1008,14 @@ impl Renderer {
                     pass.dispatch_workgroups(p.count.div_ceil(64), 1, 1);
                 }
                 Mode::Bench(b) => b.encode(&mut pass),
+                Mode::Sim(s) => {
+                    pass.set_pipeline(&s.substep);
+                    pass.set_bind_group(0, &s.step_bind, &[]);
+                    pass.set_immediates(0, &sim::pack_step(force, dt / s.substeps as f32));
+                    for _ in 0..s.substeps {
+                        pass.dispatch_workgroups(s.count.div_ceil(256), 1, 1);
+                    }
+                }
             }
         }
         {
@@ -839,10 +1041,18 @@ impl Renderer {
                 occlusion_query_set: None,
                 ..Default::default()
             });
-            if let Mode::Demo(p) = &self.mode {
-                pass.set_pipeline(&p.sprites);
-                pass.set_bind_group(0, &p.sprite_bind, &[]);
-                pass.draw(0..4, 0..p.count);
+            match &self.mode {
+                Mode::Demo(p) => {
+                    pass.set_pipeline(&p.sprites);
+                    pass.set_bind_group(0, &p.sprite_bind, &[]);
+                    pass.draw(0..4, 0..p.count);
+                }
+                Mode::Sim(s) => {
+                    pass.set_pipeline(&s.sprites);
+                    pass.set_bind_group(0, &s.sprite_bind, &[]);
+                    pass.draw(0..4, 0..s.count);
+                }
+                Mode::Bench(_) => {}
             }
         }
         if let (Some(t), Some(slot)) = (self.gpu_timing.as_ref(), slot) {
@@ -970,5 +1180,39 @@ mod tests {
         }
         assert_eq!(ring.percentile(0.0), 1.0);
         assert_eq!(ring.percentile(1.0), RING as f32);
+    }
+    // Compiles every sim shader and pipeline on this machine's GPU, so a
+    // WGSL error fails here instead of as a crash loop on the phone.
+    #[test]
+    fn the_sim_gpu_path_compiles_on_this_machine() {
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) = ready(instance.request_adapter(&Default::default())) else {
+            eprintln!("no GPU adapter; skipping");
+            return;
+        };
+        let (device, _queue) = ready(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: wgpu::Features::IMMEDIATES,
+            required_limits: wgpu::Limits {
+                max_storage_buffers_per_shader_stage: 5,
+                ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
+            },
+            ..Default::default()
+        }))
+        .expect("device");
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        Sim::new(
+            &device,
+            wgpu::TextureFormat::Bgra8Unorm,
+            [0.0357, 0.0774],
+            7,
+        );
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        assert_eq!(ready(device.pop_error_scope()), None);
     }
 }
