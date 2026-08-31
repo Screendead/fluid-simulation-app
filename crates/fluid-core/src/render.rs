@@ -42,15 +42,12 @@ fn substep_floor(dt: f32) -> u32 {
 }
 
 // Density error scales with dt squared, so short substeps need fewer
-// refine passes. The film compr guard covers the shallow end.
+// refine passes; the film compr guard covers the shallow end. There
+// is no deep branch for long substeps: the convergence ladder showed
+// iterations cannot fix a 4 ms substep (the error is the timestep),
+// and at 60 Hz the extra dispatches were half the solver's cost.
 fn refine_passes(dt_sub: f32) -> u32 {
-    if dt_sub > 0.0035 {
-        10
-    } else if dt_sub > 0.00105 {
-        5
-    } else {
-        2
-    }
+    if dt_sub > 0.00105 { 5 } else { 2 }
 }
 
 struct Ring {
