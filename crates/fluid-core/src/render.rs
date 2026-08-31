@@ -161,13 +161,20 @@ pub fn film(
     let dt = 1.0 / 120.0;
     let mut v_max = 0.0f32;
     let mut field_keep = FIELD_KEEP;
+    // KEEP pins the field average for metrology: the boil meter must
+    // see the raw field (KEEP=0), or solver churn hides behind the
+    // rendered average and the metric drifts from what the eye sees.
+    let keep_pin: Option<f32> = std::env::var("KEEP").ok().and_then(|v| v.parse().ok());
     let mut compr_max = 0.0f32;
     let mut rows = vec![0u8; (WIDTH * 4 * HEIGHT) as usize];
     for f in 0..frames {
         let force = force_at(f);
         // The production CFL, fed by the previous frame's v_max.
         let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32).clamp(1, cap);
-        field_keep += (field_keep_target(v_max) - field_keep) * 0.25;
+        field_keep = match keep_pin {
+            Some(k) => k,
+            None => field_keep + (field_keep_target(v_max) - field_keep) * 0.25,
+        };
         let dt_sub = dt / n as f32;
         let v_clamp = 0.4 * spacing / dt_sub;
         let step = sim::pack_step(force, dt_sub, v_clamp, 0);

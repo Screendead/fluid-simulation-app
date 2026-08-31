@@ -519,6 +519,54 @@ into the blend constant (1 - keep), so decay and splat stay exact
 complements at every keep and the steady state and thresholds hold
 unchanged. At rest nothing changed; in motion the field is raw.
 
+### Near-pressure: the jitter was the pair instability (2026-08-31)
+
+Jack's verdict after the look pass: still jittering like hell upright
+and at 45 degrees, and nothing in the project's history moved the
+needle. He is right, twice over. First, the metric was soft: the boil
+meter has measured the rendered field since the EMA shipped, so its
+numbers carried cosmetic smoothing. The film now takes a KEEP pin
+(KEEP=0 films the raw field), and the raw baseline is 2.56 mm on the
+19 s tripod hold, 2.24 mm on the 6 s sweep hold — with tripod and
+handheld raw within 0.04 mm of each other, so tremor contributes
+nothing and the churn is all solver.
+
+Second, the churn's root is the pair-clumping (tensile) instability:
+summed-kernel SPH pressure is blind to spacing inside one support
+radius, so particles collapse into strings and keep rearranging
+forever — the stringy filaments visible in every recording were this.
+The fix is the repulsive half of Clavet 2005's double-density
+relaxation: a second, sharper kernel (1 - r/h)^3 whose pressure is
+never negative, applied pairwise. The attractive half is deliberately
+left out — it is Clavet's surface tension, and it would rediscover
+the Akinci balling failure. Regularization, not new physics: real
+water has no such instability to correct.
+
+Near-density rides in positions.w, which integrate re-zeroes every
+substep and nothing else reads: zero bytes added. The sweep, 6 s
+tripod films, raw field, level = mean wetted height (the volume-
+inflation guard), compr = max compression:
+
+| K_NEAR | boil median mm | p90 | level mm | compr % |
+|---|---|---|---|---|
+| 0 | 2.24 | 2.90 | 47.12 | 0.338 |
+| 300 | 2.31 | 3.09 | 46.84 | 0.255 |
+| 1000 | 2.59 | 3.36 | 47.23 | 0.266 |
+| 3000 | 0.80 | 0.96 | 47.02 | 0.226 |
+| 6000 | 0.91 | 1.24 | 47.16 | 0.196 |
+| 10000 | 1.72 | 2.03 | 48.67 | 0.195 |
+
+The jump between 1000 and 3000 is a phase change: below it the
+repulsion only stirs, above it the clumping attractor breaks and the
+packing settles. 10000 starts to inflate the pool. Shipped: 3000 —
+boil 2.24 to 0.80 mm raw, level flat, compression better than
+baseline. Known debt: the near force does work that the temperature
+ledger does not book; at rest speeds the magnitude is microscopic,
+and the dT stat range on device is the watch. One visible side
+effect: the flat-pose monolayer now settles into a faint hexagonal
+texture — the regularized packing showing through the field. Subtle,
+and far better than the per-particle leopard it replaced; left as is.
+
 ### The refine cut at high n (2026-08-31)
 
 Jack's shake recording also showed pacing collapse: interval p99

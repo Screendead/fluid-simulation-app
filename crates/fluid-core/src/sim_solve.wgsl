@@ -45,6 +45,14 @@ var<immediate> step: Step;
 // filter, and without it a settled deep column never stops ringing.
 const XSPH_EPS: f32 = 0.1;
 
+// Near-pressure, the repulsive half of Clavet 2005: a second, sharper
+// kernel whose pressure is never negative. It removes the pair-clumping
+// instability (particles collapsing into strings) that plain SPH
+// pressure cannot see, because the summed kernel is blind to spacing
+// inside one support radius. Regularization of the discretization, not
+// new physics: real water has no such instability to correct.
+const K_NEAR: f32 = 3000.0;
+
 const DYNAMIC_VISCOSITY: f32 = 1.002e-3;
 const HEAT_CAPACITY: f32 = 4184.0;
 const CONDUCTIVITY: f32 = 0.598;
@@ -145,6 +153,7 @@ fn density_factor(@builtin(global_invocation_id) id: vec3u) {
     let pos = positions[id.x].xyz;
     let base = cell_base(pos);
     var rho = 0.0;
+    var rho_near = 0.0;
     var grad_sum = vec3f(0.0);
     var grad_sq = 0.0;
     for (var dz = -1i; dz <= 1i; dz++) {
@@ -161,6 +170,10 @@ fn density_factor(@builtin(global_invocation_id) id: vec3u) {
                     let x = pos - positions[sorted[k]].xyz;
                     let r = length(x);
                     rho += params.mass * kernel(r, params.h);
+                    let wn = max(1.0 - r / params.h, 0.0);
+                    // r > 0 excludes self, whose constant term would
+                    // only offset every particle equally.
+                    rho_near += select(0.0, wn * wn * wn, r > 0.0);
                     let mg = params.mass * grad_kernel(x, r, params.h);
                     grad_sum += mg;
                     grad_sq += dot(mg, mg);
@@ -178,6 +191,11 @@ fn density_factor(@builtin(global_invocation_id) id: vec3u) {
     rho += params.rho0 * fill * 0.978;
     grad_sum += wall_grad_sum(pos);
     density[id.x] = rho;
+    // The w lane is dead outside this window: integrate re-zeroes it
+    // after forces_eval consumes it, and each invocation writes only
+    // its own .w word while neighbours read .xyz — disjoint 4-byte
+    // words, no race.
+    positions[id.x].w = rho_near;
     alpha[id.x] = rho / max(dot(grad_sum, grad_sum) + grad_sq, 1e-4);
     pressure[id.x] = 0.0;
 }
@@ -191,7 +209,8 @@ fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= params.count {
         return;
     }
-    let pos = positions[id.x].xyz;
+    let pos4 = positions[id.x];
+    let pos = pos4.xyz;
     let vel = velocities[id.x].xyz;
     let temp = temperature[id.x];
     let rho_i = density[id.x];
@@ -199,6 +218,7 @@ fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
     var visc = vec3f(0.0);
     var heat = 0.0;
     var blend = vec3f(0.0);
+    var near = vec3f(0.0);
     for (var dz = -1i; dz <= 1i; dz++) {
         for (var dy = -1i; dy <= 1i; dy++) {
             for (var dx = -1i; dx <= 1i; dx++) {
@@ -217,6 +237,8 @@ fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
                     let f = dot(x, gw) / (r * r + 0.01 * params.h * params.h);
                     let pair = params.mass / (rho_i * density[j]) * f;
                     let dv = vel - velocities[j].xyz;
+                    let wn = max(1.0 - r / params.h, 0.0);
+                    near += (pos4.w + positions[j].w) * wn * wn * (x / max(r, 1e-5));
                     visc += 2.0 * DYNAMIC_VISCOSITY * pair * dv;
                     blend -= params.mass / density[j] * kernel(r, params.h) * dv;
                     // Cleary-Monaghan diffusion, then half the pair's
@@ -228,7 +250,7 @@ fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
             }
         }
     }
-    accel[id.x] = vec4f(visc, heat);
+    accel[id.x] = vec4f(visc + K_NEAR * near, heat);
     xsph[id.x] = vec4f(blend, 0.0);
 }
 

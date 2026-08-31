@@ -59,7 +59,11 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(16);
-    let dims = fluid_core::film(19 * 120, 4, spacing, cap, force_at, |rows| {
+    let frames: u32 = std::env::var("FRAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(19 * 120);
+    let dims = fluid_core::film(frames, 4, spacing, cap, force_at, |rows| {
         raw.write_all(rows).expect("write");
     })
     .expect("no GPU adapter");
