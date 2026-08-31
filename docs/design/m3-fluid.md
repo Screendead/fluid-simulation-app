@@ -1157,12 +1157,28 @@ a fixed 48/s rate, 4.4 ms substeps boil 1.02 mm with 24k clamps and
 101 flat jumps against 0.15 mm and 12. The cap is timestep physics,
 not damping in disguise, and it stays.
 
-What stands open, and its price. The one honest lever on the jelly
-is the contact angle: adhesion scales with 1 + cos(theta), so
-raising theta past the measured 110 trades wetting fidelity for
-ring life, ending at the balling regime beta=0 already filmed. That
-is a look preference for Jack's eyes, films on request. The scallops
-are the same yield stress seen in profile and shrink only with the
-lattice; they stand as a resolution floor at the anchored sigma.
-The 0.25 s ring at theta 110 is the measured price of correct
-wetting at 2.5 mm.
+What stood open was the lever, and Jack picked a sharper one than
+the contact-angle dial: adhesion on the four side walls only, never
+the screen or back face. His words: the meniscus effect without the
+stickiness. The two faces carry ~95% of the contact-line length, so
+this removes the dissipation surface while keeping every meniscus
+the eye can see; physically the faces become non-wetting glass, and
+the flat-pose water turns into a pancake bridging two non-wetting
+plates that docks against whichever side wall it reaches. The guard
+suite, same harness, wall_adh_sum minus its two z terms:
+
+| pose | before | after |
+|---|---|---|
+| ring tau_e | 0.25 s | 0.50 s — the full adhesion-off ceiling |
+| tilt hold drift | 2.1 mm | 7.4 mm — answers a held 5 degrees |
+| tilt swing travel | 50 mm | 61 mm |
+| flat jumps > 0.3 mm | 12 | 7 — the face pinning was the jump source |
+| upright boil | 0.14 mm | 0.19 mm — the one small price |
+| shake | intact | compr 0.089%, intact |
+
+The contact line on film is a live, gently undulating meniscus rim
+instead of the frozen staircase in Jack's recording. What remains
+at the anchored sigma: the 0.50 s ring against the 1.0 s solver
+floor and real water's 3-6 s, and side-wall scallops on the ~15% of
+contact line that still wets — both stand as resolution floors.
+Theta 110 still governs the four walls that wet.

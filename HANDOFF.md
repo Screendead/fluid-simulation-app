@@ -73,12 +73,14 @@ creep meters joined the film harness. The autopsy pinned the jelly on
 wall-adhesion contact-line dissipation (ring 0.25 s with it, 0.50 s
 without, solver floor 1.0 s, real water 3-6 s here). Gamma reduction,
 K_NEAR softening, and viscosity removal are measured dead ends — each
-buys ring only by wrecking flat calm. The one open lever is the
-contact angle, a look call for Jack; the 2.2 ms cap survived its
-damping-confound re-check and stays. Nothing here changes device
-behaviour: the pacing and cost picture is exactly where the morning
-left it, and the optimisation pass remains the blocker in front of
-sustained 120 Hz.
+buys ring only by wrecking flat calm. The 2.2 ms cap survived its
+damping-confound re-check and stays. Jack's fix, same evening:
+adhesion acts on the four side walls only, never the screen or back
+face — the meniscus without the stickiness. Ring doubled to 0.50 s,
+tilt response tripled, flat calmer (7 jumps vs 12), boil 0.14 ->
+0.19 mm the one price; guard table in the record. The pacing and
+cost picture is unchanged, and the optimisation pass remains the
+blocker in front of sustained 120 Hz.
 
 Test baseline: 27 Rust tests pass, 2026-08-31.
 

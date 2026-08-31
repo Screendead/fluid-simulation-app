@@ -269,6 +269,10 @@ fn wall_adhesion(t: f32) -> f32 {
 
 // Acceleration toward each wall inside the support, per unit of
 // ADHESION * rho0.
+// The four side walls only: the screen and back faces carry ~95% of
+// the contact-line length, and their adhesion is the slosh damping and
+// flat-pose pinning the 2026-08-31 autopsy measured. Jack's call: the
+// meniscus lives at the visible edges; the faces stay non-wetting.
 fn wall_adh_sum(pos: vec3f) -> vec3f {
     let lo = wall_lo();
     let hi = -lo;
@@ -278,8 +282,6 @@ fn wall_adh_sum(pos: vec3f) -> vec3f {
     a.x += wall_adhesion((hi.x - pos.x) * inv_h);
     a.y -= wall_adhesion((pos.y - lo.y) * inv_h);
     a.y += wall_adhesion((hi.y - pos.y) * inv_h);
-    a.z -= wall_adhesion((pos.z - lo.z) * inv_h);
-    a.z += wall_adhesion((hi.z - pos.z) * inv_h);
     return a;
 }
 
