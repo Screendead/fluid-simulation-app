@@ -2418,8 +2418,6 @@ mod tests {
         assert_eq!(ring.percentile(1.0), RING as f32);
     }
 
-    /// The box every headless test builds, and the box read_tracers must
-    /// unpack the quantised positions against.
     #[test]
     fn optics_immediates_land_at_the_shader_offsets() {
         let raw = pack_optics([1.0, 2.0, 3.0], [4.0, 5.0]);
@@ -2430,6 +2428,8 @@ mod tests {
         assert_eq!(f(24), sim::SLAB_DEPTH);
     }
 
+    /// The box every headless test builds, and the box read_tracers must
+    /// unpack the quantised positions against.
     const TEST_EXTENT: [f32; 2] = [crate::WORLD_SCALE * 0.0357, crate::WORLD_SCALE * 0.0774];
 
     fn headless_sim() -> Option<(wgpu::Device, wgpu::Queue, Sim)> {
@@ -2624,16 +2624,13 @@ mod tests {
         assert!(f[3] < 2.0 * sim::REST_DENSITY, "rho max {}", f[3]);
     }
 
-    // A second of the solve, phone flat on the desk (gravity into the
-    // screen): the state the device diverged in. Settling is allowed;
-    // explosion is not.
     // The surface shader divides the field by FIELD_SETTLED to get
     // water thickness. This measures the real settled splat — five
     // upright seconds, then one raw draw (splat constant 1, the EMA's
     // steady state at rest) — and pins the constant to it. TEST_EXTENT
-    // matches the phone's world to four digits, and the splat is a
-    // point-sampled continuous field, so the small target reads the
-    // same plateau the phone renders.
+    // matches the phone's world within half a percent, and the splat
+    // is a point-sampled continuous field, so the small target reads
+    // the same plateau the phone renders.
     #[test]
     fn the_settled_field_matches_the_calibration() {
         let Some((device, queue, sim)) = headless_sim() else {
@@ -2749,6 +2746,9 @@ mod tests {
         );
     }
 
+    // A second of the solve, phone flat on the desk (gravity into the
+    // screen): the state the device diverged in. Settling is allowed;
+    // explosion is not.
     #[test]
     fn a_second_of_the_solve_settles_flat() {
         let Some((device, queue, sim)) = headless_sim() else {

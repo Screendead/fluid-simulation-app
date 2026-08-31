@@ -36,6 +36,7 @@ const SUN_GLOSS: f32 = 700.0;
 // the sector fan's centre in metres, and the two inks.
 const SECTORS: f32 = 7.0;
 const SEED: f32 = 3.0;
+const TWIST: f32 = 0.0;
 const PERIOD_LO: f32 = 0.022;
 const PERIOD_HI: f32 = 0.05;
 const CENTRE: vec2f = vec2f(0.05, 0.12);
@@ -52,7 +53,7 @@ fn hash(k: f32) -> f32 {
 fn dazzle(p: vec2f) -> vec3f {
     let q = p - CENTRE;
     let sector = floor((atan2(q.y, q.x) * 0.15915494 + 0.5) * SECTORS);
-    let phi = hash(sector) * 3.1415927;
+    let phi = hash(sector) * 3.1415927 + TWIST;
     let dir = vec2f(cos(phi), sin(phi));
     let s = dot(p, dir) / mix(PERIOD_LO, PERIOD_HI, hash(sector + 17.0))
         + hash(sector + 41.0);
@@ -133,7 +134,10 @@ fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     // out: any floor lets the lobe resolve the particle lattice on a
     // one-layer sheet as a honeycomb of florets.
     let light = normalize(up + vec3f(0.0, 0.0, 0.8));
-    let h = normalize(light - view);
+    // Face down, light meets view head on and h degenerates to zero;
+    // the guarded divide keeps it a zero glint instead of a NaN frame.
+    let hv = light - view;
+    let h = hv / max(length(hv), 1e-5);
     let glint = pow(max(dot(n, h), 0.0), SUN_GLOSS)
         * (F0 + (1.0 - F0) * pow(1.0 - dot(h, -view), 5.0))
         * (1.0 - smoothstep(0.85, 0.98, up.z));

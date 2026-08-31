@@ -54,11 +54,14 @@ dimensional — so every "exact" claim stops at the model boundary.
   environment against the refracted backdrop. The rim brightening is
   emergent at grazing angles; the hand-painted `RIM` constant in
   `sim_surface.wgsl` comes out.
-- **Absorption.** Beer-Lambert `exp(-sigma * t)` per channel, sigma
+- **Absorption.** Beer-Lambert `exp(-sigma * s)` per channel, with
+  `s` the refracted path length through the water — at oblique
+  incidence it exceeds the vertical thickness, as it should. Sigma
   chosen so blue survives: the thin edge reads as clear glass, the
   deep interior reads as water. Chosen 2026-08-31: transmittance
-  (0.55, 0.78, 0.93) at one slab depth. Rejected: (0.35, 0.65, 0.85)
-  — on film the body read as a flat blue overlay, not glass.
+  (0.55, 0.78, 0.93) at one slab depth of path. Rejected:
+  (0.35, 0.65, 0.85) — on film the body read as a flat blue overlay,
+  not glass.
 - **Light.** One directional light pinned to world-up by the gravity
   vector the shell already delivers every frame, plus a soft
   procedural gradient environment for the reflection term. The
