@@ -981,8 +981,10 @@ impl Sim {
             ],
         );
         let tracer_layout = layout("sim tracers", &[uniform(0), ro(1), ro(2), rw(3), rw(4)]);
-        let tracer_advect_layout =
-            layout("sim tracer advect", &[uniform(0), ro(1), ro(2), rw(4), ro(5)]);
+        let tracer_advect_layout = layout(
+            "sim tracer advect",
+            &[uniform(0), ro(1), ro(2), rw(4), ro(5)],
+        );
         let tracer_draw_layout = layout(
             "sim tracer draw",
             &[
