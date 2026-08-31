@@ -955,3 +955,72 @@ dial is also the calmest measured flat config. The upright boil rise
 (0.14 to ~0.26 mm) reads as forced capillary ripple under the film's
 sensor-noise shaking; the zero-noise floor check follows the wall
 wedge fix.
+
+### The flat spasms were the walls' corner arithmetic (2026-08-31)
+
+A temporal-activity map of the flat film put nearly all the motion on
+the box perimeter, not the interior — so the record's z-contact-layer
+diagnosis was wrong. The cause is geometric: the wall fill sums six
+per-axis half-space integrals, and where two perpendicular walls'
+supports overlap it counts the shared wedge twice. An edge contact
+particle reads +5.1% of rest density that does not exist (quadrature;
+the corner-most seeded layer reads +8.6%). The solve pushes the
+phantom compression apart, the fill drops, fluid falls back: the
+spasm engine, running on every edge of every pose. The +2.2% contact
+bias the record calibrated away with a blunt 0.978 scale averages the
+same wedge error over the contact population.
+
+Shipped: inclusion-exclusion to pair order. wedge(t1, t2) is the
+kernel's quarter-space integral and wedge_d its partial, degree-6
+fits pinned by quadrature tests; wall_grad_sum carries the matching
+gradient relief, so the density solve, its divergence predictor and
+the refine loop all see one geometry. The 0.978 scale is removed —
+the fudge is now derived. The corner-most residual is +3.4%, the
+pristine-lattice midpoint bias the half-lattice test already
+documents. Left out, recorded: the triple-overlap octant (+1.1% at a
+three-wall corner, opposite sign) and the same wedge relief for the
+adhesion kernel; both are second-order to what the films show.
+
+### The verdict films, and the curvature cut (2026-08-31)
+
+The full stack — 2.2 ms substep cap, wedge-corrected walls, tension
+with adhesion — against the morning's shipped state (tripod,
+NOISE=0.15, raw field):
+
+| Meter | Morning | Full stack |
+|---|---|---|
+| Flat level jumps >0.3 mm / 180 frames | 114 | 6 |
+| Flat stir | 1.62 | 0.80 |
+| Reclined jumps >0.3 mm | 1 | 0 |
+| Upright boil mm | 0.42 | 0.30 |
+| Shake compr max % | ~0.15-0.19 | 0.13 |
+
+Upright was the sore number, and a curvature-weight sweep found the
+cause in the model itself:
+
+| Curvature weight | Upright boil mm | Zero-noise floor mm |
+|---|---|---|
+| 1.0 | 0.30 | 0.22 |
+| 0.5 | 0.34 | 0.19 |
+| 0.0 | 0.14 | 0.08 |
+
+The Akinci curvature term reads colour-field normals, and at 1,620
+particles those normals are noise: the term that smooths a dense
+surface stirs this one. Cut, with its normals pass and buffer — the
+cohesion spline alone is what the cleave integral prices, so the
+tension anchor is untouched, and the wetting statics (meniscus,
+beading, contact angle) live in cohesion + adhesion. The flat blob's
+rim wobbles a little more without it (level-jump mean 0.22 vs 0.11
+mm); upright and handheld, the poses Jack lives in, halve their
+boil. Curvature can return with resolution.
+
+Zero-noise floor 0.08 mm and noisy 0.14 mm are the best surface
+numbers this project has measured. The remaining flat activity is
+the physically-correct bead slowly wandering under sensor noise.
+
+Both tension coefficients are now computed from the support radius at
+run time (sigma = (21/7040) gamma rho^2 c^2, the 0.8665 lattice
+factor, Young-Dupre at 110 degrees), so a spacing change retunes
+them instead of silently detuning them. Known debt, extended: like
+the near force, the cohesion force does work the temperature ledger
+does not book; the dT stat range on device remains the watch.

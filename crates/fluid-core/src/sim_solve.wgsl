@@ -40,7 +40,6 @@ var<immediate> step: Step;
 @group(0) @binding(13) var<storage, read_write> clamp_count: atomic<u32>;
 @group(0) @binding(14) var<storage, read_write> accel: array<vec4f>;
 @group(0) @binding(15) var<storage, read_write> xsph: array<vec4f>;
-@group(0) @binding(16) var<storage, read_write> normal: array<vec4f>;
 
 // The XSPH blend strength; the DFSPH paper pairs its solver with this
 // filter, and without it a settled deep column never stops ringing.
@@ -59,19 +58,37 @@ const HEAT_CAPACITY: f32 = 4184.0;
 const CONDUCTIVITY: f32 = 0.598;
 const EXPANSION: f32 = 2.07e-4;
 
-// Akinci 2013 surface tension: cohesion + curvature between fluid
-// pairs, adhesion against the walls. The cleave integral of the
-// cohesion spline prices the model: sigma = 0.107 * SURFACE_TENSION
-// N/m at this support radius, so 0.68 is water in the continuum and
-// 0.78 on the actual 2.5 mm lattice, which realizes 87% of the
-// continuum tension (independent lattice sum, 2026-08-31). ADHESION
-// is the wetting; by Young-Dupre their ratio is a contact-angle dial
-// (M3 record table: this pair is 110 degrees, oleophobic phone
-// glass; 6.8 would be clean glass). The balling that shelved tension
-// in the first sweep was correct physics for the zero-adhesion wall
-// it ran against.
-const SURFACE_TENSION: f32 = 0.78;
-const ADHESION: f32 = 2.39;
+// Akinci 2013 surface tension: the cohesion spline between fluid
+// pairs, adhesion against the walls. The curvature term is left out:
+// its normals are noise at this particle count and it doubled the
+// measured boil (M3 record, curvature table). Both coefficients
+// follow from
+// the support radius at run time, so a spacing change cannot silently
+// detune them: the cleave integral prices the model's tension at
+// sigma = (21/7040) gamma rho^2 c^2 in the continuum, the 2.4 h/d
+// lattice realizes 0.8665 of that (independent lattice sum,
+// 2026-08-31), and gamma inverts the formula at water's 0.0728 N/m.
+// Young-Dupre turns the adhesion-to-tension ratio into a contact
+// angle; beta buys 110 degrees, measured water on oleophobic phone
+// glass (M3 record dial table; 3.3x would be clean glass). The
+// balling that shelved tension in the first sweep was correct
+// physics for the zero-adhesion wall it ran against.
+const SIGMA_WATER: f32 = 0.0728;
+const LATTICE_SIGMA: f32 = 0.8665;
+const COS_CONTACT: f32 = -0.342;
+
+fn tension_gamma() -> f32 {
+    let c = 2.0 * params.h;
+    return SIGMA_WATER * 7040.0 / (21.0 * LATTICE_SIGMA * params.rho0 * params.rho0 * c * c);
+}
+
+// 1 / 6.417e-4: the adhesion kernel's cleave integral K = K_hat c^2,
+// from the same quadrature as wall_adhesion.
+fn adhesion_beta() -> f32 {
+    let c = 2.0 * params.h;
+    return SIGMA_WATER * (1.0 + COS_CONTACT) * 1558.4
+        / (LATTICE_SIGMA * params.rho0 * params.rho0 * c * c);
+}
 
 fn kernel(r: f32, h: f32) -> f32 {
     let q = r / h;
@@ -354,38 +371,6 @@ fn density_div(@builtin(global_invocation_id) id: vec3u) {
 // share one pass, written to scratch: applying in the same dispatch
 // would race the neighbour reads. 0.01 h^2 in the denominators is the
 // standard singularity guard.
-// Surface normals for the tension forces: the scaled colour-field
-// gradient. Walls enter through their analytic integral, so a contact
-// layer reads interior and tension does not peel fluid off the glass.
-@compute @workgroup_size(256)
-fn st_normals(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= params.count {
-        return;
-    }
-    let pos = positions[id.x].xyz;
-    let base = cell_base(pos);
-    var grad = wall_grad_sum(pos) / params.rho0;
-    for (var dz = -1i; dz <= 1i; dz++) {
-        for (var dy = -1i; dy <= 1i; dy++) {
-            for (var dx = -1i; dx <= 1i; dx++) {
-                let coord = vec3i(base) + vec3i(dx, dy, dz);
-                if any(coord < vec3i(0)) || any(coord >= vec3i(params.dims)) {
-                    continue;
-                }
-                let c = (u32(coord.z) * params.dims.y + u32(coord.y)) * params.dims.x
-                    + u32(coord.x);
-                let end = starts[c] + counts[c];
-                for (var k = starts[c]; k < end; k++) {
-                    let j = sorted[k];
-                    let x = pos - positions[j].xyz;
-                    grad += params.mass / density[j] * grad_kernel(x, length(x), params.h);
-                }
-            }
-        }
-    }
-    normal[id.x] = vec4f(2.0 * params.h * grad, 0.0);
-}
-
 @compute @workgroup_size(256)
 fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= params.count {
@@ -397,7 +382,6 @@ fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
     let temp = temperature[id.x];
     let rho_i = density[id.x];
     let base = cell_base(pos);
-    let n_i = normal[id.x].xyz;
     var visc = vec3f(0.0);
     var heat = 0.0;
     var blend = vec3f(0.0);
@@ -431,15 +415,13 @@ fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
                         * (temp - temperature[j]);
                     heat -= 0.5 * DYNAMIC_VISCOSITY / HEAT_CAPACITY * pair * dot(dv, dv);
                     let corr = 2.0 * params.rho0 / (rho_i + density[j]);
-                    tension -= corr
-                        * (params.mass * cohesion(r) * x / max(r, 1e-9)
-                            + (n_i - normal[j].xyz));
+                    tension -= corr * params.mass * cohesion(r) * x / max(r, 1e-9);
                 }
             }
         }
     }
-    let adh = ADHESION * params.rho0 * wall_adh_sum(pos);
-    accel[id.x] = vec4f(visc + K_NEAR * near + SURFACE_TENSION * tension + adh, heat);
+    let adh = adhesion_beta() * params.rho0 * wall_adh_sum(pos);
+    accel[id.x] = vec4f(visc + K_NEAR * near + tension_gamma() * tension + adh, heat);
     xsph[id.x] = vec4f(blend, 0.0);
 }
 
