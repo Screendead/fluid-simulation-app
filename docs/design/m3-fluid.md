@@ -1480,13 +1480,37 @@ term vanishes exactly, and the ring film confirms it: cross-build PSNR
 inside solver-atomics chaos - with compression and rest velocity
 identical.
 
-Open, measured next: how long the swirl survives. XSPH at 48/s is an
-effective viscosity of roughly rate x h^2 ~ 7e-3 m^2/s - thousands of
-times water's 1e-6, Reynolds ~10 where a real hand-swirled box sits
-near 1e5. Real water at this depth holds rotation for tens of seconds.
-The swirl meter (tracer angular momentum, spin-down tau) and an
-XSPH-rate ladder guarded by ring, dance and wake will say how much of
-that the rate buys back; vorticity confinement is the recorded next
-lever if the ladder is not enough. Turbulence proper - the cascade -
-is beyond any 1,620-particle sim; the honest goal is that the scales
-this sim can resolve actually swirl.
+Measured the same night (tracer probe, scratch worktree, flat spin
+at 6 rad/s through the gyro path; ladder run at XSPH 48/24/12/6):
+
+- Spin-up is near-instant and correct: box-frame omega -0.23 rad/s
+  during the hold - 96% co-rotation. This is geometry, not viscosity:
+  a rectangular box grips its water through wall-normal pressure, in
+  both directions. The stop is tracked almost as fast; ~1.5 rad/s of
+  world rotation survives the half-second stop ramp, at every XSPH
+  rate alike.
+- The remnant reorganises into internal eddies: net angular momentum
+  ~0.6 rad/s at 1 s, ~0.2 rad/s tail with tau ~5 s. Mean tracer speed
+  0.58 m/s at stop falls to the ~0.07 m/s floor within ~2-3 s.
+- The XSPH ladder verdict: NOT the sink. 48 -> 6 leaves retention and
+  motion lifetime unchanged (tail omega at 8 s: 0.11 -> 0.23, mild).
+  The rate x h^2 viscosity estimate was wrong at these scales -
+  near-rigid rotation is XSPH-invariant, and the probe refuted the
+  model. XSPH_RATE stays 48.
+- The dominant sink, by elimination and by an old witness: the walls.
+  The contact clamp zeroes the wall-normal velocity - restitution
+  zero, a perfect wave absorber, destroying kinetic energy at every
+  contact. Real rigid walls reflect waves through pressure with
+  almost no loss. The ring meter has said this all along: ring life
+  6.5 s where a real tank rings for minutes. Wave churn after
+  handling dies in ~3 s against a real ~30+ s.
+
+The recorded next lever, Jack's call: wall restitution - reflect the
+normal component with a coefficient instead of zeroing it - measured
+by ring life, the swirl probe's motion lifetime, and the flicker
+meter, guarded by jelly, dance and wake (the inelastic wall is
+load-bearing for settling; a reflective one may re-excite the noise
+species the force filter closed). Vorticity confinement stays on the
+shelf behind it. Turbulence proper - the cascade - is beyond any
+1,620-particle sim; the honest goal is that the scales this sim
+resolves keep their energy for as long as real water keeps it.
