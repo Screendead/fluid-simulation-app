@@ -1208,10 +1208,12 @@ life stays 0.50 s in every dry-face variant, so the de-jelly is
 real; it just arrives with the noise unmasked.
 
 Jack's call: full grip back on the phone, and the noise root fix
-becomes the target. The measured leads for that fix, in order: the
-warm-start half-pressure factor (tuned against hydrostatic ringing
-before tension existed; never re-measured on the dance meter), the
-refine schedule at rest (its dance response is unmeasured — the
-ladder only cleared it on boil), and the solve's kick statistics
-per substep. The side-wall geometry stays in this record as the
+becomes the target. The first two leads were probed the same night
+and are dead: the warm-start factor is flat on the dance meter from
+0.0 to 0.7 (12-14 flips, baseline 13) and explodes at 0.9; refine
+10 buys nothing over 5 (11 vs 13). One finding in passing: refine 2
+at the 2.1 ms substep is a cliff (4548 flips) — the 5-pass schedule
+is load-bearing at rest, not head-room. The remaining lead is the
+solve's per-substep kick statistics, which needs instrumentation,
+not films. The side-wall geometry stays in this record as the
 proven de-jelly, waiting for the noise fix that makes it livable.
