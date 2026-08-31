@@ -21,6 +21,26 @@ const METRES_PER_PIXEL: f32 = 0.0254 / 458.0;
 /// a pause cannot fling the particles.
 const MAX_DT: f32 = 1.0 / 30.0;
 
+// A substep near a full 8.3 ms frame cannot converge against the wall
+// and near-pressure springs, and the residual is resting jitter (film:
+// reclined jumps 0.26 mm/frame at 8.3 ms substeps, 0.007 at half
+// that). This and refine_passes key on substep length, not count, so a
+// 60 Hz frame splits twice as often and converges the same. Slightly
+// above 1/240 s, so measured 120 Hz interval jitter stays at two.
+const DT_SUB_MAX: f32 = 0.0044;
+
+// Density error scales with dt squared, so short substeps need fewer
+// refine passes. The film compr guard covers the shallow end.
+fn refine_passes(dt_sub: f32) -> u32 {
+    if dt_sub > 0.0035 {
+        10
+    } else if dt_sub > 0.00105 {
+        5
+    } else {
+        2
+    }
+}
+
 struct Ring {
     samples: [f32; RING],
     filled: usize,
@@ -195,14 +215,18 @@ pub fn film(
             eprintln!("film: wake at frame {f}");
             was_asleep = false;
         }
-        // The production CFL, fed by the previous frame's v_max. NMIN
-        // is a diagnostic floor: halving the rest timestep separates
-        // timestep-stability noise from model noise.
+        // The production CFL and substep cap, fed by the previous
+        // frame's v_max. NMIN is a diagnostic floor above the cap:
+        // shortening the rest timestep separates timestep-stability
+        // noise from model noise.
         let n_min: u32 = std::env::var("NMIN")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(2);
-        let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32).clamp(n_min, cap);
+            .unwrap_or(0);
+        let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32)
+            .max((dt / DT_SUB_MAX).ceil() as u32)
+            .max(n_min)
+            .min(cap);
         field_keep = match keep_pin {
             Some(k) => k,
             None => field_keep + (field_keep_target(v_max) - field_keep) * 0.25,
@@ -238,16 +262,7 @@ pub fn film(
                 pass.dispatch_workgroups(particles, 1, 1);
                 pass.set_pipeline(&sim.den_apply);
                 pass.dispatch_workgroups(particles, 1, 1);
-                // Short substeps converge fast: density error scales
-                // with dt squared, so past eight substeps two refine
-                // passes hold it. The compr stat guards the cut.
-                for _ in 0..if n >= 8 {
-                    2
-                } else if n <= 2 {
-                    10
-                } else {
-                    5
-                } {
+                for _ in 0..refine_passes(dt_sub) {
                     pass.set_pipeline(&sim.den_kappa);
                     pass.dispatch_workgroups(particles, 1, 1);
                     pass.set_pipeline(&sim.den_apply);
@@ -1919,13 +1934,9 @@ impl Renderer {
             // the stats readback drained. The GPU clamp enforces the dt
             // actually encoded.
             s.substeps_used = if dt > 0.0 {
-                // Floor of two: at a full 8.3 ms substep the density
-                // solve cannot converge against the wall and near-
-                // pressure springs, and the residual is the resting
-                // jitter. Halving the substep stabilizes it (film:
-                // reclined pool jumps 0.26 mm/frame at one substep,
-                // 0.007 at two with the low-n iteration boost).
-                ((dt * s.stats[6] / (0.4 * s.spacing)).ceil() as u32).clamp(2, s.max_substeps)
+                ((dt * s.stats[6] / (0.4 * s.spacing)).ceil() as u32)
+                    .max((dt / DT_SUB_MAX).ceil() as u32)
+                    .min(s.max_substeps)
             } else {
                 0
             };
@@ -2032,17 +2043,7 @@ impl Renderer {
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&s.den_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
-                        // Short substeps converge fast: density error
-                        // scales with dt squared, so past eight
-                        // substeps two refine passes hold it. The
-                        // compr stat guards the cut.
-                        for _ in 0..if n >= 8 {
-                            2
-                        } else if n <= 2 {
-                            10
-                        } else {
-                            5
-                        } {
+                        for _ in 0..refine_passes(dt_sub) {
                             pass.set_pipeline(&s.den_kappa);
                             pass.dispatch_workgroups(particles, 1, 1);
                             pass.set_pipeline(&s.den_apply);
