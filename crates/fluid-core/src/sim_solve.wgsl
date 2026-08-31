@@ -40,6 +40,7 @@ var<immediate> step: Step;
 @group(0) @binding(13) var<storage, read_write> clamp_count: atomic<u32>;
 @group(0) @binding(14) var<storage, read_write> accel: array<vec4f>;
 @group(0) @binding(15) var<storage, read_write> xsph: array<vec4f>;
+@group(0) @binding(16) var<storage, read_write> normal: array<vec4f>;
 
 // The XSPH blend strength; the DFSPH paper pairs its solver with this
 // filter, and without it a settled deep column never stops ringing.
@@ -57,6 +58,17 @@ const DYNAMIC_VISCOSITY: f32 = 1.002e-3;
 const HEAT_CAPACITY: f32 = 4184.0;
 const CONDUCTIVITY: f32 = 0.598;
 const EXPANSION: f32 = 2.07e-4;
+
+// Akinci 2013 surface tension: cohesion + curvature between fluid
+// pairs, adhesion against the walls. The cleave integral of the
+// cohesion spline prices the model: sigma = 0.107 * SURFACE_TENSION
+// N/m at this support radius, so 0.68 is water. ADHESION is the
+// wetting; by Young-Dupre it is a contact-angle dial (M3 record
+// table: 2.08 is 110 degrees, oleophobic phone glass; 5.89 is 30,
+// clean glass). The balling that shelved tension in the first sweep
+// was correct physics for the zero-adhesion wall it ran against.
+const SURFACE_TENSION: f32 = 0.68;
+const ADHESION: f32 = 2.08;
 
 fn kernel(r: f32, h: f32) -> f32 {
     let q = r / h;
@@ -85,6 +97,20 @@ fn grad_kernel(x: vec3f, r: f32, h: f32) -> vec3f {
         dw = sigma / h * (-0.75 * t * t);
     }
     return dw / r * x;
+}
+
+// Akinci et al. 2013 cohesion spline over the kernel support.
+fn cohesion(r: f32) -> f32 {
+    let c = 2.0 * params.h;
+    if r >= c || r < 1e-9 {
+        return 0.0;
+    }
+    let k = 32.0 / (3.14159265 * pow(c, 9.0));
+    let a = (c - r) * (c - r) * (c - r) * r * r * r;
+    if 2.0 * r > c {
+        return k * a;
+    }
+    return k * (2.0 * a - pow(c, 6.0) / 64.0);
 }
 
 // Mirrors sim.rs::wall_density.
@@ -132,6 +158,34 @@ fn wall_grad_sum(pos: vec3f) -> vec3f {
     g.z -= scale * wall_gradient((pos.z - lo.z) * inv_h);
     g.z += scale * wall_gradient((hi.z - pos.z) * inv_h);
     return g;
+}
+
+// The integral of the Akinci adhesion kernel over a wall half-space,
+// as a polynomial in u = 2 - d/h pinned to zero value and slope at
+// the support edge. The render test pins it to the direct quadrature;
+// fit error 0.3%.
+fn wall_adhesion(t: f32) -> f32 {
+    let u = clamp(2.0 - t, 0.0, 2.0);
+    return u * u
+        * (1.7847015e-3
+            + u * (3.3392196e-3
+                + u * (-4.3394677e-3 + u * (1.6711868e-3 + u * (-2.1788750e-4)))));
+}
+
+// Acceleration toward each wall inside the support, per unit of
+// ADHESION * rho0.
+fn wall_adh_sum(pos: vec3f) -> vec3f {
+    let lo = wall_lo();
+    let hi = -lo;
+    let inv_h = 1.0 / params.h;
+    var a = vec3f(0.0);
+    a.x -= wall_adhesion((pos.x - lo.x) * inv_h);
+    a.x += wall_adhesion((hi.x - pos.x) * inv_h);
+    a.y -= wall_adhesion((pos.y - lo.y) * inv_h);
+    a.y += wall_adhesion((hi.y - pos.y) * inv_h);
+    a.z -= wall_adhesion((pos.z - lo.z) * inv_h);
+    a.z += wall_adhesion((hi.z - pos.z) * inv_h);
+    return a;
 }
 
 fn cell_base(pos: vec3f) -> vec3u {
@@ -223,6 +277,38 @@ fn density_div(@builtin(global_invocation_id) id: vec3u) {
 // share one pass, written to scratch: applying in the same dispatch
 // would race the neighbour reads. 0.01 h^2 in the denominators is the
 // standard singularity guard.
+// Surface normals for the tension forces: the scaled colour-field
+// gradient. Walls enter through their analytic integral, so a contact
+// layer reads interior and tension does not peel fluid off the glass.
+@compute @workgroup_size(256)
+fn st_normals(@builtin(global_invocation_id) id: vec3u) {
+    if id.x >= params.count {
+        return;
+    }
+    let pos = positions[id.x].xyz;
+    let base = cell_base(pos);
+    var grad = wall_grad_sum(pos) / params.rho0;
+    for (var dz = -1i; dz <= 1i; dz++) {
+        for (var dy = -1i; dy <= 1i; dy++) {
+            for (var dx = -1i; dx <= 1i; dx++) {
+                let coord = vec3i(base) + vec3i(dx, dy, dz);
+                if any(coord < vec3i(0)) || any(coord >= vec3i(params.dims)) {
+                    continue;
+                }
+                let c = (u32(coord.z) * params.dims.y + u32(coord.y)) * params.dims.x
+                    + u32(coord.x);
+                let end = starts[c] + counts[c];
+                for (var k = starts[c]; k < end; k++) {
+                    let j = sorted[k];
+                    let x = pos - positions[j].xyz;
+                    grad += params.mass / density[j] * grad_kernel(x, length(x), params.h);
+                }
+            }
+        }
+    }
+    normal[id.x] = vec4f(2.0 * params.h * grad, 0.0);
+}
+
 @compute @workgroup_size(256)
 fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= params.count {
@@ -234,10 +320,12 @@ fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
     let temp = temperature[id.x];
     let rho_i = density[id.x];
     let base = cell_base(pos);
+    let n_i = normal[id.x].xyz;
     var visc = vec3f(0.0);
     var heat = 0.0;
     var blend = vec3f(0.0);
     var near = vec3f(0.0);
+    var tension = vec3f(0.0);
     for (var dz = -1i; dz <= 1i; dz++) {
         for (var dy = -1i; dy <= 1i; dy++) {
             for (var dx = -1i; dx <= 1i; dx++) {
@@ -265,11 +353,16 @@ fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
                     heat += 2.0 * CONDUCTIVITY / HEAT_CAPACITY * pair
                         * (temp - temperature[j]);
                     heat -= 0.5 * DYNAMIC_VISCOSITY / HEAT_CAPACITY * pair * dot(dv, dv);
+                    let corr = 2.0 * params.rho0 / (rho_i + density[j]);
+                    tension -= corr
+                        * (params.mass * cohesion(r) * x / max(r, 1e-9)
+                            + (n_i - normal[j].xyz));
                 }
             }
         }
     }
-    accel[id.x] = vec4f(visc + K_NEAR * near, heat);
+    let adh = ADHESION * params.rho0 * wall_adh_sum(pos);
+    accel[id.x] = vec4f(visc + K_NEAR * near + SURFACE_TENSION * tension + adh, heat);
     xsph[id.x] = vec4f(blend, 0.0);
 }
 

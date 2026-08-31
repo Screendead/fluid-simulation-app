@@ -416,4 +416,53 @@ mod tests {
         assert_eq!([f(32), f(36), f(40)], [9.0, 10.0, REST_DENSITY]);
         assert_eq!(&raw[44..48], &[0u8; 4]);
     }
+
+    // Copies the shader's wall_adhesion polynomial; a drifted edit to
+    // either side fails here.
+    fn wall_adhesion(t: f64) -> f64 {
+        let u = (2.0 - t).clamp(0.0, 2.0);
+        u * u
+            * (1.784_701_5e-3
+                + u * (3.339_219_6e-3
+                    + u * (-4.339_467_7e-3 + u * (1.671_186_8e-3 + u * (-2.178_875_0e-4)))))
+    }
+
+    #[test]
+    fn wall_adhesion_polynomial_matches_the_kernel_quadrature() {
+        let h = 1.2 * 0.0025_f64;
+        let c = 2.0 * h;
+        let aker = |r: f64| -> f64 {
+            if 2.0 * r < c || r > c {
+                return 0.0;
+            }
+            0.007 / c.powf(3.25) * (-4.0 * r * r / c + 6.0 * r - 2.0 * c).max(0.0).powf(0.25)
+        };
+        // J(d) = 2 pi * int_d^c u * (int_u^c A(s) ds) du, trapezoid at
+        // 4000 points; the same integral the fit in sigma_eff.py used.
+        let n = 4000usize;
+        let dr = c / n as f64;
+        let a: Vec<f64> = (0..=n).map(|i| aker(i as f64 * dr)).collect();
+        let mut int_a = vec![0.0f64; n + 1];
+        for i in (0..n).rev() {
+            int_a[i] = int_a[i + 1] + (a[i] + a[i + 1]) / 2.0 * dr;
+        }
+        let mut int_j = vec![0.0f64; n + 1];
+        for i in (0..n).rev() {
+            let (u0, u1) = (i as f64 * dr, (i + 1) as f64 * dr);
+            int_j[i] = int_j[i + 1] + (u0 * int_a[i] + u1 * int_a[i + 1]) / 2.0 * dr;
+        }
+        let j0 = 2.0 * std::f64::consts::PI * int_j[0];
+        for step in 0..=40 {
+            let d = c * step as f64 / 40.0;
+            let idx = (d / dr).round() as usize;
+            let quad = 2.0 * std::f64::consts::PI * int_j[idx];
+            assert!(
+                (wall_adhesion(d / h) - quad).abs() < 0.005 * j0,
+                "d/h {}: poly {} quad {}",
+                d / h,
+                wall_adhesion(d / h),
+                quad
+            );
+        }
+    }
 }

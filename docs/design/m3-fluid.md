@@ -902,3 +902,56 @@ Shipped: DT_SUB_MAX 2.2 ms. Rest runs four substeps instead of two,
 about +1.1 ms GPU at rest on the M3 solver-cost split. The refine
 schedule is saturated at 2.1 ms (16 refines buy nothing over 5), so
 the optimisation pass can cut refines there with the compr guard.
+
+### Surface tension, priced and re-landed with wetting (2026-08-31)
+
+The earlier verdict — "the tension able to kill millimetre chop is
+orders above physical" — was wrong, and the derivation that shows it
+also rescues the model. Integrating the Akinci cohesion potential
+across a cleaved half-space prices the model's effective surface
+tension: sigma = 0.107 * gamma N/m at this support radius (a discrete
+lattice sum agrees within 20%), so water is gamma = 0.68 and the old
+sweep's 0.5..1.0 straddled physical. The balling it saw was correct
+physics: a shallow pool at physical tension on a wall with no
+adhesion is water on a superhydrophobic surface, and its equilibrium
+puddle height (5.4 mm) exceeds this pool's depth. The glass was
+waxed. The missing mechanism was wetting, not a smaller knob.
+
+Re-landed from the preserved diff, rebased over the fused solver:
+normals pass (st_normals, one extra neighbour sweep), cohesion +
+curvature in forces_eval, and the new piece — wall adhesion through
+the same analytic-wall machinery. The Akinci adhesion kernel's
+half-space integral J(d) has no closed form; a quadrature-pinned
+polynomial in u = 2 - d/h carries it (fit error 0.3%, test:
+wall_adhesion_polynomial_matches_the_kernel_quadrature).
+
+Young-Dupre closes the loop and makes ADHESION a contact-angle dial:
+the wall's work of adhesion is beta * rho^2 * K (K from J), equated
+to sigma (1 + cos theta). At gamma 0.68: beta 2.08 is 110 degrees
+(oleophobic phone glass), 3.16 is 90, 4.73 is 60, 5.89 is 30 (clean
+glass), 6.31 is 0. The model's own cohesion work at gamma 0.68 comes
+out at exactly 2 sigma of water, confirming both anchors.
+
+Filmed across the dial (tripod, NOISE=0.15, raw field, 2.1 ms cap):
+
+| beta (theta) | flat stir | flat jumps >0.3mm | upright boil mm |
+|---|---|---|---|
+| no tension | 1.38 | 114 | 0.14 |
+| 1.36 (~120) | 1.19 | 79 | 0.24 |
+| 2.72 (~97) | 0.75 | 12 | 0.31 |
+| 4.73 (60) | 0.70 | 39 | 0.26 |
+| 5.89 (30) | 0.86 | 119 | 0.27 |
+
+At 30 degrees the water wicks around the whole perimeter and climbs
+the corners — real glass-box behaviour — but face spreading stalls
+against a stable dry patch: lateral spreading pressure on a face is
+an emergent thin-film effect the 2.5 mm discretization barely
+carries, where corner wicking gets direct lateral adhesion from the
+side walls. Shipped: beta 2.08, the measured contact angle of water
+on an actual iPhone screen. The physically honest flat pose is a
+beading puddle, not the old full sheet — a 2.4 mm water layer cannot
+stay sheeted on any real material — and the hydrophobic end of the
+dial is also the calmest measured flat config. The upright boil rise
+(0.14 to ~0.26 mm) reads as forced capillary ripple under the film's
+sensor-noise shaking; the zero-noise floor check follows the wall
+wedge fix.

@@ -255,6 +255,8 @@ pub fn film(
                 pass.set_pipeline(&sim.density_div);
                 pass.set_immediates(0, &step);
                 pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_pipeline(&sim.st_normals);
+                pass.dispatch_workgroups(particles, 1, 1);
                 pass.set_pipeline(&sim.div_apply);
                 pass.dispatch_workgroups(particles, 1, 1);
                 pass.set_pipeline(&sim.forces_eval);
@@ -781,6 +783,7 @@ struct Sim {
     scan_single: wgpu::ComputePipeline,
     scatter: wgpu::ComputePipeline,
     density_div: wgpu::ComputePipeline,
+    st_normals: wgpu::ComputePipeline,
     forces_eval: wgpu::ComputePipeline,
     forces_apply: wgpu::ComputePipeline,
     div_apply: wgpu::ComputePipeline,
@@ -879,6 +882,7 @@ impl Sim {
         let clamps = storage("sim clamps", 4, none);
         let accel = storage("sim accel", u64::from(count) * 16, none);
         let xsph = storage("sim xsph", u64::from(count) * 16, none);
+        let normals = storage("sim normals", u64::from(count) * 16, none);
         let stats_src = storage("sim stats", 40, wgpu::BufferUsages::COPY_SRC);
         // The box starts at the lab constants' temperature, 20 C.
         let temperature = device.create_buffer(&wgpu::BufferDescriptor {
@@ -986,6 +990,7 @@ impl Sim {
                 rw(13),
                 rw(14),
                 rw(15),
+                rw(16),
             ],
         );
         let tracer_layout = layout("sim tracers", &[uniform(0), ro(1), ro(2), rw(3), rw(4)]);
@@ -1071,6 +1076,7 @@ impl Sim {
                 entry(13, &clamps),
                 entry(14, &accel),
                 entry(15, &xsph),
+                entry(16, &normals),
             ],
         );
         let tracer_bind = bind(
@@ -1152,6 +1158,7 @@ impl Sim {
             scan_single: pipeline(&scan_pl, &scan_module, "scan_single"),
             scatter: pipeline(&grid_pl, &grid_module, "scatter"),
             density_div: pipeline(&solve_pl, &solve_module, "density_div"),
+            st_normals: pipeline(&solve_pl, &solve_module, "st_normals"),
             forces_eval: pipeline(&solve_pl, &solve_module, "forces_eval"),
             forces_apply: pipeline(&solve_pl, &solve_module, "forces_apply"),
             div_apply: pipeline(&solve_pl, &solve_module, "div_apply"),
@@ -2036,6 +2043,8 @@ impl Renderer {
                         pass.set_pipeline(&s.density_div);
                         pass.set_immediates(0, &step);
                         pass.dispatch_workgroups(particles, 1, 1);
+                        pass.set_pipeline(&s.st_normals);
+                        pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&s.div_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&s.forces_eval);
@@ -2413,6 +2422,8 @@ mod tests {
                     pass.set_immediates(0, &step);
                     pass.dispatch_workgroups(particles, 1, 1);
                     if substeps > 0 {
+                        pass.set_pipeline(&sim.st_normals);
+                        pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&sim.div_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&sim.forces_eval);
