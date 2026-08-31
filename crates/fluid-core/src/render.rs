@@ -1353,7 +1353,7 @@ impl Renderer {
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&s.den_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
-                        for _ in 0..3 {
+                        for _ in 0..5 {
                             pass.set_pipeline(&s.den_kappa);
                             pass.dispatch_workgroups(particles, 1, 1);
                             pass.set_pipeline(&s.den_apply);
@@ -1695,7 +1695,7 @@ mod tests {
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&sim.den_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
-                        for _ in 0..3 {
+                        for _ in 0..5 {
                             pass.set_pipeline(&sim.den_kappa);
                             pass.dispatch_workgroups(particles, 1, 1);
                             pass.set_pipeline(&sim.den_apply);
@@ -1892,6 +1892,24 @@ mod tests {
                 ]
             })
             .collect()
+    }
+
+    // Gravity at 45 degrees in the screen plane pools the fluid into a
+    // corner, the worst case for the additive wall fill: Jack reports
+    // the jitter is strongest there (2026-08-31).
+    #[test]
+    fn fifteen_seconds_in_a_corner_stay_bounded() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let f = read_stats(&device, &queue, &sim, 7, 1800, [-6.94, -6.94, 0.0]);
+        eprintln!(
+            "corner: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
+            f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9]
+        );
+        assert!(f[3] < 1.2 * sim::REST_DENSITY, "rho max {}", f[3]);
+        assert!(f[6] < 1.0, "v_max {}", f[6]);
+        assert!(f[4] >= 0.0 && f[5] < 1.0e4, "pressure {}..{}", f[4], f[5]);
     }
 
     // After five seconds of gravity toward the -x wall the fluid pools

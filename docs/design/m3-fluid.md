@@ -345,3 +345,22 @@ against the -x wall, forces a full recycle with one dt-above-TAU
 advect pass, and counts tracers right of the pool: zero with the
 branch live, 23 stranded without it.
 
+### Five density iterations
+
+Jack reports jitter upright and worse at 45 degrees (2026-08-31). The
+corner test reproduces it. At three density iterations, over 15 s in
+the corner: rho max 1013.7..1017.6, compr max 1.5..1.9 percent, v
+floor 0.089..0.112, clamps 74..93. Five iterations collapse it:
+corner rho max 1003.7..1008.1, compr max 0.5..1.0 percent, v floor
+0.034..0.045; upright v floor 0.030 with zero clamps. Rho max fell,
+so the solver converges onto a truer target: the ringing was
+under-convergence, not only the recorded wall bias. Cost: four more
+dispatches per substep, about a fifth more solve time; at rest n
+stays 1..2 and the budget holds. Two options rejected. Iterations
+conditional on n (five calm, three violent) saves time in the shake
+regime the optimisation pass owns anyway, and lets the damping
+character change with n. The pair-overlap wall correction stays
+queued: the corner-versus-upright delta collapsed without it.
+(Mac numbers, 2026-08-31; the device capture follows the next
+deploy.)
+
