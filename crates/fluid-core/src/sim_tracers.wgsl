@@ -28,6 +28,7 @@ var<immediate> step: Step;
 @group(0) @binding(2) var<storage, read> velocities: array<vec4f>;
 @group(0) @binding(3) var<storage, read_write> vel_grid: array<atomic<i32>>;
 @group(0) @binding(4) var<storage, read_write> tracers: array<vec2u>;
+@group(0) @binding(5) var<storage, read_write> vel_flat: array<vec4i>;
 
 // Velocities land in the grid as 16.16 fixed point; f32 storage has no
 // atomic add.
@@ -109,6 +110,24 @@ fn splat(@builtin(global_invocation_id) id: vec3u) {
     atomicAdd(&vel_grid[c + 3u], 1i);
 }
 
+// Splat's atomic sums, copied once to a plain buffer: on the A15 an
+// aliased non-atomic view of the atomic grid read stale cells (the
+// 2026-08-31 block artifact), and plain loads spare advect's eight
+// taps the atomics' cache bypass.
+@compute @workgroup_size(256)
+fn resolve(@builtin(global_invocation_id) id: vec3u) {
+    if id.x >= cell_count() {
+        return;
+    }
+    let c = id.x * 4u;
+    vel_flat[id.x] = vec4i(
+        atomicLoad(&vel_grid[c]),
+        atomicLoad(&vel_grid[c + 1u]),
+        atomicLoad(&vel_grid[c + 2u]),
+        atomicLoad(&vel_grid[c + 3u]),
+    );
+}
+
 @compute @workgroup_size(256)
 fn advect(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= arrayLength(&tracers) {
@@ -136,14 +155,10 @@ fn advect(@builtin(global_invocation_id) id: vec3u) {
         let w = mix(vec3f(1.0) - f, f, vec3f(o));
         let weight = w.x * w.y * w.z;
         let coord = base + o;
-        let c = ((coord.z * params.dims.y + coord.y) * params.dims.x + coord.x) * 4u;
-        moment += weight
-            * vec3f(
-                f32(atomicLoad(&vel_grid[c])),
-                f32(atomicLoad(&vel_grid[c + 1u])),
-                f32(atomicLoad(&vel_grid[c + 2u])),
-            );
-        weight_count += weight * f32(atomicLoad(&vel_grid[c + 3u]));
+        let c = (coord.z * params.dims.y + coord.y) * params.dims.x + coord.x;
+        let cell = vel_flat[c];
+        moment += weight * vec3f(cell.xyz);
+        weight_count += weight * f32(cell.w);
     }
     var v = vec3f(0.0);
     if weight_count > 0.0 {

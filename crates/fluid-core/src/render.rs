@@ -29,16 +29,14 @@ const MAX_DT: f32 = 1.0 / 30.0;
 // interval jitter stays at four substeps.
 const DT_SUB_MAX: f32 = 0.0022;
 
-// The substep floor divides the nominal frame, never the measured
-// one: a floor fed by the measured interval is positive feedback — a
-// slow frame demands more substeps, which slows the next frame — and
-// on the device it railed at sixteen substeps and 30 Hz with the
-// fluid at rest (2026-08-31 capture). A slow frame keeps the floor
-// of the frame the display is aiming for.
-const NOMINAL_DT: f32 = 1.0 / 120.0;
-
+// The substep floor divides the measured frame — a dropped frame
+// integrated at four substeps means 4-8 ms substeps, and the device
+// showed those as compression pops (compr max 6.5%, 2026-08-31). The
+// cap at eight breaks the feedback that railed an uncapped floor at
+// sixteen substeps and 30 Hz: past a doubled frame, more substeps
+// would slow the next frame more than they converge this one.
 fn substep_floor(dt: f32) -> u32 {
-    (dt.min(NOMINAL_DT) / DT_SUB_MAX).ceil() as u32
+    ((dt / DT_SUB_MAX).ceil() as u32).min(8)
 }
 
 // Density error scales with dt squared, so short substeps need fewer
@@ -288,6 +286,8 @@ pub fn film(
             pass.dispatch_workgroups(sim.vel_groups, 1, 1);
             pass.set_pipeline(&sim.splat);
             pass.dispatch_workgroups(particles, 1, 1);
+            pass.set_pipeline(&sim.resolve);
+            pass.dispatch_workgroups(sim.cell_groups, 1, 1);
             pass.set_pipeline(&sim.advect);
             pass.dispatch_workgroups(sim.tracer_count.div_ceil(256), 1, 1);
         }
@@ -492,7 +492,11 @@ struct IdleGate {
 impl IdleGate {
     /// Device rest v_max wanders 0.03..0.12 m/s under sensor noise
     /// (2026-08-31); the threshold sits just above that band.
-    const V_SLEEP: f32 = 0.12;
+    // Just under the draw's 0.05 m/s dot-blanking cutoff: the gate may
+    // only freeze a picture that already shows nothing moving. At the
+    // old 0.12 the flat-pose bead — which translates under tension —
+    // froze mid-wander (Jack, 2026-08-31).
+    const V_SLEEP: f32 = 0.04;
     const DEV_SLEEP: f32 = 0.5;
     const STILL_FRAMES: u32 = 180;
     const DEV_WAKE: f32 = 1.2;
@@ -799,6 +803,7 @@ struct Sim {
     sprites: wgpu::RenderPipeline,
     clear_vel: wgpu::ComputePipeline,
     splat: wgpu::ComputePipeline,
+    resolve: wgpu::ComputePipeline,
     advect: wgpu::ComputePipeline,
     points: wgpu::RenderPipeline,
     body: wgpu::RenderPipeline,
@@ -905,6 +910,7 @@ impl Sim {
             .copy_from_slice(&warm);
         temperature.unmap();
         let vel_grid = storage("sim vel grid", u64::from(cells) * 16, none);
+        let vel_flat = storage("sim vel flat", u64::from(cells) * 16, none);
         let tracers = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim tracers"),
             size: u64::from(tracer_count.max(1)) * 8,
@@ -996,7 +1002,10 @@ impl Sim {
                 rw(15),
             ],
         );
-        let tracer_layout = layout("sim tracers", &[uniform(0), ro(1), ro(2), rw(3), rw(4)]);
+        let tracer_layout = layout(
+            "sim tracers",
+            &[uniform(0), ro(1), ro(2), rw(3), rw(4), rw(5)],
+        );
         let tracer_draw_layout = layout(
             "sim tracer draw",
             &[
@@ -1090,6 +1099,7 @@ impl Sim {
                 entry(2, &velocities),
                 entry(3, &vel_grid),
                 entry(4, &tracers),
+                entry(5, &vel_flat),
             ],
         );
         let tracer_draw_bind = bind(
@@ -1197,6 +1207,7 @@ impl Sim {
             }),
             clear_vel: pipeline(&tracer_pl, &tracer_module, "clear_vel"),
             splat: pipeline(&tracer_pl, &tracer_module, "splat"),
+            resolve: pipeline(&tracer_pl, &tracer_module, "resolve"),
             advect: pipeline(&tracer_pl, &tracer_module, "advect"),
             points: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("sim points"),
@@ -2072,6 +2083,8 @@ impl Renderer {
                         pass.dispatch_workgroups(s.vel_groups, 1, 1);
                         pass.set_pipeline(&s.splat);
                         pass.dispatch_workgroups(particles, 1, 1);
+                        pass.set_pipeline(&s.resolve);
+                        pass.dispatch_workgroups(s.cell_groups, 1, 1);
                         pass.set_pipeline(&s.advect);
                         pass.dispatch_workgroups(s.tracer_count.div_ceil(256), 1, 1);
                     }
@@ -2319,21 +2332,21 @@ mod tests {
         let upright = [0.0, -g, 0.0];
         let mut gate = IdleGate::new();
         for _ in 0..IdleGate::STILL_FRAMES - 1 {
-            assert!(!gate.asleep(upright, 0.1, 0.05));
+            assert!(!gate.asleep(upright, 0.1, 0.03));
         }
-        assert!(gate.asleep(upright, 0.1, 0.05));
+        assert!(gate.asleep(upright, 0.1, 0.03));
         // Noise peaks sit between the sleep and wake thresholds: no
         // false wake.
-        assert!(gate.asleep(upright, 0.8, 0.05));
+        assert!(gate.asleep(upright, 0.8, 0.03));
         // A shake crosses the deviation test in one tick.
-        assert!(!gate.asleep(upright, 2.0, 0.05));
+        assert!(!gate.asleep(upright, 2.0, 0.03));
         for _ in 0..IdleGate::STILL_FRAMES {
-            gate.asleep(upright, 0.1, 0.05);
+            gate.asleep(upright, 0.1, 0.03);
         }
-        assert!(gate.asleep(upright, 0.1, 0.05));
+        assert!(gate.asleep(upright, 0.1, 0.03));
         // A settled 2.9-degree tilt is far past the 1.5-degree wake
         // angle even though its deviation never crossed anything.
-        assert!(!gate.asleep([g * 0.05, -g, 0.0], 0.1, 0.05));
+        assert!(!gate.asleep([g * 0.05, -g, 0.0], 0.1, 0.03));
     }
 
     #[test]
@@ -2447,6 +2460,8 @@ mod tests {
                     pass.dispatch_workgroups(sim.vel_groups, 1, 1);
                     pass.set_pipeline(&sim.splat);
                     pass.dispatch_workgroups(particles, 1, 1);
+                    pass.set_pipeline(&sim.resolve);
+                    pass.dispatch_workgroups(sim.cell_groups, 1, 1);
                     pass.set_pipeline(&sim.advect);
                     pass.dispatch_workgroups(sim.tracer_count.div_ceil(256), 1, 1);
                 }

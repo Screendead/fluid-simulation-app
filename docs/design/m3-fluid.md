@@ -1057,3 +1057,35 @@ raises n. A second cost bite in the same commit: the cohesion spline
 was computing pow(c, 9) per neighbour pair per substep; the pair
 loop now hoists both spline constants. Film: boil 0.13 mm,
 unchanged. Device numbers follow the redeploy.
+
+### Three device lessons in one evening (2026-08-31)
+
+Jack drove the physics-pass build and found what film cannot show.
+
+One: the nominal-frame substep floor traded the basin for pops. At
+120 Hz about one frame in seven ran long (gpu p50 ~10 ms), and a
+long frame at the nominal floor integrates 4-8 ms substeps — the
+non-convergent length — so every drop kicked the pool (compr max
+6.5% on the capture; Jack: "the jitter is back"). The floor now
+divides the measured frame again but is capped at eight substeps:
+past a doubled frame, more substeps would slow the next frame more
+than they converge this one. The known residue: a sustained 60 Hz
+stretch runs converged 2.1 ms substeps at n=8, and climbs back to
+120 Hz only when the GPU frame fits the budget again — which is why
+the tracer win below matters.
+
+Two: the idle gate froze visible motion. V_SLEEP was 0.12 m/s, set
+when a settled pool merely shimmered; the tension-era flat bead
+translates at 0.05-0.11 m/s, very visible on a 154 mm screen, and
+the gate froze mid-wander (Jack: "the screen just freezes even when
+the water is moving"). V_SLEEP is now 0.04, just under the draw's
+0.05 m/s dot-blanking cutoff: the gate may only freeze a picture
+that already shows nothing moving.
+
+Three: the tracer-atomics win is re-landed through its designed
+escape hatch. A resolve dispatch copies the splatted atomic grid to
+a plain buffer between splat and advect (+25 KB, one 7-workgroup
+dispatch), so advect's eight taps are plain loads and no aliased
+view exists for the A15 to misorder. The round-one artifact class —
+grid-cell blocks of stray tracers, bottom half — is the device
+check for this change.
