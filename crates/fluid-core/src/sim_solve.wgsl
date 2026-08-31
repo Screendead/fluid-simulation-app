@@ -409,8 +409,17 @@ fn integrate(@builtin(global_invocation_id) id: vec3u) {
     }
     var v = velocities[id.x].xyz;
     let speed = length(v);
-    if speed > step.v_clamp {
-        v *= step.v_clamp / speed;
+    // Detached spray may outrun CFL: below half rest density there is
+    // no neighbourhood to tunnel through, so flight is ballistic and
+    // the clamp would only steal throw height (the upright-shake
+    // heaviness Jack reported). The interior keeps the full clamp.
+    let ceiling = select(
+        step.v_clamp,
+        3.0 * step.v_clamp,
+        density[id.x] < 0.5 * params.rho0,
+    );
+    if speed > ceiling {
+        v *= ceiling / speed;
         atomicAdd(&clamp_count, 1u);
     }
     var p = positions[id.x].xyz + v * step.dt;

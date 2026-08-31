@@ -584,6 +584,31 @@ exceeds the budget, so the hardest transients will drop frames. The
 trade between the 16-substep ceiling and clean pacing is Jack's
 call, priced by his next on-device shake.
 
+### The spray gate: CFL is a validity condition, not physics (2026-08-31)
+
+Jack asked why the sim clamps velocity at all — a correct integrator
+should not inject energy. He is right in continuous time. The
+injection is discrete: a particle that outruns the spatial
+discretization in one substep tunnels into a neighbour's kernel and
+takes a huge pressure kick out, which compounds — CFL bounds the step
+to the discretization's validity envelope, and the clamp only exists
+because the substep count caps at 16 for GPU budget. The accuracy it
+costs is exactly the upright-shake heaviness he reported: the ceiling
+was 1.92 m/s against real shake throws of 3–5, so throw height capped
+near one screen while gravity was never truncated. Flat pose has no
+in-plane gravity to compare against, which is why it felt right.
+
+The fix follows the physics of the failure: a particle below half
+rest density is detached spray with no neighbourhood to tunnel
+through, so its flight is ballistic and safe at any speed. integrate
+now gives those particles three times the CFL ceiling; the interior
+keeps the full clamp. Film A/B at the same shake instant: without the
+gate the ejecta hugs the wall and the ceiling stays dry; with it,
+sheets plaster the ceiling and the air fills with spray — at
+identical max compression (0.238 vs 0.237 %). Zero memory, two
+shader lines, and it sidesteps the ceiling-versus-pacing trade: n is
+untouched.
+
 ### The look pass (2026-08-31)
 
 Jack's verdict on the first cap-16 recording: "this looks like shit."
