@@ -414,13 +414,16 @@ impl ForceFilter {
             self.started = true;
             self.smooth = force;
         }
-        let dev = (0..3)
-            .map(|i| (force[i] - self.smooth[i]).powi(2))
+        let dev = self
+            .smooth
+            .iter()
+            .zip(&force)
+            .map(|(s, f)| (f - s).powi(2))
             .sum::<f32>()
             .sqrt();
         let alpha = (dev / 2.0).clamp(0.1, 1.0);
-        for i in 0..3 {
-            self.smooth[i] += (force[i] - self.smooth[i]) * alpha;
+        for (s, f) in self.smooth.iter_mut().zip(force) {
+            *s += (f - *s) * alpha;
         }
         self.smooth
     }
