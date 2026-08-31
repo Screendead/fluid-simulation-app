@@ -748,3 +748,30 @@ gate freezes exactly that window. Every metrology film must set IDLE=0.
 Device measurement pending: rest power and thermal recovery with the gate
 in, cool phone, dated. The 30 Hz nap tick costs one filter apply and one
 gate check on the CPU; the GPU encodes nothing.
+
+## The cost pass, round one
+
+A six-direction research panel (dispatch fusion, grid reuse, iteration
+economics, layout and precision, tracers, encode and render passes) priced
+the active frame on 2026-08-31. Its corrected anatomy: 68 dispatches per
+frame at n=2, 260 at n=16 — and at rest the solver is ~1.1 ms of the
+6.3 ms GPU frame; the tracer layer and render passes own the rest. The
+implemented and rejected items land in this section as they settle.
+
+One finding changes the verification story for everything after it: the
+sim is not run-to-run deterministic. The scatter allocates within-cell
+slots with atomicAdd, so neighbour order is scheduling-dependent and every
+float accumulation reorders run to run. Measured (Mac, 2026-08-31, same
+binary, FLAT NOISE=0.15 IDLE=0, 480 frames): compr max 0.037..0.088%,
+clamps 126..199, v_max end 0.030..0.055, film hashes all distinct. A
+"bit-identical" change is therefore proved by algebra and tests, never by
+comparing film output; a changed film guard number inside that band means
+nothing.
+
+Implemented: advect reads the tracer velocity grid through a plain
+read-only view of the same buffer (binding 5, array of vec4i) instead of
+4.19 million device-scope atomic loads per frame; splat keeps the atomic
+view — concurrent adds are the only reason the buffer is atomic. Panel
+prediction: 650..2,950 us per frame at every n, since advect runs once
+per frame. Algebraically identical maths; 24/24 tests pass. Device
+measurement pending.
