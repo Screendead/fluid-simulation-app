@@ -62,6 +62,28 @@ dimensional — so every "exact" claim stops at the model boundary.
   (0.55, 0.78, 0.93) at one slab depth of path. Rejected:
   (0.35, 0.65, 0.85) — on film the body read as a flat blue overlay,
   not glass.
+- **Caustics** (2026-09-01, Jack's pick from the visibility options).
+  The refracted wall sample is scaled by the reciprocal Jacobian of
+  the refraction map, linearised: `1 - (1-eta)(|grad t|^2 + t lap t)`,
+  clamped to [0.5, 2.0]. It is the same map the sample itself takes,
+  so brightness and stripe stretch stay mutually consistent —
+  compressed stripes brighten, magnified ones darken; bright bands
+  ride wave crests. `CAUSTIC = 0.35`; 1.0 and 0.6 rejected on film —
+  the settled body glowed with dapple. The clamp floor is the
+  glass-edge shadow at the waterline.
+- **Frost** (2026-09-01, same pick). The stripe filter width widens
+  by `FROST * path` — the wall reads milky through deep water and
+  crisp through the thin edge, separating the body with no palette
+  change. `FROST = 0.007` m of blur per slab depth of path.
+- **Field blur.** The optics read the field through a 7-tap separable
+  Gaussian (two quarter-res passes, field -> blur_a -> blur_b). This
+  is the record's blur contingency, demanded by the flicker meter:
+  caustics are a second-derivative effect, and the raw footprint
+  ripple saturated the gain into full-body speckle (71,629 px/frame).
+  The blur is a wavelength filter — particle-footprint ripple lives
+  near the inter-particle spacing and dies; waves live at ten times
+  that and pass. The splat/EMA path still writes the raw field; the
+  calibration is untouched (the kernel sums to one).
 - **Light.** One directional light pinned to world-up by the gravity
   vector the shell already delivers every frame, plus a soft
   procedural gradient environment for the reflection term. The
@@ -99,6 +121,9 @@ dimensional — so every "exact" claim stops at the model boundary.
   jitter; the glint band itself is quiet (0.46% of its rows), and
   the idle gate zeroes the whole number at true rest. Threshold:
   settled-awake mean <= 12,000 px/frame on this recipe.
+  Recalibrated 2026-09-01 on the caustics build: mean 3,268 (raw
+  caustics before the field blur: 71,629; the first glass build:
+  8,787; the old flat fill: 1,893). The threshold stands.
 - The existing dance, ring, tilt and wake meters guard the physics:
   the renderer reads sim state and writes none.
 - The M4 oracle (roadmap): looks like water; better than real time;
@@ -146,7 +171,9 @@ passes its first reading. Four notes, verbatim, with dispositions:
    8,800 px/frame; the idle gate zeroes it once asleep). Work item:
    the record's blur contingency — a small separable blur of the
    field before the gradient, judged by the flicker meter and the
-   eye. Open.
+   eye. Resolved 2026-09-01: the blur landed as the caustics'
+   foundation, and the settled-awake flicker fell to 3,268 px/frame —
+   half the pre-caustics build. See "Field blur" above.
 2. "you can tell (from looking at the reflections) that the water
    inside the body isn't really 'swirling' much even after large
    movements - but it should be, ideally" — true by construction:
@@ -165,8 +192,9 @@ passes its first reading. Four notes, verbatim, with dispositions:
    caustics on the back wall (brightness from surface curvature —
    light focused by the wavy surface) and scattering (the wall reads
    slightly frosted through water: widen the stripe filter width
-   with thickness — near-free, no palette change). Open, Jack's
-   call.
+   with thickness — near-free, no palette change). Ruled 2026-09-01,
+   Jack verbatim: "1+2, go for it" — caustics and frost, both landed;
+   dials above.
 4. "the performance is still questionable, given a hard shake it
    will then go back into the lag failure mode where subsequent
    movements are not reacted to in real time" — the substep-floor

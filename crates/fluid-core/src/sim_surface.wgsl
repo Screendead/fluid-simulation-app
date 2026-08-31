@@ -31,6 +31,17 @@ const ZENITH: vec3f = vec3f(0.58, 0.72, 0.88);
 const HORIZON: vec3f = vec3f(0.07, 0.10, 0.16);
 const SUN_TINT: vec3f = vec3f(1.0, 0.98, 0.92);
 const SUN_GLOSS: f32 = 700.0;
+// Caustics: the reciprocal Jacobian of the refraction map, linearised
+// — the same map the wall sample takes, so brightness and stripe
+// stretch stay consistent: compressed stripes brighten, magnified
+// ones darken. CAUSTIC scales the physical 1 - eta term; the floor is
+// the glass-edge shadow dial, judged at the waterline.
+const CAUSTIC: f32 = 0.35;
+const CAUSTIC_FLOOR: f32 = 0.5;
+const CAUSTIC_CEIL: f32 = 2.0;
+// Frost: stripe blur per slab depth of path, metres. The wall reads
+// milky through deep water and stays crisp through the thin edge.
+const FROST: f32 = 0.007;
 
 // Dazzle dials: the fan's sector count and centre, the two inks, and
 // one row per sector — stripe direction, 1/period (per metre), phase.
@@ -58,14 +69,47 @@ const SECT = array<vec4f, 8>(
 // needs no derivatives and branches stay legal. Refraction reuses the
 // wall rate: magnified stripes soften safely, compressed ones run a
 // touch crisp.
-fn dazzle(p: vec2f, px2w: vec2f) -> vec3f {
+fn dazzle(p: vec2f, px2w: vec2f, blur: f32) -> vec3f {
     let q = p - CENTRE;
     let k = i32(floor((atan2(q.y, q.x) * 0.15915494 + 0.5) * SECTORS));
     let row = SECT[k];
     let s = dot(p, row.xy) * row.z + row.w;
-    let w = min((abs(row.x) * px2w.x + abs(row.y) * px2w.y) * row.z, 0.5);
+    let w = min((abs(row.x) * px2w.x + abs(row.y) * px2w.y + blur) * row.z, 0.5);
     let lit = 1.0 - smoothstep(0.25 - w, 0.25 + w, abs(fract(s) - 0.5));
     return mix(INK, PAPER, lit);
+}
+
+// The optics read the field through a 7-tap separable Gaussian: a
+// wavelength filter, not cosmetics. Particle-footprint ripple lives
+// near the inter-particle spacing and its curvature saturates the
+// caustics; waves live at ten times that and pass through. The
+// flicker meter demanded it, as the record said it might.
+const BLUR = array<f32, 4>(0.3125, 0.234375, 0.09375, 0.015625);
+
+@fragment
+fn blur_h_frag(in: FillVertex) -> @location(0) vec4f {
+    let texel = 1.0 / vec2f(textureDimensions(field));
+    var acc = textureSampleLevel(field, field_sampler, in.uv, 0.0).r * BLUR[0];
+    for (var i = 1; i <= 3; i++) {
+        let o = vec2f(texel.x * f32(i), 0.0);
+        acc += (textureSampleLevel(field, field_sampler, in.uv + o, 0.0).r
+            + textureSampleLevel(field, field_sampler, in.uv - o, 0.0).r)
+            * BLUR[i];
+    }
+    return vec4f(acc, 0.0, 0.0, 0.0);
+}
+
+@fragment
+fn blur_v_frag(in: FillVertex) -> @location(0) vec4f {
+    let texel = 1.0 / vec2f(textureDimensions(field));
+    var acc = textureSampleLevel(field, field_sampler, in.uv, 0.0).r * BLUR[0];
+    for (var i = 1; i <= 3; i++) {
+        let o = vec2f(0.0, texel.y * f32(i));
+        acc += (textureSampleLevel(field, field_sampler, in.uv + o, 0.0).r
+            + textureSampleLevel(field, field_sampler, in.uv - o, 0.0).r)
+            * BLUR[i];
+    }
+    return vec4f(acc, 0.0, 0.0, 0.0);
 }
 
 struct FillVertex {
@@ -98,30 +142,39 @@ fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     let p = vec2f(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0) * optics.extent;
     let px2w = optics.extent / (2.0 * vec2f(textureDimensions(field)));
     if (a <= 0.0) {
-        return vec4f(dazzle(p, px2w), 1.0);
+        return vec4f(dazzle(p, px2w, 0.0), 1.0);
     }
 
     // Thickness from the calibrated field; the clamp stops an EMA
     // transient from throwing the refraction across the screen.
     let t = clamp(d / optics.field_settled, 0.0, 1.25) * optics.slab_depth;
 
-    // Front-surface normal from the thickness gradient, central
-    // differences one field texel apart. uv.y runs against world y.
+    // Four raw neighbour taps, one field texel out: their differences
+    // are the thickness gradient, their sum against the centre is the
+    // Laplacian the caustics need. uv.y runs against world y.
     let texel = 1.0 / vec2f(textureDimensions(field));
-    let dx = textureSampleLevel(field, field_sampler, in.uv + vec2f(texel.x, 0.0), 0.0).r
-        - textureSampleLevel(field, field_sampler, in.uv - vec2f(texel.x, 0.0), 0.0).r;
-    let dy = textureSampleLevel(field, field_sampler, in.uv + vec2f(0.0, texel.y), 0.0).r
-        - textureSampleLevel(field, field_sampler, in.uv - vec2f(0.0, texel.y), 0.0).r;
-    let scale = optics.slab_depth
-        / (optics.field_settled * 4.0 * optics.extent * texel);
-    let n = normalize(vec3f(-dx * scale.x, dy * scale.y, 1.0));
+    let xp = textureSampleLevel(field, field_sampler, in.uv + vec2f(texel.x, 0.0), 0.0).r;
+    let xm = textureSampleLevel(field, field_sampler, in.uv - vec2f(texel.x, 0.0), 0.0).r;
+    let yp = textureSampleLevel(field, field_sampler, in.uv + vec2f(0.0, texel.y), 0.0).r;
+    let ym = textureSampleLevel(field, field_sampler, in.uv - vec2f(0.0, texel.y), 0.0).r;
+    let step = 2.0 * optics.extent * texel;
+    let dpf = optics.slab_depth / optics.field_settled;
+    let grad = vec2f(xp - xm, ym - yp) / (2.0 * step) * dpf;
+    let lap = ((xp + xm - 2.0 * d) / (step.x * step.x)
+        + (yp + ym - 2.0 * d) / (step.y * step.y))
+        * dpf;
+    let n = normalize(vec3f(-grad, 1.0));
 
     // Snell into the water, through the thickness, onto the wall.
     let view = vec3f(0.0, 0.0, -1.0);
     let r = refract(view, n, ETA);
     let path = t / max(-r.z, 0.2);
-    let through = dazzle(p + r.xy * path, px2w)
-        * exp(-ABSORB * (path / optics.slab_depth));
+    let path_rel = path / optics.slab_depth;
+    let focus = dot(grad, grad) + t * lap;
+    let caustic = clamp(1.0 - (1.0 - ETA) * CAUSTIC * focus, CAUSTIC_FLOOR, CAUSTIC_CEIL);
+    let through = dazzle(p + r.xy * path, px2w, FROST * path_rel)
+        * caustic
+        * exp(-ABSORB * path_rel);
 
     let fres = F0 + (1.0 - F0) * pow(1.0 - n.z, 5.0);
     let rr = reflect(view, n);
@@ -130,7 +183,7 @@ fn surface_frag(in: FillVertex) -> @location(0) vec4f {
 
     var col = mix(through, sky, fres) + SUN_TINT * glint;
     if (a < 1.0) {
-        col = mix(dazzle(p, px2w), col, a);
+        col = mix(dazzle(p, px2w, 0.0), col, a);
     }
     return vec4f(col, 1.0);
 }
