@@ -86,7 +86,7 @@ still phone's real sensor noise is 0.02-0.08 m/s^2 (measured on
 the device; the harness's 0.15 was a handled-launch misread), and
 the force filter's still-phase floor now sits at 0.02 instead of
 0.1, which takes the de-jelly geometry from 100-235 dance flips to
-4 at the measured noise, with ring, tilt, shake and wake guards
+4 at the measured noise, with ring, tilt, shake and tremor guards
 intact. Two things remain open from that night. First, Jack's
 call: grip versus side-walls, now with honest numbers (grip +
 filter dances 0; side-walls + filter dance 4 and keep the doubled
