@@ -71,3 +71,27 @@ fn point(@builtin(vertex_index) i: u32) -> PointVertex {
 fn dot_frag(in: PointVertex) -> @location(0) vec4f {
     return vec4f(in.colour * 0.55, 0.55);
 }
+
+// The liquid body: each solver particle splats its kernel footprint
+// into the half-resolution field the surface pass thresholds.
+struct BodyVertex {
+    @builtin(position) clip: vec4f,
+    @location(0) corner: vec2f,
+}
+
+@vertex
+fn body(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyVertex {
+    let extent = -(params.box_min.xy + vec2f(params.cell));
+    let corner = vec2f(f32(v & 1u), f32(v >> 1u)) * 2.0 - 1.0;
+    var out: BodyVertex;
+    out.clip = vec4f((positions[i].xy + corner * params.h) / extent, 0.0, 1.0);
+    out.corner = corner;
+    return out;
+}
+
+@fragment
+fn weight(in: BodyVertex) -> @location(0) vec4f {
+    let falloff = max(1.0 - dot(in.corner, in.corner), 0.0);
+    return vec4f(falloff * falloff, 0.0, 0.0, 0.0);
+}
+

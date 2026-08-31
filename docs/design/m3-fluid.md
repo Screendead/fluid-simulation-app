@@ -373,3 +373,27 @@ TAU_STRAY, 0.25 s, so dust clears about twelve times faster. The
 respawn path is shared with the base recycle the regression test
 forces.
 
+Amendment to Five density iterations, same day: later baseline runs
+put the upright v floor anywhere in 0.028..0.119 across identical
+configs, so the v-floor part of that measurement was partly a lucky
+draw. The robust gains are rho max, compression and clamps. A planned
+divergence-x2 comparison never ran: its edit failed and the two runs
+were baselines. The rest floor is bounded near 0.03 m/s by estimator
+noise at 2.5 mm spacing; the next real solver lever is finer spacing,
+queued behind the encode optimisation pass.
+
+### The liquid surface
+
+Jack asks for a clear boundary between liquid and air (2026-08-31).
+At 18 native pixels per millimetre the 0.03 m/s churn floor is about
+500 pixels per second of raw dot motion, so no solver knob makes bare
+dots read as still water. The cure is to draw the liquid as a body.
+Solver particles splat their kernel footprint into a half-resolution
+R16Float field; a fullscreen pass thresholds it with a smoothstep and
+lays the body colour under the dots, so the surface is one clear edge
+and interior churn stops reading as edge noise. The threshold pair
+starts at 0.8..1.6 against an interior field near 3; Jack's eye tunes
+it. Budget: the settled frame holds 2.1 ms headroom (gpu p50 6.2 of
+8.33 ms, 2026-08-31); the body pass draws the particle count as
+half-resolution quads.
+

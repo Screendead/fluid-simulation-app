@@ -104,6 +104,19 @@ fn buffer_entry(
     }
 }
 
+const OVER: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
 const ADDITIVE: wgpu::BlendState = wgpu::BlendState {
     color: wgpu::BlendComponent {
         src_factor: wgpu::BlendFactor::One,
@@ -319,6 +332,12 @@ struct Sim {
     splat: wgpu::ComputePipeline,
     advect: wgpu::ComputePipeline,
     points: wgpu::RenderPipeline,
+    body: wgpu::RenderPipeline,
+    fill: wgpu::RenderPipeline,
+    fill_layout: wgpu::BindGroupLayout,
+    field_sampler: wgpu::Sampler,
+    field: wgpu::TextureView,
+    fill_bind: wgpu::BindGroup,
     tracer_bind: wgpu::BindGroup,
     tracer_draw_bind: wgpu::BindGroup,
     grid_bind: wgpu::BindGroup,
@@ -348,6 +367,7 @@ impl Sim {
         substeps: u32,
         spacing: f32,
         tracer_count: u32,
+        surface: [u32; 2],
     ) -> Sim {
         let h = 1.2 * spacing;
         let grid = sim::Grid::new(extent, 2.0 * h);
@@ -634,6 +654,17 @@ impl Sim {
                 immediate_size,
             })
         };
+        let fill_layout = layout_frag(device, "sim surface");
+        let field_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("sim surface"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let field = field_view(device, surface);
+        let fill_bind = field_bind(device, &fill_layout, &field, &field_sampler);
+        let surface_module = module("sim_surface", include_str!("sim_surface.wgsl"));
+        let fill_pl = pipe_layout("sim surface", &fill_layout, 0);
         let grid_pl = pipe_layout("sim grid", &grid_layout, 0);
         let scan_pl = pipe_layout("sim scan", &scan_layout, 0);
         let solve_pl = pipe_layout("sim solve", &solve_layout, 32);
@@ -726,6 +757,63 @@ impl Sim {
                 multiview_mask: None,
                 cache: None,
             }),
+            body: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim body"),
+                layout: Some(&sprite_pl),
+                vertex: wgpu::VertexState {
+                    module: &sprite_module,
+                    entry_point: Some("body"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &sprite_module,
+                    entry_point: Some("weight"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::R16Float,
+                        blend: Some(ADDITIVE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            }),
+            fill: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim fill"),
+                layout: Some(&fill_pl),
+                vertex: wgpu::VertexState {
+                    module: &surface_module,
+                    entry_point: Some("fill"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &surface_module,
+                    entry_point: Some("surface_frag"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(OVER),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            }),
+            fill_layout,
+            field_sampler,
+            field,
+            fill_bind,
             tracer_bind,
             tracer_draw_bind,
             grid_bind,
@@ -747,6 +835,78 @@ impl Sim {
             tracers,
         }
     }
+}
+
+impl Sim {
+    fn resize(&mut self, device: &wgpu::Device, surface: [u32; 2]) {
+        self.field = field_view(device, surface);
+        self.fill_bind = field_bind(device, &self.fill_layout, &self.field, &self.field_sampler);
+    }
+}
+
+fn field_view(device: &wgpu::Device, surface: [u32; 2]) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("sim field"),
+            size: wgpu::Extent3d {
+                width: (surface[0] / 2).max(1),
+                height: (surface[1] / 2).max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
+}
+
+fn field_bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    field: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("sim surface"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(field),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
+}
+
+fn layout_frag(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some(label),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
 }
 
 struct Validation {
@@ -1167,6 +1327,7 @@ impl Renderer {
                 options.sim_substeps,
                 spacing,
                 options.tracers,
+                [config.width, config.height],
             )))
         } else {
             Mode::Demo(Box::new(Particles::new(
@@ -1228,6 +1389,9 @@ impl Renderer {
                 width as f32 * 0.5 * METRES_PER_PIXEL,
                 height as f32 * 0.5 * METRES_PER_PIXEL,
             ];
+        }
+        if let Mode::Sim(s) = &mut self.mode {
+            s.resize(&self.device, [width, height]);
         }
         self.surface.configure(&self.device, &self.config);
     }
@@ -1380,6 +1544,27 @@ impl Renderer {
                 Mode::Sim(_) => {}
             }
         }
+        if let Mode::Sim(s) = &self.mode {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &s.field,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                ..Default::default()
+            });
+            pass.set_pipeline(&s.body);
+            pass.set_bind_group(0, &s.sprite_bind, &[]);
+            pass.draw(0..4, 0..s.count);
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -1410,6 +1595,9 @@ impl Renderer {
                     pass.draw(0..4, 0..p.count);
                 }
                 Mode::Sim(s) => {
+                    pass.set_pipeline(&s.fill);
+                    pass.set_bind_group(0, &s.fill_bind, &[]);
+                    pass.draw(0..3, 0..1);
                     if s.tracer_count > 0 {
                         pass.set_pipeline(&s.points);
                         pass.set_bind_group(0, &s.tracer_draw_bind, &[]);
@@ -1635,6 +1823,7 @@ mod tests {
             7,
             SIM_SPACING,
             4096,
+            [128, 256],
         );
         Some((device, queue, sim))
     }
