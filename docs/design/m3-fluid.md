@@ -834,3 +834,32 @@ Deploy the head of m3-fluid. Then, in order:
 A two-minute A/B for the same session, not yet landed: workgroup_size
 256 -> 64 on the nine particle kernels (the launch-imbalance cure; 7
 workgroups cannot fill 5 cores). Land it only with a measured win.
+
+### Round one on the device: two reverts
+
+Deployed 2026-08-31 15:11, thermal nominal. Two of the four changes
+failed on the device within minutes and are reverted; the fusions stay.
+
+1. The aliased velocity-grid view. Jack's recording (15:12) shows faint
+   rectangular blocks of stray speckle beside the fluid body, lower half
+   of the screen, block size ~the velocity grid's ~108 px cell — stray
+   tracers advected by garbage velocities, clustered per cell. The Mac
+   tests and films never showed it: the splat-to-advect hazard on one
+   buffer bound atomic-write in one bind group and plain-read in another
+   is not honoured on the A15, or not by this wgpu on Metal. The panel's
+   escape hatch is the way back in: a resolve dispatch (7 workgroups)
+   copying the atomic grid to a plain buffer between splat and advect,
+   +25 KB, keeping nearly all of the predicted 650..2,950 us. Round two.
+2. One in-flight frame. The phone locked at 60 Hz on a nominal battery:
+   interval p50 16,668 us, acq p50 12..14 ms, gpu p50 ~11 ms at mixed
+   n 2..10 — the predicted no-slack basin. With two drawables, one
+   overrun frame (the launch transient suffices) halves the cadence,
+   the doubled dt doubles n, and the doubled GPU load keeps it there
+   while the phone is being played. Three drawables absorb the overrun
+   and recover. The 13.6 MiB goes back on the shelf unless a future
+   build's worst frame fits the budget with margin.
+
+Lesson, standing: a change whose risk note names a device-only failure
+mode gets a device check before the next feature lands on top of it,
+and before the user meets it. The film harness cannot see pacing or
+cross-dispatch hazards.
