@@ -392,6 +392,7 @@ impl Sim {
         let prev_pressure = storage("sim prev pressure", u64::from(count) * 4, none);
         let clamps = storage("sim clamps", 4, none);
         let accel = storage("sim accel", u64::from(count) * 16, none);
+        let xsph = storage("sim xsph", u64::from(count) * 16, none);
         let stats_src = storage("sim stats", 40, wgpu::BufferUsages::COPY_SRC);
         // The box starts at the lab constants' temperature, 20 C.
         let temperature = device.create_buffer(&wgpu::BufferDescriptor {
@@ -498,6 +499,7 @@ impl Sim {
                 rw(12),
                 rw(13),
                 rw(14),
+                rw(15),
             ],
         );
         let tracer_layout = layout("sim tracers", &[uniform(0), ro(1), ro(2), rw(3), rw(4)]);
@@ -582,6 +584,7 @@ impl Sim {
                 entry(12, &stats_src),
                 entry(13, &clamps),
                 entry(14, &accel),
+                entry(15, &xsph),
             ],
         );
         let tracer_bind = bind(
@@ -1116,7 +1119,7 @@ impl Renderer {
             // asks 16), so start from downlevel and raise what the code
             // binds: the sim layouts hold five storage buffers a stage.
             required_limits: wgpu::Limits {
-                max_storage_buffers_per_shader_stage: 14,
+                max_storage_buffers_per_shader_stage: 16,
                 max_immediate_size: 32,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
@@ -1611,7 +1614,7 @@ mod tests {
             label: None,
             required_features: wgpu::Features::IMMEDIATES,
             required_limits: wgpu::Limits {
-                max_storage_buffers_per_shader_stage: 14,
+                max_storage_buffers_per_shader_stage: 16,
                 max_immediate_size: 32,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
@@ -1818,17 +1821,17 @@ mod tests {
             f[8]
         );
     }
-    // Three seconds upright — the deepest column, the hydrostatic
+    // Fifteen seconds upright — the deepest column, the hydrostatic
     // ringing case Jack saw flitter in. Still sloshing is fine;
     // explosion or runaway pressure is not.
     #[test]
-    fn three_seconds_upright_stay_bounded() {
+    fn fifteen_seconds_upright_stay_bounded() {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        let f = read_stats(&device, &queue, &sim, 7, 360, [0.0, -9.81, 0.0]);
+        let f = read_stats(&device, &queue, &sim, 7, 1800, [0.0, -9.81, 0.0]);
         eprintln!(
-            "three seconds upright: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
+            "fifteen seconds upright: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
             f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9]
         );
         assert!(f[3] < 1.2 * sim::REST_DENSITY, "rho max {}", f[3]);

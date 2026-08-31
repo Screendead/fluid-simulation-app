@@ -39,6 +39,11 @@ var<immediate> step: Step;
 @group(0) @binding(12) var<storage, read_write> stats: array<f32, 10>;
 @group(0) @binding(13) var<storage, read_write> clamp_count: atomic<u32>;
 @group(0) @binding(14) var<storage, read_write> accel: array<vec4f>;
+@group(0) @binding(15) var<storage, read_write> xsph: array<vec4f>;
+
+// The XSPH blend strength; the DFSPH paper pairs its solver with this
+// filter, and without it a settled deep column never stops ringing.
+const XSPH_EPS: f32 = 0.1;
 
 const DYNAMIC_VISCOSITY: f32 = 1.002e-3;
 const HEAT_CAPACITY: f32 = 4184.0;
@@ -193,6 +198,7 @@ fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
     let base = cell_base(pos);
     var visc = vec3f(0.0);
     var heat = 0.0;
+    var blend = vec3f(0.0);
     for (var dz = -1i; dz <= 1i; dz++) {
         for (var dy = -1i; dy <= 1i; dy++) {
             for (var dx = -1i; dx <= 1i; dx++) {
@@ -212,6 +218,7 @@ fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
                     let pair = params.mass / (rho_i * density[j]) * f;
                     let dv = vel - velocities[j].xyz;
                     visc += 2.0 * DYNAMIC_VISCOSITY * pair * dv;
+                    blend -= params.mass / density[j] * kernel(r, params.h) * dv;
                     // Cleary-Monaghan diffusion, then half the pair's
                     // viscous dissipation; f < 0 carries the signs.
                     heat += 2.0 * CONDUCTIVITY / HEAT_CAPACITY * pair
@@ -222,6 +229,7 @@ fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
         }
     }
     accel[id.x] = vec4f(visc, heat);
+    xsph[id.x] = vec4f(blend, 0.0);
 }
 
 @compute @workgroup_size(256)
@@ -230,7 +238,10 @@ fn forces_apply(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let a = accel[id.x];
-    velocities[id.x] = vec4f(velocities[id.x].xyz + step.dt * (step.force + a.xyz), 0.0);
+    velocities[id.x] = vec4f(
+        velocities[id.x].xyz + step.dt * (step.force + a.xyz) + XSPH_EPS * xsph[id.x].xyz,
+        0.0,
+    );
     temperature[id.x] += step.dt * a.w;
 }
 
