@@ -118,6 +118,7 @@ pub fn film(
     frames: u32,
     every: u32,
     spacing: f32,
+    cap: u32,
     force_at: impl Fn(u32) -> [f32; 3],
     mut sink: impl FnMut(&[u8]),
 ) -> Option<[u32; 2]> {
@@ -131,7 +132,7 @@ pub fn film(
             1284.0 * 0.5 * METRES_PER_PIXEL,
             2778.0 * 0.5 * METRES_PER_PIXEL,
         ],
-        7,
+        cap,
         spacing,
         131_072,
         [WIDTH, HEIGHT],
@@ -170,7 +171,7 @@ pub fn film(
     for f in 0..frames {
         let force = force_at(f);
         // The production CFL, fed by the previous frame's v_max.
-        let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32).clamp(1, 7);
+        let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32).clamp(1, cap);
         let dt_sub = dt / n as f32;
         let v_clamp = 0.4 * spacing / dt_sub;
         let step = sim::pack_step(force, dt_sub, v_clamp, 0);

@@ -9,6 +9,16 @@ const G: f32 = fluid_core::STANDARD_GRAVITY;
 
 fn force_at(frame: u32) -> [f32; 3] {
     let t = frame as f32 / 120.0;
+    // SHAKE=1: two violent upright seconds, then a settle. The splash
+    // oracle.
+    if std::env::var("SHAKE").as_deref() == Ok("1") {
+        let mut f = [0.0, -G, -0.5];
+        if (1.0..3.0).contains(&t) {
+            f[0] += 30.0 * (t * 2.0 * std::f32::consts::PI * 4.5).sin();
+            f[1] += 12.0 * (t * 2.0 * std::f32::consts::PI * 9.1).sin();
+        }
+        return f;
+    }
     let pose = |a: [f32; 3], b: [f32; 3], p: f32| -> [f32; 3] {
         let e = 0.5 - 0.5 * (p.clamp(0.0, 1.0) * std::f32::consts::PI).cos();
         std::array::from_fn(|i| a[i] + (b[i] - a[i]) * e)
@@ -45,7 +55,11 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.0025);
-    let dims = fluid_core::film(19 * 120, 4, spacing, force_at, |rows| {
+    let cap: u32 = std::env::var("CAP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(16);
+    let dims = fluid_core::film(19 * 120, 4, spacing, cap, force_at, |rows| {
         raw.write_all(rows).expect("write");
     })
     .expect("no GPU adapter");

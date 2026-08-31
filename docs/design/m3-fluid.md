@@ -510,3 +510,26 @@ at 30 fps and so barely sees frame-rate sparkle, still drops 2.34 to
 solver's problem: this smooths the drawn boundary, not the fluid.
 Film shows no rim detachment from the dots through the fastest
 scripted tilt; the dots lead the rim only as faint spray.
+
+### The splash was clamped away
+
+Jack reports jelly-like motion and no splash under a hard upright
+shake (2026-08-31). The stats line held the cause all along: the CFL
+velocity clamp is 0.4 x spacing x n / dt, and at the substep ceiling
+of seven that is 0.84 m/s — a hard shake throws water at two to five,
+so the solver forbade splashing (cumulative clamps in the millions),
+and squeezing every speed toward one ceiling reads as jelly. The film
+shake trajectory (SHAKE=1) proves it: at cap seven the fluid stays
+one coherent tongue; at sixteen it sheets up the walls and across the
+ceiling in droplet streaks. The default substep ceiling rises to
+sixteen (FLUID_SIM still overrides). Rest cost is unchanged — the CFL
+picks one substep at rest — and the violent-moment cost lands only
+while shaking; the device shake capture prices it. The remaining
+jelly suspect is the tracer grid's cell-averaged field, which cannot
+show a vortex smaller than two cells; a finer tracer grid is the
+queued experiment.
+
+Thermal, same day: a long screen-on soak reads "serious" on the
+device. The continuous load is the unbuilt idle gate ("Idle costs
+nothing"), now the next feature ahead of everything but this splash
+fix.
