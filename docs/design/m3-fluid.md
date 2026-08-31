@@ -397,3 +397,65 @@ it. Budget: the settled frame holds 2.1 ms headroom (gpu p50 6.2 of
 8.33 ms, 2026-08-31); the body pass draws the particle count as
 half-resolution quads.
 
+
+### The film harness
+
+Jack rejects the debug loop of phone screen recordings (2026-08-31):
+"there has to be a better way to develop & debug this". There is.
+`scripts/film.sh` runs the real solver and render passes headless on
+the Mac against a scripted force trajectory and writes an mp4:
+upright, tilt to the corner, flat on the desk, back, with an optional
+two-tone hand tremor (TREMOR=0 films a tripod; SPACING overrides the
+particle spacing). The box stays the reference phone's whatever the
+render size, because every vertex shader projects from the box
+extent, not the resolution. Frames advance at a fixed 1/120 s, so
+film is the look oracle only; the phone's stats line stays the cost
+oracle. The harness lives behind the `film` feature, off in every
+device build, and the gate lints it via --all-features.
+
+### The surface fix and the rim
+
+The first surface build put the fill's uv in 1..2 instead of 0..1, so
+the sampler's edge clamp smeared the field's bottom row up the whole
+screen: the vertical streaks and the whole-screen wash in Jack's
+third recording. Film reproduced it on the desk in one run. Fixed,
+the boundary needed weight: the fill now lays a rim line where the
+smoothstep crosses its threshold, gated by the field's spatial
+gradient measured in field texels so a thin flat-lying layer does not
+wear rings, and so the gate survives any render resolution. The field
+dropped from half to quarter resolution: the body pass was the whole
+regression from 6.2 to 9.2 ms settled gpu p50, and overdraw scales
+with field area. Device numbers follow the next deploy.
+
+### The boil, measured, and the missing physics
+
+Film with TREMOR=0 answers what no phone recording could: after five
+still seconds the surface still rearranges within 0.17 s. The jitter
+Jack reports is real solver churn, not rendering, not his hand, and
+the earlier estimator-noise reading of the rest floor was wrong — the
+motion is visible surface waves, millimetres tall. The boil meter (a
+scratchpad script; median temporal deviation of the per-column
+surface height over the settled hold) scores the levers:
+
+| Run | Boil, median mm |
+|---|---|
+| Baseline | 2.99 |
+| XSPH 0.25 | 2.63 |
+| Spacing 2.0 mm | 2.07 |
+| Wall fill x0.978 | 2.29 |
+| Divergence x3 | 2.43 |
+| Wall x0.978 + XSPH 0.25 | 2.34 |
+
+Every lever trims; none cures; the two best do not compound. The
+signature fits waves the sim cannot damp, not a pump the levers can
+starve: this box is 71 x 154 x 9.5 mm and the capillary length of
+water is 2.7 mm, so real water at this scale kills millimetre chop
+with surface tension, which the sim does not model. Surface tension
+is therefore an M3 accuracy gap, not polish, and the next solver
+work. Two changes shipped from the sweep: the wall fill scaled by
+0.978, recorded above as a calibration of the known +2.2% contact
+bias and worth -23% boil alone, and nothing else — XSPH stays 0.1
+and one divergence iteration stands, since neither pays for its cost
+or its extra damping once the wall is calibrated. h at 1.5x spacing
+was tried and diverged at rest; the wall integrals are calibrated
+for 1.2 and stay there.

@@ -32,9 +32,13 @@ pressure 0..475 Pa, temperature within microkelvin, 120 Hz held.
 Numbers and the two test-pinned defects are in the M3 record. The warm-started density solve ended the at-rest flicker (settled v
 0.03 m/s, clamps down 96%). The fluid draws as 262,144 one-pixel
 tracers advected in the solved field — Jack's directive, 2026-08-31.
-Left for M3 exit: the settled upright measurement and the minute
-hand-test. The ramp is measured (M3 record): 2.5 mm holds 120 Hz
-clean and stays the default; 2.0 mm waits on the optimisation pass.
+Left for M3 exit: surface tension (the film harness proved the rest
+churn is undamped capillary-band waves; the M3 record holds the boil
+table), the settled upright measurement, and the minute hand-test.
+The ramp is measured (M3 record): 2.5 mm holds 120 Hz clean and
+stays the default; 2.0 mm waits on the optimisation pass. Debug on
+the desk first: scripts/film.sh films the sim to an mp4 without the
+phone.
 
 Test baseline: 21 Rust tests pass, 2026-08-31.
 
