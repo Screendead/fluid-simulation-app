@@ -175,7 +175,7 @@ fn density_factor(@builtin(global_invocation_id) id: vec3u) {
     fill += wall_density((pos.x - lo.x) * inv_h) + wall_density((hi.x - pos.x) * inv_h);
     fill += wall_density((pos.y - lo.y) * inv_h) + wall_density((hi.y - pos.y) * inv_h);
     fill += wall_density((pos.z - lo.z) * inv_h) + wall_density((hi.z - pos.z) * inv_h);
-    rho += params.rho0 * fill;
+    rho += params.rho0 * fill * 0.978;
     grad_sum += wall_grad_sum(pos);
     density[id.x] = rho;
     alpha[id.x] = rho / max(dot(grad_sum, grad_sum) + grad_sq, 1e-4);
