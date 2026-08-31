@@ -40,6 +40,7 @@ typedef struct FluidRenderStats {
   float temperature_max;
   uint32_t clamp_count;
   uint32_t substeps;
+  uint64_t idle_frames;
 } FluidRenderStats;
 
 #ifdef __cplusplus
@@ -76,16 +77,18 @@ struct FluidRenderer *fluid_renderer_create(void *metal_layer,
 
 /**
  * One frame: integrate the particles, draw them over the body-force tint,
- * present. `now_ms` is `CADisplayLink.timestamp` in milliseconds.
+ * present. `now_ms` is `CADisplayLink.timestamp` in milliseconds. Returns
+ * 1 when a frame was stepped and presented, 0 when the settled sim slept
+ * it; at 0 the shell may drop its tick rate until the next 1.
  *
  * # Safety
  *
  * `renderer` must be a live pointer from `fluid_renderer_create`.
  */
-void fluid_renderer_frame(struct FluidRenderer *renderer,
-                          struct FluidVec3 gravity,
-                          struct FluidVec3 user_acceleration,
-                          double now_ms);
+uint32_t fluid_renderer_frame(struct FluidRenderer *renderer,
+                              struct FluidVec3 gravity,
+                              struct FluidVec3 user_acceleration,
+                              double now_ms);
 
 /**
  * # Safety

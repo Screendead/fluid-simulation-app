@@ -62,6 +62,7 @@ pub struct FluidRenderStats {
     pub temperature_max: f32,
     pub clamp_count: u32,
     pub substeps: u32,
+    pub idle_frames: u64,
 }
 
 /// Builds the renderer on a layer: `particle_count` sprites of
@@ -113,7 +114,9 @@ pub unsafe extern "C" fn fluid_renderer_create(
 }
 
 /// One frame: integrate the particles, draw them over the body-force tint,
-/// present. `now_ms` is `CADisplayLink.timestamp` in milliseconds.
+/// present. `now_ms` is `CADisplayLink.timestamp` in milliseconds. Returns
+/// 1 when a frame was stepped and presented, 0 when the settled sim slept
+/// it; at 0 the shell may drop its tick rate until the next 1.
 ///
 /// # Safety
 ///
@@ -124,12 +127,12 @@ pub unsafe extern "C" fn fluid_renderer_frame(
     gravity: FluidVec3,
     user_acceleration: FluidVec3,
     now_ms: f64,
-) {
+) -> u32 {
     let sample = MotionSample {
         gravity: gravity.into(),
         user_acceleration: user_acceleration.into(),
     };
-    unsafe { &mut *renderer }.0.frame(sample, now_ms);
+    u32::from(unsafe { &mut *renderer }.0.frame(sample, now_ms))
 }
 
 /// # Safety
@@ -170,6 +173,7 @@ pub unsafe extern "C" fn fluid_renderer_stats(renderer: *const FluidRenderer) ->
         temperature_max: stats.temperature_max,
         clamp_count: stats.clamp_count,
         substeps: stats.substeps,
+        idle_frames: stats.idle_frames,
     }
 }
 

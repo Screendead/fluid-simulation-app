@@ -15,6 +15,7 @@ final class FrameDriver {
     private var renderer: OpaquePointer?
     private var link: CADisplayLink?
     private var ticks = 0
+    private var active = true
 
     init() {
         UIDevice.current.isBatteryMonitoringEnabled = true
@@ -50,11 +51,19 @@ final class FrameDriver {
 
     @objc private func tick(_ link: CADisplayLink) {
         guard let renderer else { return }
-        fluid_renderer_frame(
+        let stepped = fluid_renderer_frame(
             renderer,
             FluidVec3(motion.gravity),
             FluidVec3(motion.userAcceleration),
-            link.timestamp * 1000.0)
+            link.timestamp * 1000.0) != 0
+        if stepped != active {
+            active = stepped
+            // Asleep, the tick survives only to feed the wake test; 30 Hz
+            // holds the wake latency to two visually still frames.
+            link.preferredFrameRateRange = stepped
+                ? CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
+                : CAFrameRateRange(minimum: 10, maximum: 30, preferred: 30)
+        }
         ticks += 1
         if ticks % 120 == 0 {
             let before = CACurrentMediaTime()
@@ -68,7 +77,7 @@ final class FrameDriver {
         let battery = UIDevice.current.batteryLevel * 100
         let thermal = ["nominal", "fair", "serious", "critical"][ProcessInfo.processInfo.thermalState.rawValue]
         statsLine = String(
-            format: "frames %llu | interval µs p50 %.0f p99 %.0f max %.0f | cpu µs p50 %.0f p99 %.0f | gpu µs p50 %.0f p99 %.0f | compr %% avg %.3f max %.3f | rho %.0f..%.0f | p %.0f..%.0f Pa | dT µK %.1f..%.1f | v %.2f n %u clamp %u | mem %.1f MB | batt %.0f%% %@ | stats µs %.0f",
+            format: "frames %llu | interval µs p50 %.0f p99 %.0f max %.0f | cpu µs p50 %.0f p99 %.0f | gpu µs p50 %.0f p99 %.0f | compr %% avg %.3f max %.3f | rho %.0f..%.0f | p %.0f..%.0f Pa | dT µK %.1f..%.1f | v %.2f n %u clamp %u | idle %llu | mem %.1f MB | batt %.0f%% %@ | stats µs %.0f",
             stats.frames,
             stats.interval_p50_us, stats.interval_p99_us, stats.interval_max_us,
             stats.encode_p50_us, stats.encode_p99_us,
@@ -78,7 +87,7 @@ final class FrameDriver {
             stats.pressure_min, stats.pressure_max,
             (stats.temperature_min - 293.15) * 1_000_000,
             (stats.temperature_max - 293.15) * 1_000_000,
-            stats.v_max, stats.substeps, stats.clamp_count,
+            stats.v_max, stats.substeps, stats.clamp_count, stats.idle_frames,
             memory, battery, thermal, statsUs)
         print(statsLine)
     }

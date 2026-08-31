@@ -709,3 +709,42 @@ Thermal, same day: a long screen-on soak reads "serious" on the
 device. The continuous load is the unbuilt idle gate ("Idle costs
 nothing"), now the next feature ahead of everything but this splash
 fix.
+
+## The idle gate
+
+CLAUDE.md rule: idle costs nothing. A still phone ran the full solver at
+120 Hz, over the frame budget once thermal throttle set in (rest gpu p50
+8.5 ms hot against a 6.3 ms cool baseline, device, 2026-08-31). The heat
+was self-inflicted: the resting sim heated the phone, the throttle slowed
+the GPU, the slow GPU missed frames.
+
+`IdleGate` (render.rs) sleeps the sim when the pool and the phone are both
+still, and wakes it on the first sign of motion.
+
+- Sleep: v_max under 0.12 m/s and force deviation under 0.5 m/s^2 for 180
+  consecutive frames. Device rest v_max wanders 0.03..0.12 under sensor
+  noise; hand tremor holds v_max above the threshold, so a held phone
+  never sleeps (film: TREMOR=1 gives idle 0).
+- Wake, three tests against the live filter: deviation over 1.2 m/s^2 (a
+  shake, one tick); the smoothed force more than 1.5 degrees from its
+  sleep snapshot (a slow tilt); magnitude shifted over 0.3 m/s^2 (a lift).
+- Asleep, `frame()` returns false before any encode: no GPU work, no
+  present, no interval sample. The filter and the gate run every tick —
+  frozen inputs cannot wake anything. The shell drops the display link to
+  30 Hz on false and restores 120 Hz on true, so wake latency is at most
+  two visually still frames.
+
+Film oracles (2026-08-31, NOISE=0.15):
+
+| Film | Result |
+|---|---|
+| FLAT soak, 30 s | sleep at frame 506, idle 3094, zero false wakes |
+| WAKE (6 s flat, then eased tilt to recline) | sleep 503, wake 768 — 0.4 s into the tilt, at 1.5 degrees accumulated, water visually unmoved |
+| TREMOR=1 trajectory | idle 0: a held phone never sleeps |
+
+Metrology caveat: boil and jump films measure a settled window, and the
+gate freezes exactly that window. Every metrology film must set IDLE=0.
+
+Device measurement pending: rest power and thermal recovery with the gate
+in, cool phone, dated. The 30 Hz nap tick costs one filter apply and one
+gate check on the CPU; the GPU encodes nothing.

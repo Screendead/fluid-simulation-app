@@ -168,9 +168,33 @@ pub fn film(
     let mut compr_max = 0.0f32;
     let mut clamp_total = 0.0f32;
     let mut filter = ForceFilter::new();
+    // IDLE=0 keeps the solver stepping for metrology films: a boil or
+    // jump measurement over a settled window is meaningless if the gate
+    // froze the window.
+    let gate_on = std::env::var("IDLE").ok().is_none_or(|v| v != "0");
+    let mut gate = IdleGate::new();
+    let mut idle = 0u32;
+    let mut was_asleep = false;
     let mut rows = vec![0u8; (WIDTH * 4 * HEIGHT) as usize];
     for f in 0..frames {
-        let force = filter.apply(force_at(f));
+        let (force, dev) = filter.apply(force_at(f));
+        if gate_on && gate.asleep(force, dev, v_max) {
+            if !was_asleep {
+                eprintln!("film: sleep at frame {f}");
+                was_asleep = true;
+            }
+            idle += 1;
+            // The screen keeps the last drawable in production; the
+            // film keeps the last sampled rows.
+            if f % every == 0 {
+                sink(&rows);
+            }
+            continue;
+        }
+        if was_asleep {
+            eprintln!("film: wake at frame {f}");
+            was_asleep = false;
+        }
         // The production CFL, fed by the previous frame's v_max. NMIN
         // is a diagnostic floor: halving the rest timestep separates
         // timestep-stability noise from model noise.
@@ -363,7 +387,9 @@ pub fn film(
             eprintln!("film: frame {f}/{frames}, {n} substeps");
         }
     }
-    eprintln!("compr max {compr_max:.3} % | clamps {clamp_total:.0} | v_max end {v_max:.3}");
+    eprintln!(
+        "compr max {compr_max:.3} % | clamps {clamp_total:.0} | v_max end {v_max:.3} | idle {idle}"
+    );
     Some([WIDTH, HEIGHT])
 }
 
@@ -409,7 +435,10 @@ impl ForceFilter {
         }
     }
 
-    fn apply(&mut self, force: [f32; 3]) -> [f32; 3] {
+    /// Returns the smoothed force and the raw-to-smooth deviation that
+    /// chose the blend; the idle gate keys its wake test on the same
+    /// deviation.
+    fn apply(&mut self, force: [f32; 3]) -> ([f32; 3], f32) {
         if !self.started {
             self.started = true;
             self.smooth = force;
@@ -425,7 +454,69 @@ impl ForceFilter {
         for (s, f) in self.smooth.iter_mut().zip(force) {
             *s += (f - *s) * alpha;
         }
-        self.smooth
+        (self.smooth, dev)
+    }
+}
+
+/// Sleeps the simulation once the pool has settled and nothing moves the
+/// phone: a still phone encodes no GPU work at all ("idle costs nothing").
+/// The gate runs every tick, asleep or not — the filter it reads must stay
+/// live, or the wake tests would compare frozen numbers. Deviation catches
+/// a shake in one tick; the angle and magnitude tests against the force
+/// snapshot taken at sleep catch a slow tilt the deviation never sees.
+struct IdleGate {
+    still: u32,
+    sleep_force: Option<[f32; 3]>,
+}
+
+impl IdleGate {
+    /// Device rest v_max wanders 0.03..0.12 m/s under sensor noise
+    /// (2026-08-31); the threshold sits just above that band.
+    const V_SLEEP: f32 = 0.12;
+    const DEV_SLEEP: f32 = 0.5;
+    const STILL_FRAMES: u32 = 180;
+    const DEV_WAKE: f32 = 1.2;
+    /// cos 1.5 degrees: sensor noise wanders the smoothed force ~0.2
+    /// degrees, a real tilt crosses this within two idle ticks.
+    const COS_WAKE: f32 = 0.999_657;
+    const MAG_WAKE: f32 = 0.3;
+
+    fn new() -> Self {
+        Self {
+            still: 0,
+            sleep_force: None,
+        }
+    }
+
+    fn sleeping(&self) -> bool {
+        self.sleep_force.is_some()
+    }
+
+    /// True while the frame may be skipped.
+    fn asleep(&mut self, smooth: [f32; 3], dev: f32, v_max: f32) -> bool {
+        fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+            a.iter().zip(&b).map(|(x, y)| x * y).sum()
+        }
+        if let Some(rest) = self.sleep_force {
+            let cos = dot(smooth, rest) / (dot(smooth, smooth) * dot(rest, rest)).sqrt().max(1e-6);
+            let mag_shift = (dot(smooth, smooth).sqrt() - dot(rest, rest).sqrt()).abs();
+            if dev > Self::DEV_WAKE || cos < Self::COS_WAKE || mag_shift > Self::MAG_WAKE {
+                self.sleep_force = None;
+                self.still = 0;
+                return false;
+            }
+            return true;
+        }
+        if v_max < Self::V_SLEEP && dev < Self::DEV_SLEEP {
+            self.still += 1;
+            if self.still >= Self::STILL_FRAMES {
+                self.sleep_force = Some(smooth);
+                return true;
+            }
+        } else {
+            self.still = 0;
+        }
+        false
     }
 }
 
@@ -1632,6 +1723,7 @@ pub struct RenderStats {
     pub temperature_max: f32,
     pub clamp_count: u32,
     pub substeps: u32,
+    pub idle_frames: u64,
 }
 
 pub struct Renderer {
@@ -1644,6 +1736,8 @@ pub struct Renderer {
     gpu_us: Ring,
     gpu_timing: Option<GpuTiming>,
     force_filter: ForceFilter,
+    idle: IdleGate,
+    idle_frames: u64,
     mode: Mode,
     frames: u64,
     last_frame_ms: f64,
@@ -1768,6 +1862,8 @@ impl Renderer {
             gpu_us: Ring::new(),
             gpu_timing,
             force_filter: ForceFilter::new(),
+            idle: IdleGate::new(),
+            idle_frames: 0,
             mode,
             frames: 0,
             last_frame_ms: 0.0,
@@ -1793,12 +1889,27 @@ impl Renderer {
     }
 
     /// `now_ms` is `CADisplayLink.timestamp` in milliseconds; only
-    /// differences are taken.
-    pub fn frame(&mut self, sample: MotionSample, now_ms: f64) {
+    /// differences are taken. Returns false when the settled sim slept
+    /// the frame: nothing was encoded or presented, and the shell may
+    /// drop its tick rate until the next true.
+    pub fn frame(&mut self, sample: MotionSample, now_ms: f64) -> bool {
         // A gap after a pause is not a frame interval; half a second cuts
         // off resumes without hiding real hitches.
         let interval_us = ((now_ms - self.last_frame_ms) * 1_000.0) as f32;
-        if self.frames > 0 && interval_us < 500_000.0 {
+        let was_asleep = self.idle.sleeping();
+        let (force, dev) = self.force_filter.apply(sample.body_force());
+        if let Mode::Sim(s) = &self.mode
+            && self.idle.asleep(force, dev, s.stats[6])
+        {
+            // The clock still advances, so the wake frame steps one
+            // tick, not the whole nap.
+            self.last_frame_ms = now_ms;
+            self.idle_frames += 1;
+            return false;
+        }
+        // Idle ticks run at the shell's nap rate; their intervals are
+        // naps, not frame times.
+        if self.frames > 0 && !was_asleep && interval_us < 500_000.0 {
             self.interval_us.push(interval_us);
         }
         self.last_frame_ms = now_ms;
@@ -1807,7 +1918,6 @@ impl Renderer {
         } else {
             (interval_us / 1_000_000.0).clamp(0.0, MAX_DT)
         };
-        let force = self.force_filter.apply(sample.body_force());
         if let Mode::Sim(s) = &mut self.mode {
             // CFL: dt <= 0.4 d / v_max, from the one-frame-stale v_max
             // the stats readback drained. The GPU clamp enforces the dt
@@ -1834,12 +1944,14 @@ impl Renderer {
         let texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return true;
+            }
             wgpu::CurrentSurfaceTexture::Outdated
             | wgpu::CurrentSurfaceTexture::Lost
             | wgpu::CurrentSurfaceTexture::Validation => {
                 self.surface.configure(&self.device, &self.config);
-                return;
+                return true;
             }
         };
 
@@ -2105,6 +2217,7 @@ impl Renderer {
         {
             validate_scan(&self.device, &self.queue, &v);
         }
+        true
     }
 
     fn drain_ready_slots(&mut self) {
@@ -2173,6 +2286,7 @@ impl Renderer {
             temperature_max: f[8],
             clamp_count: f[9] as u32,
             substeps,
+            idle_frames: self.idle_frames,
             frames: self.frames,
             interval_p50_us: self.interval_us.percentile(0.5),
             interval_p99_us: self.interval_us.percentile(0.99),
@@ -2188,6 +2302,29 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_gate_sleeps_when_still_and_wakes_on_shake_or_tilt() {
+        let g = 9.81;
+        let upright = [0.0, -g, 0.0];
+        let mut gate = IdleGate::new();
+        for _ in 0..IdleGate::STILL_FRAMES - 1 {
+            assert!(!gate.asleep(upright, 0.1, 0.05));
+        }
+        assert!(gate.asleep(upright, 0.1, 0.05));
+        // Noise peaks sit between the sleep and wake thresholds: no
+        // false wake.
+        assert!(gate.asleep(upright, 0.8, 0.05));
+        // A shake crosses the deviation test in one tick.
+        assert!(!gate.asleep(upright, 2.0, 0.05));
+        for _ in 0..IdleGate::STILL_FRAMES {
+            gate.asleep(upright, 0.1, 0.05);
+        }
+        assert!(gate.asleep(upright, 0.1, 0.05));
+        // A settled 2.9-degree tilt is far past the 1.5-degree wake
+        // angle even though its deviation never crossed anything.
+        assert!(!gate.asleep([g * 0.05, -g, 0.0], 0.1, 0.05));
+    }
 
     #[test]
     fn percentiles_come_from_the_filled_part_only() {

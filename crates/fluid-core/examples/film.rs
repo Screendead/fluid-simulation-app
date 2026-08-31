@@ -46,6 +46,19 @@ fn force_at(frame: u32) -> [f32; 3] {
     if std::env::var("FLAT").as_deref() == Ok("1") {
         return [jitter[0], jitter[1], -G + jitter[2]];
     }
+    // WAKE=1: six flat seconds — long enough to sleep — then a slow
+    // eased tilt to recline. The idle-gate wake oracle: the gate must
+    // sleep once, wake within the tilt's first two degrees, and never
+    // freeze moving water.
+    if std::env::var("WAKE").as_deref() == Ok("1") {
+        let p = ((t - 6.0) / 2.0).clamp(0.0, 1.0);
+        let e = 0.5 - 0.5 * (p * std::f32::consts::PI).cos();
+        return [
+            jitter[0],
+            -0.3 * G * e + jitter[1],
+            -G * (1.0 - 0.046 * e) + jitter[2],
+        ];
+    }
     let pose = |a: [f32; 3], b: [f32; 3], p: f32| -> [f32; 3] {
         let e = 0.5 - 0.5 * (p.clamp(0.0, 1.0) * std::f32::consts::PI).cos();
         std::array::from_fn(|i| a[i] + (b[i] - a[i]) * e)
