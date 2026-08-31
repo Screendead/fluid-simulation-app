@@ -65,6 +65,21 @@ curvature term is cut as measured noise. Film verdict: flat spasms
 reclaim targets for the optimisation pass: the extra rest substeps
 (~+1.1 ms GPU) and the refine schedule (saturated at 2.1 ms).
 
+That evening, the jelly investigation (M3 record, "The jelly, taken
+apart"): Jack's recording showed jelly creep, a scalloped rest edge,
+and residual jitter. XSPH damping is now a rate (48/s), so pacing
+policy can no longer move it; TILT and RING poses plus ring-down and
+creep meters joined the film harness. The autopsy pinned the jelly on
+wall-adhesion contact-line dissipation (ring 0.25 s with it, 0.50 s
+without, solver floor 1.0 s, real water 3-6 s here). Gamma reduction,
+K_NEAR softening, and viscosity removal are measured dead ends — each
+buys ring only by wrecking flat calm. The one open lever is the
+contact angle, a look call for Jack; the 2.2 ms cap survived its
+damping-confound re-check and stays. Nothing here changes device
+behaviour: the pacing and cost picture is exactly where the morning
+left it, and the optimisation pass remains the blocker in front of
+sustained 120 Hz.
+
 Test baseline: 27 Rust tests pass, 2026-08-31.
 
 ## M1 measurements (reference device, 2026-08-30, Release)

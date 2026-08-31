@@ -1089,3 +1089,80 @@ dispatch), so advect's eight taps are plain loads and no aliased
 view exists for the A15 to misorder. The round-one artifact class —
 grid-cell blocks of stray tracers, bottom half — is the device
 check for this change.
+
+### The jelly, taken apart (2026-08-31, evening)
+
+Jack's screen recording, phone flat on its back and tilted a few
+degrees: the puddle creeps like jelly at low velocity, its edge is
+scalloped at rest, and the jitter is better but present. Three
+instruments turned the three complaints into numbers. An activity
+heatmap of the calmest stretch shows the interior dead and every
+residual motion on the contact line. The line itself, extracted
+along its own axis, is rough at RMS 1.33 mm with power at 15-38 mm
+wavelengths — six to fifteen spacings, far above lattice texture:
+the line froze where motion stopped instead of relaxing, which is a
+yield-stress signature. And two new film poses now cover what the
+suite missed: TILT (flat, five degrees, direction swinging 180) and
+RING (upright, a quarter-second nudge, then still). RING's meter
+fits the slosh mode's decay; the mode lands at 3.3-3.7 Hz, right on
+the box's gravity-wave frequency. The physics is right; the wave is
+strangled.
+
+First fix, structural: XSPH blending was a fixed fraction per
+substep, so the damping followed the pacing policy — the 2.2 ms cap
+had silently doubled it overnight. The blend is now a rate,
+1 - exp(-XSPH_RATE dt), 48/s matching the fraction the films were
+tuned at. A forced n=8 film decays identically to n=4: damping no
+longer knows the substep count.
+
+Then the autopsy. Ring-down e-folding time by leg, all at 2.5 mm,
+noise floor ~1.4 mm:
+
+| leg | tau_e | verdict |
+|---|---|---|
+| shipped (tension on, lambda 48) | 0.25 s | the complaint |
+| tension off | 0.50 s | tension halves ring life |
+| lambda 12, tension on | 0.25 s | XSPH innocent at wave scale |
+| XSPH fully off, tension off | 0.50 s | confirmed innocent |
+| Morris viscosity off, tension off | 0.75 s | a quarter-second each |
+| K_NEAR 1000, tension off | 0.75 s | " |
+| n=8 cadence, tension off | 0.75 s | " |
+| all three off, tension off | 1.00 s | the solver floor |
+| adhesion off, cohesion full | 0.50 s | **the wall owns tension's half** |
+
+Real water in this 7.65 mm cell face-shear-damps in 3-6 s. The
+solver floor is 1.0 s; the shipped build rings 0.25 s — under one
+swing, which is exactly "jelly". The last row is the finding: with
+beta zeroed and cohesion at full water strength the ring doubles, so
+the damping tension adds lives at the wall contact line, not in the
+bulk network. The line advances by lattice hops of one spacing and
+each hop eats energy regardless of amplitude — real contact lines
+dissipate too, but below their pinning threshold the bulk keeps
+oscillating; ours taxes every swing.
+
+Dead ends, measured so the next reader skips them. K_NEAR 1000 with
+tension on: no ring gain (the cohesion bonds re-stiffen what the
+near-pressure released), pool level down 2 mm, flat jumps 23 vs 12.
+Gamma at 0.7x water: no ring gain. Gamma at 0.5x: buys 0.50 s and
+wrecks the flat pose (63 jumps vs 12) — tension is load-bearing
+where the day's win lives. Morris viscosity off with tension on: no
+ring gain, flat jumps 52 — also load-bearing. Clipping the cohesion
+spline's repulsive branch died on a desk check: the branch is
+negative only below 0.27c = 1.6 mm, under the 2.5 mm rest spacing;
+no resting pair feels it.
+
+The confound check on the morning ladder also closed. The 2.2 ms
+cap's boil win rode a damping doubling in the same change; re-run at
+a fixed 48/s rate, 4.4 ms substeps boil 1.02 mm with 24k clamps and
+101 flat jumps against 0.15 mm and 12. The cap is timestep physics,
+not damping in disguise, and it stays.
+
+What stands open, and its price. The one honest lever on the jelly
+is the contact angle: adhesion scales with 1 + cos(theta), so
+raising theta past the measured 110 trades wetting fidelity for
+ring life, ending at the balling regime beta=0 already filmed. That
+is a look preference for Jack's eyes, films on request. The scallops
+are the same yield stress seen in profile and shrink only with the
+lattice; they stand as a resolution floor at the anchored sigma.
+The 0.25 s ring at theta 110 is the measured price of correct
+wetting at 2.5 mm.
