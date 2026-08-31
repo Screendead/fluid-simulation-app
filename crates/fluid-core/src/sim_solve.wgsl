@@ -141,21 +141,27 @@ fn cell_base(pos: vec3f) -> vec3u {
     );
 }
 
-// Density, wall fill, and the DFSPH factor in one sweep. Static walls
-// join the squared-sum term only. The denominator guard is numerics,
-// not physics: it only bites for a particle with no neighbours and no
-// wall in range, whose kappa is zero anyway.
+// Density, wall fill, the DFSPH factor, and the divergence predictor
+// in one sweep: the divergence solve's neighbour traversal is this
+// traversal, so its Drho/Dt rides along and the div_kappa dispatch
+// disappears. Safe because nothing writes positions.xyz or velocities
+// between the old two dispatches. Static walls join the squared-sum
+// term only. The denominator guard is numerics, not physics: it only
+// bites for a particle with no neighbours and no wall in range, whose
+// kappa is zero anyway.
 @compute @workgroup_size(256)
-fn density_factor(@builtin(global_invocation_id) id: vec3u) {
+fn density_div(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= params.count {
         return;
     }
     let pos = positions[id.x].xyz;
+    let vel = velocities[id.x].xyz;
     let base = cell_base(pos);
     var rho = 0.0;
     var rho_near = 0.0;
     var grad_sum = vec3f(0.0);
     var grad_sq = 0.0;
+    var drho = 0.0;
     for (var dz = -1i; dz <= 1i; dz++) {
         for (var dy = -1i; dy <= 1i; dy++) {
             for (var dx = -1i; dx <= 1i; dx++) {
@@ -167,16 +173,22 @@ fn density_factor(@builtin(global_invocation_id) id: vec3u) {
                     + u32(coord.x);
                 let end = starts[c] + counts[c];
                 for (var k = starts[c]; k < end; k++) {
-                    let x = pos - positions[sorted[k]].xyz;
+                    let j = sorted[k];
+                    let x = pos - positions[j].xyz;
                     let r = length(x);
                     rho += params.mass * kernel(r, params.h);
                     let wn = max(1.0 - r / params.h, 0.0);
                     // r > 0 excludes self, whose constant term would
                     // only offset every particle equally.
                     rho_near += select(0.0, wn * wn * wn, r > 0.0);
-                    let mg = params.mass * grad_kernel(x, r, params.h);
+                    let gw = grad_kernel(x, r, params.h);
+                    // mass stays outside the dot below: distributing it
+                    // inside changes the rounding, and this kernel's
+                    // claim is bit-equality with the two it replaces.
+                    let mg = params.mass * gw;
                     grad_sum += mg;
                     grad_sq += dot(mg, mg);
+                    drho += params.mass * dot(vel - velocities[j].xyz, gw);
                 }
             }
         }
@@ -189,15 +201,22 @@ fn density_factor(@builtin(global_invocation_id) id: vec3u) {
     fill += wall_density((pos.y - lo.y) * inv_h) + wall_density((hi.y - pos.y) * inv_h);
     fill += wall_density((pos.z - lo.z) * inv_h) + wall_density((hi.z - pos.z) * inv_h);
     rho += params.rho0 * fill * 0.978;
-    grad_sum += wall_grad_sum(pos);
+    let wall_grad = wall_grad_sum(pos);
+    grad_sum += wall_grad;
     density[id.x] = rho;
     // The w lane is dead outside this window: integrate re-zeroes it
     // after forces_eval consumes it, and each invocation writes only
     // its own .w word while neighbours read .xyz — disjoint 4-byte
     // words, no race.
     positions[id.x].w = rho_near;
-    alpha[id.x] = rho / max(dot(grad_sum, grad_sum) + grad_sq, 1e-4);
+    let a = rho / max(dot(grad_sum, grad_sum) + grad_sq, 1e-4);
+    alpha[id.x] = a;
     pressure[id.x] = 0.0;
+    // A wall is fluid that never moves: approaching it raises density.
+    drho += dot(vel, wall_grad);
+    // The dt guard covers the substep-free test path only; every real
+    // substep is orders of magnitude above it, bit-unchanged.
+    kappa[id.x] = max(drho, 0.0) * a / max(step.dt, 1e-9);
 }
 
 // Morris viscosity and the two neighbour-sweep temperature sources
@@ -275,40 +294,6 @@ fn forces_apply(@builtin(global_invocation_id) id: vec3u) {
     pressure[id.x] = k * density[id.x];
 }
 
-// One divergence-free iteration, kappa half: Drho/Dt from the predicted
-// velocities, then kappa^v = Drho/Dt * alpha / dt, clamped to push only.
-@compute @workgroup_size(256)
-fn div_kappa(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= params.count {
-        return;
-    }
-    let pos = positions[id.x].xyz;
-    let vel = velocities[id.x].xyz;
-    let base = cell_base(pos);
-    var drho = 0.0;
-    for (var dz = -1i; dz <= 1i; dz++) {
-        for (var dy = -1i; dy <= 1i; dy++) {
-            for (var dx = -1i; dx <= 1i; dx++) {
-                let coord = vec3i(base) + vec3i(dx, dy, dz);
-                if any(coord < vec3i(0)) || any(coord >= vec3i(params.dims)) {
-                    continue;
-                }
-                let c = (u32(coord.z) * params.dims.y + u32(coord.y)) * params.dims.x
-                    + u32(coord.x);
-                let end = starts[c] + counts[c];
-                for (var k = starts[c]; k < end; k++) {
-                    let j = sorted[k];
-                    let x = pos - positions[j].xyz;
-                    drho += params.mass
-                        * dot(vel - velocities[j].xyz, grad_kernel(x, length(x), params.h));
-                }
-            }
-        }
-    }
-    // A wall is fluid that never moves: approaching it raises density.
-    drho += dot(vel, wall_grad_sum(pos));
-    kappa[id.x] = max(drho, 0.0) * alpha[id.x] / step.dt;
-}
 
 fn apply_kappa(id: u32) {
     let pos = positions[id].xyz;

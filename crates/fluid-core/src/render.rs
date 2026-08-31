@@ -227,10 +227,8 @@ pub fn film(
                 pass.set_pipeline(&sim.scatter);
                 pass.dispatch_workgroups(particles, 1, 1);
                 pass.set_bind_group(0, &sim.solve_bind, &[]);
-                pass.set_pipeline(&sim.density_factor);
+                pass.set_pipeline(&sim.density_div);
                 pass.set_immediates(0, &step);
-                pass.dispatch_workgroups(particles, 1, 1);
-                pass.set_pipeline(&sim.div_kappa);
                 pass.dispatch_workgroups(particles, 1, 1);
                 pass.set_pipeline(&sim.div_apply);
                 pass.dispatch_workgroups(particles, 1, 1);
@@ -767,10 +765,9 @@ struct Sim {
     count_cells: wgpu::ComputePipeline,
     scan_single: wgpu::ComputePipeline,
     scatter: wgpu::ComputePipeline,
-    density_factor: wgpu::ComputePipeline,
+    density_div: wgpu::ComputePipeline,
     forces_eval: wgpu::ComputePipeline,
     forces_apply: wgpu::ComputePipeline,
-    div_kappa: wgpu::ComputePipeline,
     div_apply: wgpu::ComputePipeline,
     den_kappa: wgpu::ComputePipeline,
     den_apply: wgpu::ComputePipeline,
@@ -1156,10 +1153,9 @@ impl Sim {
             count_cells: pipeline(&grid_pl, &grid_module, "count"),
             scan_single: pipeline(&scan_pl, &scan_module, "scan_single"),
             scatter: pipeline(&grid_pl, &grid_module, "scatter"),
-            density_factor: pipeline(&solve_pl, &solve_module, "density_factor"),
+            density_div: pipeline(&solve_pl, &solve_module, "density_div"),
             forces_eval: pipeline(&solve_pl, &solve_module, "forces_eval"),
             forces_apply: pipeline(&solve_pl, &solve_module, "forces_apply"),
-            div_kappa: pipeline(&solve_pl, &solve_module, "div_kappa"),
             div_apply: pipeline(&solve_pl, &solve_module, "div_apply"),
             den_kappa: pipeline(&solve_pl, &solve_module, "den_kappa"),
             den_apply: pipeline(&solve_pl, &solve_module, "den_apply"),
@@ -2034,10 +2030,8 @@ impl Renderer {
                         pass.set_pipeline(&s.scatter);
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_bind_group(0, &s.solve_bind, &[]);
-                        pass.set_pipeline(&s.density_factor);
+                        pass.set_pipeline(&s.density_div);
                         pass.set_immediates(0, &step);
-                        pass.dispatch_workgroups(particles, 1, 1);
-                        pass.set_pipeline(&s.div_kappa);
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&s.div_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
@@ -2417,12 +2411,10 @@ mod tests {
                     pass.set_pipeline(&sim.scatter);
                     pass.dispatch_workgroups(particles, 1, 1);
                     pass.set_bind_group(0, &sim.solve_bind, &[]);
-                    pass.set_pipeline(&sim.density_factor);
+                    pass.set_pipeline(&sim.density_div);
                     pass.set_immediates(0, &step);
                     pass.dispatch_workgroups(particles, 1, 1);
                     if substeps > 0 {
-                        pass.set_pipeline(&sim.div_kappa);
-                        pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&sim.div_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&sim.forces_eval);
