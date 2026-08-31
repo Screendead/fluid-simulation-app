@@ -1182,3 +1182,36 @@ at the anchored sigma: the 0.50 s ring against the 1.0 s solver
 floor and real water's 3-6 s, and side-wall scallops on the ~15% of
 contact line that still wets — both stand as resolution floors.
 Theta 110 still governs the four walls that wet.
+
+### The dancing, and the revert (2026-08-31, late)
+
+The side-wall build reached the device and Jack called it in one
+line: the jitter is back, real jumps, not lighting. He was right
+twice. A new meter counts dots that appear or vanish frame to frame
+in the settled bulk — motion the projected view otherwise hides —
+and it rewrote the evening's story. Dry faces dance at 225
+flips/frame. The full-grip build dances at 13. And the builds with
+no tension at all dance at 308 to 1053: the restlessness is the
+solver's own rest-state noise, present since before tension landed.
+The morning's 0.42 mm boil was this same noise; full face adhesion
+never fixed it — it gripped the lattice against the walls and caged
+it. The cage is also the jelly. One dial, two readings.
+
+Substitutes for the grip, all measured, none sufficient: XSPH to
+192/s (dance 90 — blind to collective shuffles, which is what these
+are), face grip at a quarter strength (56-169 across repeats, high
+variance), back-face-only (111, and flat jumps explode to 89),
+face-normal squeeze-film damping at 100/s (162 — the motion is
+in-plane, killing the z-flutter hypothesis), and the quarter-grip
+plus 192/s combination (77 — suppressions do not multiply). Ring
+life stays 0.50 s in every dry-face variant, so the de-jelly is
+real; it just arrives with the noise unmasked.
+
+Jack's call: full grip back on the phone, and the noise root fix
+becomes the target. The measured leads for that fix, in order: the
+warm-start half-pressure factor (tuned against hydrostatic ringing
+before tension existed; never re-measured on the dance meter), the
+refine schedule at rest (its dance response is unmeasured — the
+ladder only cleared it on boil), and the solve's kick statistics
+per substep. The side-wall geometry stays in this record as the
+proven de-jelly, waiting for the noise fix that makes it livable.

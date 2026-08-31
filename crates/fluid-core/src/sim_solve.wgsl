@@ -269,10 +269,15 @@ fn wall_adhesion(t: f32) -> f32 {
 
 // Acceleration toward each wall inside the support, per unit of
 // ADHESION * rho0.
-// The four side walls only: the screen and back faces carry ~95% of
-// the contact-line length, and their adhesion is the slosh damping and
-// flat-pose pinning the 2026-08-31 autopsy measured. Jack's call: the
-// meniscus lives at the visible edges; the faces stay non-wetting.
+// All six walls at full strength. Dropping or weakening the two
+// face terms was tried and reverted the same evening (2026-08-31,
+// M3 record "The dancing"): the face grip turned out to be the only
+// found suppressor of the solver's rest-state restlessness — dry
+// faces dance at 225 dot-flips/frame against 13 gripped, and no
+// soft substitute (XSPH to 192/s, fractional grip, z-damping)
+// reached a third of the way back. The grip is also the flat-pose
+// jelly, so this line is a measured trade, standing until the
+// restlessness has a root fix.
 fn wall_adh_sum(pos: vec3f) -> vec3f {
     let lo = wall_lo();
     let hi = -lo;
@@ -282,6 +287,8 @@ fn wall_adh_sum(pos: vec3f) -> vec3f {
     a.x += wall_adhesion((hi.x - pos.x) * inv_h);
     a.y -= wall_adhesion((pos.y - lo.y) * inv_h);
     a.y += wall_adhesion((hi.y - pos.y) * inv_h);
+    a.z -= wall_adhesion((pos.z - lo.z) * inv_h);
+    a.z += wall_adhesion((hi.z - pos.z) * inv_h);
     return a;
 }
 

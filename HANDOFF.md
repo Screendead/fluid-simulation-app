@@ -74,13 +74,18 @@ wall-adhesion contact-line dissipation (ring 0.25 s with it, 0.50 s
 without, solver floor 1.0 s, real water 3-6 s here). Gamma reduction,
 K_NEAR softening, and viscosity removal are measured dead ends — each
 buys ring only by wrecking flat calm. The 2.2 ms cap survived its
-damping-confound re-check and stays. Jack's fix, same evening:
-adhesion acts on the four side walls only, never the screen or back
-face — the meniscus without the stickiness. Ring doubled to 0.50 s,
-tilt response tripled, flat calmer (7 jumps vs 12), boil 0.14 ->
-0.19 mm the one price; guard table in the record. The pacing and
-cost picture is unchanged, and the optimisation pass remains the
-blocker in front of sustained 120 Hz.
+damping-confound re-check and stays. The side-wall-only adhesion
+that followed (the meniscus without the stickiness) doubled ring
+life and tripled tilt response, but on the device it unmasked the
+solver's rest-state noise as visible dancing (M3 record, "The
+dancing"): full face grip is the only found suppressor, and the
+grip is the jelly. Reverted the same night on Jack's call. The open
+task he set: root-fix the rest-state noise so the de-jelly geometry
+becomes livable. Measured leads, in order: the warm-start
+half-pressure factor (never re-measured on the dance meter), the
+refine schedule's dance response, and per-substep solve kicks. The
+pacing and cost picture is unchanged, and the optimisation pass
+remains the blocker in front of sustained 120 Hz.
 
 Test baseline: 27 Rust tests pass, 2026-08-31.
 
