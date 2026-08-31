@@ -62,13 +62,16 @@ const EXPANSION: f32 = 2.07e-4;
 // Akinci 2013 surface tension: cohesion + curvature between fluid
 // pairs, adhesion against the walls. The cleave integral of the
 // cohesion spline prices the model: sigma = 0.107 * SURFACE_TENSION
-// N/m at this support radius, so 0.68 is water. ADHESION is the
-// wetting; by Young-Dupre it is a contact-angle dial (M3 record
-// table: 2.08 is 110 degrees, oleophobic phone glass; 5.89 is 30,
-// clean glass). The balling that shelved tension in the first sweep
-// was correct physics for the zero-adhesion wall it ran against.
-const SURFACE_TENSION: f32 = 0.68;
-const ADHESION: f32 = 2.08;
+// N/m at this support radius, so 0.68 is water in the continuum and
+// 0.78 on the actual 2.5 mm lattice, which realizes 87% of the
+// continuum tension (independent lattice sum, 2026-08-31). ADHESION
+// is the wetting; by Young-Dupre their ratio is a contact-angle dial
+// (M3 record table: this pair is 110 degrees, oleophobic phone
+// glass; 6.8 would be clean glass). The balling that shelved tension
+// in the first sweep was correct physics for the zero-adhesion wall
+// it ran against.
+const SURFACE_TENSION: f32 = 0.78;
+const ADHESION: f32 = 2.39;
 
 fn kernel(r: f32, h: f32) -> f32 {
     let q = r / h;
