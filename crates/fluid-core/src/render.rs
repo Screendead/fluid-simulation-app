@@ -1719,6 +1719,8 @@ pub struct RenderStats {
     pub interval_p50_us: f32,
     pub interval_p99_us: f32,
     pub interval_max_us: f32,
+    pub acquire_p50_us: f32,
+    pub acquire_p99_us: f32,
     pub encode_p50_us: f32,
     pub encode_p99_us: f32,
     pub gpu_p50_us: f32,
@@ -1743,6 +1745,7 @@ pub struct Renderer {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     interval_us: Ring,
+    acquire_us: Ring,
     encode_us: Ring,
     gpu_us: Ring,
     gpu_timing: Option<GpuTiming>,
@@ -1869,6 +1872,7 @@ impl Renderer {
             surface,
             config,
             interval_us: Ring::new(),
+            acquire_us: Ring::new(),
             encode_us: Ring::new(),
             gpu_us: Ring::new(),
             gpu_timing,
@@ -1950,7 +1954,10 @@ impl Renderer {
             s.frame_seed = s.frame_seed.wrapping_add(1);
         }
 
-        let started = std::time::Instant::now();
+        // The drawable acquire blocks on swapchain back-pressure; timed
+        // apart from the encode, or the block masquerades as CPU work
+        // (it was ~97% of the old combined number).
+        let acquire_started = std::time::Instant::now();
 
         let texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
@@ -1965,6 +1972,9 @@ impl Renderer {
                 return true;
             }
         };
+        self.acquire_us
+            .push(acquire_started.elapsed().as_secs_f32() * 1_000_000.0);
+        let started = std::time::Instant::now();
 
         self.drain_ready_slots();
         let slot = self.gpu_timing.as_ref().and_then(|t| {
@@ -2299,6 +2309,8 @@ impl Renderer {
             interval_p50_us: self.interval_us.percentile(0.5),
             interval_p99_us: self.interval_us.percentile(0.99),
             interval_max_us: self.interval_us.max(),
+            acquire_p50_us: self.acquire_us.percentile(0.5),
+            acquire_p99_us: self.acquire_us.percentile(0.99),
             encode_p50_us: self.encode_us.percentile(0.5),
             encode_p99_us: self.encode_us.percentile(0.99),
             gpu_p50_us: self.gpu_us.percentile(0.5),

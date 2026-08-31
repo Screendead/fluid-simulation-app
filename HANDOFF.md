@@ -100,7 +100,7 @@ to `docs/design/decisions.md`.
 | Id | Question | Where it is decided |
 |---|---|---|
 | O1 | Decided 2026-08-30 → D5: DFSPH in a quasi-3D thin slab. Driven by Jack's accuracy directive; PBF and MLS-MPM rejections are in the record. | `docs/design/decisions.md` |
-| O2 | The performance budget at 120 Hz on the reference device. Provisional, from M1: frame interval p99 ≤ 8,400 µs sustained; CPU frame path p99 ≤ 2 ms; footprint ≤ 200 MB; thermal nominal over ten minutes. Firmed in the optimisation pass after M2. | Optimisation pass |
+| O2 | The performance budget at 120 Hz on the reference device. Provisional, from M1: frame interval p99 ≤ 8,400 µs sustained; CPU encode p99 ≤ 2 ms; footprint ≤ 200 MB; thermal nominal over ten minutes. Amended 2026-08-31: the old "CPU frame path" number was ~97% drawable-acquire block (swapchain back-pressure), not encode work; the stats line now reports the two apart (`acq` and `cpu`), and the encode figure alone carries the 2 ms line. Firmed in the optimisation pass. | Optimisation pass |
 | O3 | The name. "Fluid Box" is a working title; the iOS target is `FluidApp`, bundle `com.screendead.FluidApp`. | Jack |
 | O4 | Moot 2026-08-30: the web target is removed (D1 amendment). | — |
 | O5 | The license. `Cargo.toml` says `UNLICENSED` until Jack chooses. | Jack |

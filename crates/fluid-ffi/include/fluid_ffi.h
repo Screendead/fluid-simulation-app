@@ -25,6 +25,8 @@ typedef struct FluidRenderStats {
   float interval_p50_us;
   float interval_p99_us;
   float interval_max_us;
+  float acquire_p50_us;
+  float acquire_p99_us;
   float encode_p50_us;
   float encode_p99_us;
   float gpu_p50_us;
