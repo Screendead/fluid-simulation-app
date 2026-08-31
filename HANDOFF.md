@@ -41,20 +41,31 @@ the desk first: scripts/film.sh films the sim to an mp4 without the
 phone.
 
 2026-08-31, the jitter campaign closed and the efficiency push opened.
-Shipped, in order: near-pressure (pair-instability cure), the substep
-floor with the low-n refine boost (convergence cure), the sensor force
-filter (noise-pumping cure), and the idle gate — a still phone encodes
-no GPU work; the shell naps the display link at 30 Hz. Each has film
-oracles in the M3 record. Awaiting on-device judgment from Jack
-(phone on a thermal cooling break; two thermal fines stand in the
-ledger). The active-frame cost pass is next: a six-direction research
-panel has run (dispatch fusion, grid reuse, iteration economics,
-layout/precision, tracers, encode/render-pass structure); its
-proposals and the chosen implementations belong to this record when
-they land. Metrology films must set IDLE=0 or the gate freezes the
-measured window.
+Shipped, in order: near-pressure, the substep floor with the low-n
+refine boost, the sensor force filter, and the idle gate. The cost
+pass landed two solver fusions and the acq/cpu timer split; two other
+changes failed on the device and were reverted the same hour. The M3
+record holds all of it. Metrology films must set IDLE=0 or the gate
+freezes the measured window.
 
-Test baseline: 21 Rust tests pass, 2026-08-31.
+Later that day, the physics pass: Jack's directive, fix the jitters
+properly and disregard the frame budget; optimisation reclaims the
+cost after. Shipped, each with film oracles and tests in the M3
+record: the substep cap re-expressed in substep length (2.2 ms — the
+resting boil was timestep error, not iteration residual), the wall
+corner-wedge correction (the flat spasms were double-counted fill on
+every box edge; the 0.978 fudge is now derived geometry), and Akinci
+surface tension — cohesion plus wall adhesion, both coefficients
+derived at run time from the support radius, anchored to real water
+(sigma via the cleave integral, contact angle 110 degrees via
+Young-Dupre, the measured angle of water on a phone screen). The
+curvature term is cut as measured noise. Film verdict: flat spasms
+114 -> 6 jumps, upright boil 0.42 -> 0.14 mm, zero-noise floor
+0.08 mm, reclined dead calm, shake violence intact. The named
+reclaim targets for the optimisation pass: the extra rest substeps
+(~+1.1 ms GPU) and the refine schedule (saturated at 2.1 ms).
+
+Test baseline: 27 Rust tests pass, 2026-08-31.
 
 ## M1 measurements (reference device, 2026-08-30, Release)
 

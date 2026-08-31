@@ -1024,3 +1024,14 @@ factor, Young-Dupre at 110 degrees), so a spacing change retunes
 them instead of silently detuning them. Known debt, extended: like
 the near force, the cohesion force does work the temperature ledger
 does not book; the dT stat range on device remains the watch.
+
+### The 2.0 mm probe: resolution is no longer the binding constraint
+
+The runtime tension anchors made the probe a pure spacing change.
+At 2.0 mm (tripod, NOISE=0.15): upright boil 0.16 mm, zero-noise
+floor 0.08 — no better than 2.5 mm's 0.14 and 0.08 — with more
+clamp activity everywhere (the clamp ceiling scales with spacing)
+and roughly double the solver cost. After the wedge fix and the
+curvature cut, the jitter floor is set by the solver's noise
+sources, not the discretization. 2.5 mm stays the default, now on
+evidence rather than budget.
