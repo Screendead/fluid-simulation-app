@@ -265,6 +265,14 @@ fn forces_apply(@builtin(global_invocation_id) id: vec3u) {
         0.0,
     );
     temperature[id.x] += step.dt * a.w;
+    // The constant-density warm start rides along: every access in both
+    // jobs is at the invocation's own index. Last substep's converged
+    // pressure, half-applied, is the canonical cure for hydrostatic
+    // ringing — without it the solver re-fights gravity from zero
+    // every substep and the settled fluid flickers.
+    let k = 0.5 * prev_pressure[id.x] / density[id.x];
+    kappa[id.x] = k;
+    pressure[id.x] = k * density[id.x];
 }
 
 // One divergence-free iteration, kappa half: Drho/Dt from the predicted
@@ -336,20 +344,6 @@ fn div_apply(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     apply_kappa(id.x);
-}
-
-// Warm start for the constant-density solve: last substep's converged
-// pressure, half-applied, is the canonical cure for hydrostatic
-// ringing — without it the solver re-fights gravity from zero every
-// substep and the settled fluid flickers.
-@compute @workgroup_size(256)
-fn den_warm(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= params.count {
-        return;
-    }
-    let k = 0.5 * prev_pressure[id.x] / density[id.x];
-    kappa[id.x] = k;
-    pressure[id.x] = k * density[id.x];
 }
 
 // One constant-density iteration, kappa half: predict rho* one dt ahead,

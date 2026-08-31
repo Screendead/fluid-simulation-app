@@ -238,8 +238,6 @@ pub fn film(
                 pass.dispatch_workgroups(particles, 1, 1);
                 pass.set_pipeline(&sim.forces_apply);
                 pass.dispatch_workgroups(particles, 1, 1);
-                pass.set_pipeline(&sim.den_warm);
-                pass.dispatch_workgroups(particles, 1, 1);
                 pass.set_pipeline(&sim.den_apply);
                 pass.dispatch_workgroups(particles, 1, 1);
                 // Short substeps converge fast: density error scales
@@ -774,7 +772,6 @@ struct Sim {
     forces_apply: wgpu::ComputePipeline,
     div_kappa: wgpu::ComputePipeline,
     div_apply: wgpu::ComputePipeline,
-    den_warm: wgpu::ComputePipeline,
     den_kappa: wgpu::ComputePipeline,
     den_apply: wgpu::ComputePipeline,
     integrate: wgpu::ComputePipeline,
@@ -1164,7 +1161,6 @@ impl Sim {
             forces_apply: pipeline(&solve_pl, &solve_module, "forces_apply"),
             div_kappa: pipeline(&solve_pl, &solve_module, "div_kappa"),
             div_apply: pipeline(&solve_pl, &solve_module, "div_apply"),
-            den_warm: pipeline(&solve_pl, &solve_module, "den_warm"),
             den_kappa: pipeline(&solve_pl, &solve_module, "den_kappa"),
             den_apply: pipeline(&solve_pl, &solve_module, "den_apply"),
             integrate: pipeline(&solve_pl, &solve_module, "integrate"),
@@ -2049,8 +2045,6 @@ impl Renderer {
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&s.forces_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
-                        pass.set_pipeline(&s.den_warm);
-                        pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&s.den_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
                         // Short substeps converge fast: density error
@@ -2434,8 +2428,6 @@ mod tests {
                         pass.set_pipeline(&sim.forces_eval);
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&sim.forces_apply);
-                        pass.dispatch_workgroups(particles, 1, 1);
-                        pass.set_pipeline(&sim.den_warm);
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&sim.den_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
