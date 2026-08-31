@@ -52,7 +52,9 @@ No inter-particle forces: that is M3.
   four walls with restitution. Render as instanced four-vertex strips,
   vertex-pulled from the particle buffer: soft circular sprites, additive
   blend, colour from speed. The background stays the body-force tint,
-  scaled toward black so the sprites carry the scene.
+  scaled toward black so the sprites carry the scene. (Superseded in
+  M3: the look pass replaces the tint with a fixed near-black backdrop;
+  see m3-fluid.md.)
 - **Runtime knobs for the ramp.** Particle count and sprite radius enter
   through `fluid_renderer_create`; the shell reads `FLUID_PARTICLES` and
   `FLUID_RADIUS` from the environment so a `devicectl` launch can sweep

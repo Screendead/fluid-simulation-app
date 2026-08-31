@@ -61,21 +61,14 @@ impl Ring {
     }
 }
 
-/// One g moves a channel a quarter of its range, so a tilt is unmissable
-/// and a hard shake saturates; the whole tint sits at quarter brightness so
-/// the sprites carry the scene. z drives blue with the sign flipped so rest
-/// reads as water, not mud.
-fn clear_colour(force: [f32; 3]) -> wgpu::Color {
-    let channel = |f: f32, sign: f32| {
-        f64::from((0.5 + sign * f / (4.0 * crate::STANDARD_GRAVITY)).clamp(0.0, 1.0)) * 0.25
-    };
-    wgpu::Color {
-        r: channel(force[0], 1.0),
-        g: channel(force[1], 1.0),
-        b: channel(force[2], -1.0),
-        a: 1.0,
-    }
-}
+/// The empty box: near-black with a cold cast, so the water alone
+/// carries the scene.
+const BACKDROP: wgpu::Color = wgpu::Color {
+    r: 0.004,
+    g: 0.008,
+    b: 0.016,
+    a: 1.0,
+};
 
 /// wgpu's native adapter and device futures are ready on the first poll
 /// (verified in the wgpu 30.0.1 source); Pending means that contract
@@ -167,11 +160,13 @@ pub fn film(
     });
     let dt = 1.0 / 120.0;
     let mut v_max = 0.0f32;
+    let mut field_keep = FIELD_KEEP;
     let mut rows = vec![0u8; (WIDTH * 4 * HEIGHT) as usize];
     for f in 0..frames {
         let force = force_at(f);
         // The production CFL, fed by the previous frame's v_max.
         let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32).clamp(1, cap);
+        field_keep += (field_keep_target(v_max) - field_keep) * 0.25;
         let dt_sub = dt / n as f32;
         let v_clamp = 0.4 * spacing / dt_sub;
         let step = sim::pack_step(force, dt_sub, v_clamp, 0);
@@ -241,15 +236,23 @@ pub fn film(
                 })],
                 ..Default::default()
             });
+            let keep = f64::from(field_keep);
+            let splat = 1.0 - keep;
             pass.set_pipeline(&sim.decay);
             pass.set_blend_constant(wgpu::Color {
-                r: FIELD_KEEP,
-                g: FIELD_KEEP,
-                b: FIELD_KEEP,
-                a: FIELD_KEEP,
+                r: keep,
+                g: keep,
+                b: keep,
+                a: keep,
             });
             pass.draw(0..3, 0..1);
             pass.set_pipeline(&sim.body);
+            pass.set_blend_constant(wgpu::Color {
+                r: splat,
+                g: splat,
+                b: splat,
+                a: splat,
+            });
             pass.set_bind_group(0, &sim.sprite_bind, &[]);
             pass.draw(0..4, 0..sim.count);
         }
@@ -261,7 +264,7 @@ pub fn film(
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear_colour(force)),
+                        load: wgpu::LoadOp::Clear(BACKDROP),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -353,9 +356,17 @@ fn buffer_entry(
     }
 }
 
-/// The splatted field keeps this fraction each frame (about 37 ms at
-/// 120 Hz); sim_sprites.wgsl scales the splat by the complement.
-const FIELD_KEEP: f64 = 0.8;
+/// The field's keep fraction at rest: a ~37 ms average, enough that
+/// the rim cannot flicker frame to frame. Motion fades it to zero: a
+/// 37 ms average of a surface moving at shake speed smears centimetres
+/// of fog, which looks worse than the flicker it prevents.
+const FIELD_KEEP: f32 = 0.8;
+
+/// Rest keep down to zero across the hand-tremor..shake band of v_max.
+fn field_keep_target(v_max: f32) -> f32 {
+    let t = ((v_max - 0.05) / 0.20).clamp(0.0, 1.0);
+    FIELD_KEEP * (1.0 - t * t * (3.0 - 2.0 * t))
+}
 
 const DECAY: wgpu::BlendState = wgpu::BlendState {
     color: wgpu::BlendComponent {
@@ -391,6 +402,22 @@ const ADDITIVE: wgpu::BlendState = wgpu::BlendState {
     },
     alpha: wgpu::BlendComponent {
         src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
+/// The body splat, scaled by the blend constant: the pass sets it to
+/// 1 - keep, the complement of the decay draw, so decay and splat
+/// always sum to an exact average.
+const SPLAT: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Constant,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Constant,
         dst_factor: wgpu::BlendFactor::One,
         operation: wgpu::BlendOperation::Add,
     },
@@ -621,6 +648,7 @@ struct Sim {
     cell_groups: u32,
     max_substeps: u32,
     substeps_used: u32,
+    field_keep: f32,
     frame_seed: u32,
     #[cfg(test)]
     tracers: wgpu::Buffer,
@@ -1045,7 +1073,7 @@ impl Sim {
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::R16Float,
-                        blend: Some(ADDITIVE),
+                        blend: Some(SPLAT),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
@@ -1128,6 +1156,7 @@ impl Sim {
             cell_groups: cells.div_ceil(256),
             max_substeps: substeps,
             substeps_used: 0,
+            field_keep: FIELD_KEEP,
             frame_seed: 0,
             #[cfg(test)]
             tracers,
@@ -1719,6 +1748,9 @@ impl Renderer {
             } else {
                 0
             };
+            // A quarter-step chase, so keep cannot pop between frames
+            // when v_max hovers at the fade edge.
+            s.field_keep += (field_keep_target(s.stats[6]) - s.field_keep) * 0.25;
             s.frame_seed = s.frame_seed.wrapping_add(1);
         }
 
@@ -1859,15 +1891,23 @@ impl Renderer {
                 occlusion_query_set: None,
                 ..Default::default()
             });
+            let keep = f64::from(s.field_keep);
+            let splat = 1.0 - keep;
             pass.set_pipeline(&s.decay);
             pass.set_blend_constant(wgpu::Color {
-                r: FIELD_KEEP,
-                g: FIELD_KEEP,
-                b: FIELD_KEEP,
-                a: FIELD_KEEP,
+                r: keep,
+                g: keep,
+                b: keep,
+                a: keep,
             });
             pass.draw(0..3, 0..1);
             pass.set_pipeline(&s.body);
+            pass.set_blend_constant(wgpu::Color {
+                r: splat,
+                g: splat,
+                b: splat,
+                a: splat,
+            });
             pass.set_bind_group(0, &s.sprite_bind, &[]);
             pass.draw(0..4, 0..s.count);
         }
@@ -1879,7 +1919,7 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear_colour(force)),
+                        load: wgpu::LoadOp::Clear(BACKDROP),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -2063,24 +2103,6 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn at_rest_face_up_the_clear_is_calm_blue() {
-        let colour = clear_colour(
-            MotionSample {
-                gravity: [0.0, 0.0, -1.0],
-                user_acceleration: [0.0; 3],
-            }
-            .body_force(),
-        );
-        assert_eq!((colour.r, colour.g, colour.b), (0.125, 0.125, 0.1875));
-    }
-
-    #[test]
-    fn a_hard_shake_saturates_instead_of_wrapping() {
-        let colour = clear_colour([100.0, -100.0, 0.0]);
-        assert_eq!((colour.r, colour.g, colour.b), (0.25, 0.0, 0.125));
-    }
 
     #[test]
     fn percentiles_come_from_the_filled_part_only() {

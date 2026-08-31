@@ -63,13 +63,16 @@ fn point(@builtin(vertex_index) i: u32) -> PointVertex {
     let t = tracers[i];
     var out: PointVertex;
     out.clip = vec4f(t.xy / extent, 0.0, 1.0);
-    out.colour = mix(CALM, LIVELY, clamp(t.w / FULL_SPEED, 0.0, 1.0));
+    // Brightness rides on speed: a resting dot vanishes instead of
+    // speckling the body, and fast water glints.
+    let s = clamp((t.w - 0.05) / FULL_SPEED, 0.0, 1.0);
+    out.colour = mix(CALM, LIVELY, s) * (s * 0.9);
     return out;
 }
 
 @fragment
 fn dot_frag(in: PointVertex) -> @location(0) vec4f {
-    return vec4f(in.colour * 0.55, 0.55);
+    return vec4f(in.colour, 0.0);
 }
 
 // The liquid body: each solver particle splats its kernel footprint
@@ -84,7 +87,10 @@ fn body(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyV
     let extent = -(params.box_min.xy + vec2f(params.cell));
     let corner = vec2f(f32(v & 1u), f32(v >> 1u)) * 2.0 - 1.0;
     var out: BodyVertex;
-    out.clip = vec4f((positions[i].xy + corner * params.h) / extent, 0.0, 1.0);
+    // 1.5 h, or the flat pose fails: gravity into the glass spreads
+    // the fluid one particle deep, in-plane neighbours sit millimetres
+    // apart, and footprints of radius h leave holes between particles.
+    out.clip = vec4f((positions[i].xy + corner * params.h * 1.5) / extent, 0.0, 1.0);
     out.corner = corner;
     return out;
 }
@@ -92,9 +98,11 @@ fn body(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyV
 @fragment
 fn weight(in: BodyVertex) -> @location(0) vec4f {
     let falloff = max(1.0 - dot(in.corner, in.corner), 0.0);
-    // 1 - the field's keep fraction: the decay draw holds the other
-    // 0.8, so the field is a ~37 ms average and the rim cannot
-    // flicker at frame rate. Steady state matches an unsmoothed splat.
-    return vec4f(falloff * falloff * 0.2, 0.0, 0.0, 0.0);
+    // 0.5 mostly undoes the wider radius's area gain (exact would be
+    // 0.44), held a little high so a few-particle droplet still clears
+    // the edge threshold. The pass scales by 1 - keep through the
+    // blend constant, the exact complement of the decay draw, so the
+    // field's steady state is the raw splat at every keep.
+    return vec4f(falloff * falloff * 0.5, 0.0, 0.0, 0.0);
 }
 

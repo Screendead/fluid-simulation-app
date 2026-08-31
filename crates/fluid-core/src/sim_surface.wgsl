@@ -7,8 +7,11 @@
 // The settled interior field sits near 3; the band is the edge width.
 const EDGE_LO: f32 = 0.8;
 const EDGE_HI: f32 = 1.6;
-const DEEP: vec3f = vec3f(0.03, 0.14, 0.38);
-const RIM: vec3f = vec3f(0.35, 0.65, 0.95);
+// Field value stands in for depth: a thin sheet reads pale, a settled
+// column reads deep.
+const SHALLOW: vec3f = vec3f(0.09, 0.34, 0.66);
+const DEEP: vec3f = vec3f(0.01, 0.09, 0.27);
+const RIM: vec3f = vec3f(0.55, 0.85, 1.0);
 
 struct FillVertex {
     @builtin(position) clip: vec4f,
@@ -40,5 +43,6 @@ fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     // everywhere. Measured in field texels so render size cancels.
     let texels = f32(textureDimensions(field).x) * fwidth(in.uv.x);
     let rim = a * (1.0 - a) * 4.0 * smoothstep(0.15, 0.5, fwidth(d) / texels);
-    return vec4f(DEEP * a + RIM * rim * 0.5, a);
+    let body = mix(SHALLOW, DEEP, smoothstep(EDGE_HI, 5.0, d));
+    return vec4f(body * a + RIM * rim * 0.6, a);
 }

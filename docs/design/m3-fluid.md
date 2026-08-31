@@ -497,7 +497,7 @@ contact angle follows the adhesion-to-cohesion ratio), so it is a new
 mechanism rather than a knob. Richer neighbourhoods at 2.0 mm may
 also reopen the plain model; that waits on the encode pass.
 
-### The field averages 37 milliseconds
+### The field averages 37 milliseconds — at rest only
 
 Shipped instead, in the rendering domain the water shader deferral
 already owns: the splatted field keeps 0.8 of itself each frame (a
@@ -508,8 +508,34 @@ The rim cannot flicker at frame rate; the boil meter, which samples
 at 30 fps and so barely sees frame-rate sparkle, still drops 2.34 to
 2.07 mm. The solver's slow hump migration remains and remains the
 solver's problem: this smooths the drawn boundary, not the fluid.
-Film shows no rim detachment from the dots through the fastest
-scripted tilt; the dots lead the rim only as faint spray.
+
+Amended 2026-08-31, after Jack's fourth recording. A fixed 37 ms
+average is motion blur: at shake speed the surface moves centimetres
+inside the time constant, and the boundary smeared into fog across
+half the screen. Keep is now a function of v_max — 0.8 below
+0.05 m/s, smoothstepped to zero by 0.25 m/s, chased a quarter step
+per frame so it cannot pop. The splat scale moved from the shader
+into the blend constant (1 - keep), so decay and splat stay exact
+complements at every keep and the steady state and thresholds hold
+unchanged. At rest nothing changed; in motion the field is raw.
+
+### The look pass (2026-08-31)
+
+Jack's verdict on the first cap-16 recording: "this looks like shit."
+He is right, and three of the causes were rendering debts:
+
+- The motion fog above.
+- The body-force tint. M2 chose it when sprites were the whole scene;
+  under the water it reads as a bruise. The backdrop is now a fixed
+  near-black with a cold cast (M2 record amended). The tint's two unit
+  tests went with it.
+- Flat fill and constant-brightness dots. The fill now ramps pale
+  (thin sheet) to deep blue over field value 1.6..5, so the flat pose
+  reads as a sheet of water instead of a translucent wash, and the rim
+  brightened. Dot brightness now rides on tracer speed — a resting dot
+  vanishes instead of speckling the body, and fast water glints. The
+  speed colouring Sebastian Lague's fluid video demonstrates was
+  already half-built here; the missing half was the fade.
 
 ### The splash was clamped away
 
