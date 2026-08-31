@@ -5,10 +5,15 @@ decision is D5.*
 
 ## 1. Goal
 
-Real water in the box. Jack's directive (verbatim in HANDOFF, 2026-08-30):
-a full fluid simulation, physically accurate, with calculated pressure,
-density, velocity, acceleration and temperature, as close to real water as
-possible at the true physical size of the reference device. The water-style
+Real water in the box. Jack's directive, 2026-08-30, verbatim: "full
+fluid sim, physically accurate, calculated pressure, density, velocity,
+acceleration, temperature (increasing/decreasing due to pressure), etc.
+leave out the physically accurate specular/water-style shader for now.
+just make the underlying sim as physically accurate as possible, 1:1
+with physical reality of real water while taking into account the
+physical size of the iphone 13 pro max i'm running it on." (The 1:1
+clause is amended by "The scale, chosen" below: the water stays real,
+the tank is 4x the device.) The water-style
 renderer is explicitly left out: that is M4. M3 renders with the M2
 sprites and puts field statistics on screen.
 

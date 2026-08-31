@@ -109,12 +109,15 @@ divergence-free SPH: a neighbour grid, an iterative divergence-free
 solve, an iterative constant-density solve, Morris viscosity, real SI
 constants throughout. The domain is 3D: the screen at physical size by
 the device's 7.65 mm depth. Driven by Jack's directive of 2026-08-30
-(HANDOFF): maximum physical accuracy at the device's real size.
+(verbatim in the M3 record): maximum physical accuracy at the device's
+real size.
 
 **Why DFSPH.** Its pressure and density are physical fields in pascals
 and kg/m³ — Jack's named lenses fall out of the state. It holds density
 error to a stated target at real-time cost, and it keeps particles,
-which the M4 screen-space water renderer consumes directly.
+which the M4 water renderer consumes directly. (Amended 2026-08-31:
+M4 consumes the particles through the splatted thickness field, not
+through a per-particle depth pass; the M4 record holds the pipeline.)
 
 **Rejected.**
 

@@ -1,6 +1,6 @@
 # Handoff — project state
 
-*Updated 2026-08-30. Audience: the next agent, or Jack. This file is the
+*Updated 2026-08-31. Audience: the next agent, or Jack. This file is the
 state document. It holds what the next stretch of work needs. Update it in
 the same commit that closes a milestone or a task. Git holds the history.*
 
@@ -32,9 +32,9 @@ pressure 0..475 Pa, temperature within microkelvin, 120 Hz held.
 Numbers and the two test-pinned defects are in the M3 record. The warm-started density solve ended the at-rest flicker (settled v
 0.03 m/s, clamps down 96%). The fluid draws as 262,144 one-pixel
 tracers advected in the solved field — Jack's directive, 2026-08-31.
-Left for M3 exit: surface tension (the film harness proved the rest
-churn is undamped capillary-band waves; the M3 record holds the boil
-table), the settled upright measurement, and the minute hand-test.
+Left for M3 exit: the settled upright measurement and the minute
+hand-test with its interval measurement. Surface tension, the third
+item that stood here, landed the same day (below).
 The ramp is measured (M3 record): 2.5 mm holds 120 Hz clean and
 stays the default; 2.0 mm waits on the optimisation pass. Debug on
 the desk first: scripts/film.sh films the sim to an mp4 without the
@@ -97,9 +97,9 @@ the WAKE film's sleep oracle failed in every 1x configuration and
 the 1x desk phone never slept. Invisible in the picture (the
 movers are a few particles, plausibly circulating at the contact
 line). The scale change below ended the starvation without
-explaining the floor. The pacing and cost picture is unchanged,
-and the optimisation pass remains the blocker in front of
-sustained 120 Hz.
+explaining the floor. The pacing and cost picture is unchanged;
+sustained 120 Hz still waits on the optimisation pass, which is
+sequenced after the M4 renderer (the M4 record holds the decision).
 
 2026-08-31, the scale: Jack asked whether the feel was locked
 behind a non-1:1 scale, and the measured ladder (1x/2x/4x/8x; M3
@@ -120,6 +120,16 @@ and dance are equal within scatter, and both configurations pass
 the WAKE sleep oracle — the first pass since tension landed. Jack
 ruled: keep full grip. Real water wets all six faces, and the cost
 is now zero on every meter.
+
+2026-08-31, the render direction: Jack locked the M4 look — a
+liquid-glass water renderer (real refraction, Fresnel, a specular
+that tracks real tilt) over a procedural black-and-white dazzle
+backdrop. The M4 record (`docs/design/m4-water.md`) holds the
+directive verbatim, the optics model, the new stripe-flicker meter,
+and the sequencing decision: renderer first, then one aggressive
+optimisation pass on the complete frame. Jack also asked to
+investigate adaptive particle resolution; the findings feed the
+optimisation-pass design.
 
 Test baseline: 27 Rust tests pass, 2026-08-31.
 
@@ -144,20 +154,22 @@ The stats call costs 102 µs once a second, off the frame path. GPU
 timestamps read real values on this device in M2; the M1 note that the
 adapter lacks `TIMESTAMP_QUERY` did not hold — trust the M2 observation.
 
-## The next task — M3, the fluid
+## The next task — M4, the water renderer
 
-Jack's directive, 2026-08-30, verbatim: "full fluid sim, physically
-accurate, calculated pressure, density, velocity, acceleration,
-temperature (increasing/decreasing due to pressure), etc. leave out the
-physically accurate specular/water-style shader for now. just make the
-underlying sim as physically accurate as possible, 1:1 with physical
-reality of real water while taking into account the physical size of the
-iphone 13 pro max i'm running it on."
+Build the liquid-glass renderer from the M4 record
+(`docs/design/m4-water.md`). Work on branch `m4-water`, stacked on
+`m3-fluid`. After M4: the aggressive optimisation pass (budget O2,
+battery bound, frame-latency-1 experiment, the named M3 reclaim
+targets, and the adaptive-resolution decision), run once on the
+complete frame.
 
-Start with the design record, `docs/design/m3-fluid.md`, and the method
-decision D5. Work on branch `m3-fluid`, stacked on `m2-particles`. The
-optimisation pass (budget O2, battery bound, frame-latency-1 experiment)
-moves behind M3 with the ramp.
+M3 close waits on the optimisation pass: the roadmap's closure rule
+needs the oracle measured on the device, and three measurements are
+still unrecorded — the settled upright hydrostatic numbers, the
+minute hand-test with its interval measurement, and the "inside
+budget" clause. All three fit the pass's device runbook. Closing M3
+earlier is Jack's call and takes an explicit closure-rule amendment.
+Jack's M3 directive stands verbatim in the M3 record.
 
 ## Open decisions
 
@@ -184,7 +196,7 @@ the reference device and `HANDOFF.md` records the measurement.
 | M1 Surface | wgpu owns a `CAMetalLayer` from `fluid-core`; clear and present at display rate; frame-time capture | 120 Hz stable, idle draw measured, budget O2 set. **Done 2026-08-30.** |
 | M2 Particles | GPU particle buffer, integration under the body force, box collision, point rendering | Tilt and push the phone; particles behave; particle count at budget recorded |
 | M3 Fluid | The method from O1: neighbour search on the GPU, incompressibility, viscosity | A convincing slosh inside budget; incompressibility measured |
-| M4 Water | The default view: screen-space fluid rendering — depth, smoothing, normals, refraction; the box itself | Looks like water; better than real time; inside budget |
+| M4 Water | The default view: the liquid-glass renderer from the M4 record — thickness from the splatted field, normals, refraction, the dazzle back wall | Looks like water; better than real time; inside budget |
 | M5 Lenses | Field lenses behind a dropdown menu: velocity, density, acceleration, pressure; temperature as an added field | Each lens switches with no frame drop |
 | M6 Headroom | Adaptive substeps, sleep when still, thermal response; power measured | Battery draw recorded against a target |
 | M7 Feel | Sensor-to-frame latency measured and tuned; haptics; rotation (O6) | Latency number recorded; Jack's hand says it feels right |
