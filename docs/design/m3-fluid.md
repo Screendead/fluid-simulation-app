@@ -325,3 +325,23 @@ standing exercise of every computed field.
 - [ ] Under Jack's hand: a convincing slosh, 120 Hz interval p99 within
       budget over a minute, measured and in HANDOFF.
 - [ ] Gate and CI green.
+
+### Tracer recycling
+
+A passive tracer advected in the splatted, cell-averaged field
+collapses onto attractors: the sampled field is compressible where the
+flow is not. Jack's screen recording of 2026-08-31 showed 131,072
+tracers drawn as a few hundred lit pixels after eleven minutes, a thin
+thread on the bottom wall, while the solver sat at rest density.
+Strays also freeze in cells the fluid has left, so each hard shake
+parks more dust on the walls until the fluid sweeps those cells again.
+
+The cure is turnover. Each frame a tracer recycles with probability
+dt/TAU, TAU 3 s, and respawns at a random solver particle plus a
+quarter-cell jitter, with its speed tag copied from that particle. The
+cloud relaxes back to the true fluid distribution with time constant
+TAU, whatever the run length. The regression test pools the fluid
+against the -x wall, forces a full recycle with one dt-above-TAU
+advect pass, and counts tracers right of the pool: zero with the
+branch live, 23 stranded without it.
+

@@ -18,6 +18,7 @@ struct Step {
     force: vec3f,
     dt: f32,
     v_clamp: f32,
+    seed: u32,
 }
 
 var<immediate> step: Step;
@@ -31,6 +32,16 @@ var<immediate> step: Step;
 // Velocities land in the grid as 16.16 fixed point; f32 storage has no
 // atomic add.
 const FIXED: f32 = 65536.0;
+
+// Recycling time constant: the expected life of a tracer before it
+// respawns at a solver particle.
+const TAU: f32 = 3.0;
+
+fn pcg(x: u32) -> u32 {
+    var h = x * 747796405u + 2891336453u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    return (h >> 22u) ^ h;
+}
 
 fn cell_count() -> u32 {
     return params.dims.x * params.dims.y * params.dims.z;
@@ -64,6 +75,25 @@ fn splat(@builtin(global_invocation_id) id: vec3u) {
 @compute @workgroup_size(256)
 fn advect(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= arrayLength(&tracers) {
+        return;
+    }
+    // A sampled field is compressible where the flow is not, so a
+    // passive cloud collapses onto attractors over minutes and strands
+    // on walls the fluid has left. Respawning a random fraction at
+    // solver particles relaxes the cloud back to the true fluid with
+    // time constant TAU.
+    let r0 = pcg(id.x ^ pcg(step.seed));
+    if f32(r0) / 4294967295.0 < step.dt / TAU {
+        let r1 = pcg(r0);
+        let r2 = pcg(r1);
+        let r3 = pcg(r2);
+        let r4 = pcg(r3);
+        let jitter = (vec3f(vec3u(r2, r3, r4) >> vec3u(20u)) / 4096.0 - vec3f(0.5))
+            * (params.cell * 0.5);
+        let j = r1 % params.count;
+        let lo = params.box_min + vec3f(params.cell);
+        let p = clamp(positions[j].xyz + jitter, lo, -lo);
+        tracers[id.x] = vec4f(p, length(velocities[j].xyz));
         return;
     }
     var pos = tracers[id.x].xyz;

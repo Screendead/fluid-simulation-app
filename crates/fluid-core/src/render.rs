@@ -335,6 +335,9 @@ struct Sim {
     cell_groups: u32,
     max_substeps: u32,
     substeps_used: u32,
+    frame_seed: u32,
+    #[cfg(test)]
+    tracers: wgpu::Buffer,
 }
 
 impl Sim {
@@ -414,7 +417,7 @@ impl Sim {
         let tracers = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim tracers"),
             size: u64::from(tracer_count.max(1)) * 16,
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: true,
         });
         if tracer_count > 0 {
@@ -739,6 +742,9 @@ impl Sim {
             cell_groups: cells.div_ceil(256),
             max_substeps: substeps,
             substeps_used: 0,
+            frame_seed: 0,
+            #[cfg(test)]
+            tracers,
         }
     }
 }
@@ -1251,6 +1257,7 @@ impl Renderer {
             } else {
                 0
             };
+            s.frame_seed = s.frame_seed.wrapping_add(1);
         }
 
         let started = std::time::Instant::now();
@@ -1316,7 +1323,7 @@ impl Renderer {
                     let n = s.substeps_used;
                     let dt_sub = dt / n as f32;
                     let v_clamp = 0.4 * s.spacing / dt_sub;
-                    let step = sim::pack_step(force, dt_sub, v_clamp);
+                    let step = sim::pack_step(force, dt_sub, v_clamp, 0);
                     let particles = s.count.div_ceil(256);
                     for _ in 0..n {
                         pass.set_bind_group(0, &s.grid_bind, &[]);
@@ -1362,7 +1369,7 @@ impl Renderer {
                         // solved end-of-frame field, with the frame dt.
                         pass.set_bind_group(0, &s.tracer_bind, &[]);
                         pass.set_pipeline(&s.clear_vel);
-                        pass.set_immediates(0, &sim::pack_step(force, dt, 0.0));
+                        pass.set_immediates(0, &sim::pack_step(force, dt, 0.0, s.frame_seed));
                         pass.dispatch_workgroups(s.vel_groups, 1, 1);
                         pass.set_pipeline(&s.splat);
                         pass.dispatch_workgroups(particles, 1, 1);
@@ -1653,50 +1660,64 @@ mod tests {
         } else {
             0.4 * SIM_SPACING / dt
         };
-        let step = sim::pack_step(gravity, if substeps == 0 { 0.0 } else { dt }, v_clamp);
+        let step = sim::pack_step(gravity, if substeps == 0 { 0.0 } else { dt }, v_clamp, 0);
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             let particles = sim.count.div_ceil(256);
-            for _ in 0..(substeps.max(1) * frames) {
-                pass.set_bind_group(0, &sim.grid_bind, &[]);
-                pass.set_pipeline(&sim.clear_counts);
-                pass.dispatch_workgroups(sim.cell_groups, 1, 1);
-                pass.set_pipeline(&sim.count_cells);
-                pass.dispatch_workgroups(particles, 1, 1);
-                pass.set_bind_group(0, &sim.scan_bind, &[]);
-                pass.set_pipeline(&sim.scan_single);
-                pass.dispatch_workgroups(1, 1, 1);
-                pass.set_bind_group(0, &sim.grid_bind, &[]);
-                pass.set_pipeline(&sim.scatter);
-                pass.dispatch_workgroups(particles, 1, 1);
-                pass.set_bind_group(0, &sim.solve_bind, &[]);
-                pass.set_pipeline(&sim.density_factor);
-                pass.set_immediates(0, &step);
-                pass.dispatch_workgroups(particles, 1, 1);
-                if substeps > 0 {
-                    pass.set_pipeline(&sim.div_kappa);
+            for f in 0..frames {
+                for _ in 0..substeps.max(1) {
+                    pass.set_bind_group(0, &sim.grid_bind, &[]);
+                    pass.set_pipeline(&sim.clear_counts);
+                    pass.dispatch_workgroups(sim.cell_groups, 1, 1);
+                    pass.set_pipeline(&sim.count_cells);
                     pass.dispatch_workgroups(particles, 1, 1);
-                    pass.set_pipeline(&sim.div_apply);
+                    pass.set_bind_group(0, &sim.scan_bind, &[]);
+                    pass.set_pipeline(&sim.scan_single);
+                    pass.dispatch_workgroups(1, 1, 1);
+                    pass.set_bind_group(0, &sim.grid_bind, &[]);
+                    pass.set_pipeline(&sim.scatter);
                     pass.dispatch_workgroups(particles, 1, 1);
-                    pass.set_pipeline(&sim.forces_eval);
+                    pass.set_bind_group(0, &sim.solve_bind, &[]);
+                    pass.set_pipeline(&sim.density_factor);
+                    pass.set_immediates(0, &step);
                     pass.dispatch_workgroups(particles, 1, 1);
-                    pass.set_pipeline(&sim.forces_apply);
-                    pass.dispatch_workgroups(particles, 1, 1);
-                    pass.set_pipeline(&sim.den_warm);
-                    pass.dispatch_workgroups(particles, 1, 1);
-                    pass.set_pipeline(&sim.den_apply);
-                    pass.dispatch_workgroups(particles, 1, 1);
-                    for _ in 0..3 {
-                        pass.set_pipeline(&sim.den_kappa);
+                    if substeps > 0 {
+                        pass.set_pipeline(&sim.div_kappa);
+                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.set_pipeline(&sim.div_apply);
+                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.set_pipeline(&sim.forces_eval);
+                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.set_pipeline(&sim.forces_apply);
+                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.set_pipeline(&sim.den_warm);
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&sim.den_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
+                        for _ in 0..3 {
+                            pass.set_pipeline(&sim.den_kappa);
+                            pass.dispatch_workgroups(particles, 1, 1);
+                            pass.set_pipeline(&sim.den_apply);
+                            pass.dispatch_workgroups(particles, 1, 1);
+                        }
+                        pass.set_pipeline(&sim.integrate);
+                        pass.dispatch_workgroups(particles, 1, 1);
                     }
-                    pass.set_pipeline(&sim.integrate);
+                }
+                if sim.tracer_count > 0 {
+                    let frame_dt = if substeps == 0 { 0.0 } else { 1.0 / 120.0 };
+                    pass.set_bind_group(0, &sim.tracer_bind, &[]);
+                    pass.set_pipeline(&sim.clear_vel);
+                    pass.set_immediates(0, &sim::pack_step(gravity, frame_dt, 0.0, f));
+                    pass.dispatch_workgroups(sim.vel_groups, 1, 1);
+                    pass.set_pipeline(&sim.splat);
                     pass.dispatch_workgroups(particles, 1, 1);
+                    pass.set_pipeline(&sim.advect);
+                    pass.dispatch_workgroups(sim.tracer_count.div_ceil(256), 1, 1);
                 }
             }
+            pass.set_bind_group(0, &sim.solve_bind, &[]);
             pass.set_pipeline(&sim.reduce_stats);
             pass.dispatch_workgroups(1, 1, 1);
         }
@@ -1837,5 +1858,66 @@ mod tests {
         assert!(f[3] < 1.2 * sim::REST_DENSITY, "rho max {}", f[3]);
         assert!(f[6] < 1.0, "v_max {}", f[6]);
         assert!(f[4] >= 0.0 && f[5] < 1.0e4, "pressure {}..{}", f[4], f[5]);
+    }
+    fn read_tracers(device: &wgpu::Device, queue: &wgpu::Queue, sim: &Sim) -> Vec<[f32; 4]> {
+        let size = sim.tracer_count as u64 * 16;
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("tracer staging"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(&sim.tracers, 0, &staging, 0, size);
+        queue.submit(std::iter::once(encoder.finish()));
+        staging.map_async(wgpu::MapMode::Read, .., |_| {});
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let bytes = staging.get_mapped_range(..).expect("mapped");
+        bytes
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .map(|c| {
+                let f = c.as_chunks::<4>().0;
+                [
+                    f32::from_le_bytes(f[0]),
+                    f32::from_le_bytes(f[1]),
+                    f32::from_le_bytes(f[2]),
+                    f32::from_le_bytes(f[3]),
+                ]
+            })
+            .collect()
+    }
+
+    // After five seconds of gravity toward the -x wall the fluid pools
+    // left of centre. One advect pass with dt above TAU recycles every
+    // tracer, so each must land at a solver particle, inside the pool;
+    // with recycling broken, riders stranded right of the pool stay
+    // put. Pins the collapse Jack recorded on 2026-08-31.
+    #[test]
+    fn recycling_regathers_tracers_into_the_fluid() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        read_stats(&device, &queue, &sim, 7, 600, [-9.81, 0.0, 0.0]);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_bind_group(0, &sim.tracer_bind, &[]);
+            pass.set_pipeline(&sim.advect);
+            pass.set_immediates(0, &sim::pack_step([-9.81, 0.0, 0.0], 6.0, 0.0, 601));
+            pass.dispatch_workgroups(sim.tracer_count.div_ceil(256), 1, 1);
+        }
+        queue.submit(std::iter::once(encoder.finish()));
+        let tracers = read_tracers(&device, &queue, &sim);
+        let strays = tracers.iter().filter(|t| t[0] > 0.015).count();
+        let max_x = tracers.iter().fold(f32::MIN, |m, t| m.max(t[0]));
+        eprintln!("strays {strays}, max x {max_x:.4}");
+        assert_eq!(strays, 0, "max x {max_x}");
     }
 }
