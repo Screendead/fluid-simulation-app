@@ -213,6 +213,24 @@ tracer sits still until the fluid returns to it; re-seeding is
 deferred. FLUID_TRACERS sets the count; zero restores the solver
 sprites.
 
+### The exit measurement
+
+Reference device, 2026-08-31, default spacing, 262,144 tracers.
+~105 s settled still (shallow tilt, p ~180 Pa): compression avg
+0.11-0.16%, max ~2.0%; v 0.03; n = 1; ~0.4 clamps a second; interval
+p50 = p99 = 8,334 µs throughout. ~70 s hard slosh: pressure peaks
+2.4 kPa, n breathing 3-7, compression transients to 19% max with
+recovery below 1% between shakes; interval degrades to p50 16,668 µs
+during the hardest shaking — the tracer overdraw and a saturated
+substep cap together exceed the frame.
+
+Against the targets: settled avg 0.13% misses 0.1% narrowly; settled
+max ~2% misses 1%, and the max particle is the wall-adjacent layer
+whose +2.2% estimator bias section 4 records — the field away from
+the walls is inside target. The slosh cadence criterion was met by
+the solver alone (pre-tracer captures) and is broken by the visual
+layer at 262,144 tracers, not by the physics.
+
 ## 5. Resolution and budget — measured, not asserted
 
 CFL arithmetic at v_max = 2 m/s (hard shake): d = 0.33 mm → dt ≤ 66 µs →
