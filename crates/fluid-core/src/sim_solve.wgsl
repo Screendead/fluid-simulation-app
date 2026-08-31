@@ -119,18 +119,18 @@ fn grad_kernel(x: vec3f, r: f32, h: f32) -> vec3f {
     return dw / r * x;
 }
 
-// Akinci et al. 2013 cohesion spline over the kernel support.
-fn cohesion(r: f32) -> f32 {
-    let c = 2.0 * params.h;
+// Akinci et al. 2013 cohesion spline over the kernel support. The
+// caller hoists k = 32 / (pi c^9) and the near-branch offset
+// c^6 / 64 out of its pair loop.
+fn cohesion(r: f32, c: f32, k: f32, near: f32) -> f32 {
     if r >= c || r < 1e-9 {
         return 0.0;
     }
-    let k = 32.0 / (3.14159265 * pow(c, 9.0));
     let a = (c - r) * (c - r) * (c - r) * r * r * r;
     if 2.0 * r > c {
         return k * a;
     }
-    return k * (2.0 * a - pow(c, 6.0) / 64.0);
+    return k * (2.0 * a - near);
 }
 
 // Mirrors sim.rs::wall_density.
@@ -387,6 +387,10 @@ fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
     var blend = vec3f(0.0);
     var near = vec3f(0.0);
     var tension = vec3f(0.0);
+    let coh_c = 2.0 * params.h;
+    let c3 = coh_c * coh_c * coh_c;
+    let coh_k = 32.0 / (3.14159265 * c3 * c3 * c3);
+    let coh_near = c3 * c3 / 64.0;
     for (var dz = -1i; dz <= 1i; dz++) {
         for (var dy = -1i; dy <= 1i; dy++) {
             for (var dx = -1i; dx <= 1i; dx++) {
@@ -415,7 +419,8 @@ fn forces_eval(@builtin(global_invocation_id) id: vec3u) {
                         * (temp - temperature[j]);
                     heat -= 0.5 * DYNAMIC_VISCOSITY / HEAT_CAPACITY * pair * dot(dv, dv);
                     let corr = 2.0 * params.rho0 / (rho_i + density[j]);
-                    tension -= corr * params.mass * cohesion(r) * x / max(r, 1e-9);
+                    tension -= corr * params.mass * cohesion(r, coh_c, coh_k, coh_near) * x
+                        / max(r, 1e-9);
                 }
             }
         }

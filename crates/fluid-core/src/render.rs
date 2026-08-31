@@ -25,10 +25,21 @@ const MAX_DT: f32 = 1.0 / 30.0;
 // ladder (M3 record) halves upright boil twice over by halving the
 // substep (0.42 mm at 4.2 ms, 0.14 at 2.1) while refine depth changes
 // nothing at either length. This and refine_passes key on substep
-// length, not count, so a 60 Hz frame splits twice as often and
-// converges the same. Slightly above 8.334/4 ms, so measured 120 Hz
+// length, not count. Slightly above 8.334/4 ms, so measured 120 Hz
 // interval jitter stays at four substeps.
 const DT_SUB_MAX: f32 = 0.0022;
+
+// The substep floor divides the nominal frame, never the measured
+// one: a floor fed by the measured interval is positive feedback — a
+// slow frame demands more substeps, which slows the next frame — and
+// on the device it railed at sixteen substeps and 30 Hz with the
+// fluid at rest (2026-08-31 capture). A slow frame keeps the floor
+// of the frame the display is aiming for.
+const NOMINAL_DT: f32 = 1.0 / 120.0;
+
+fn substep_floor(dt: f32) -> u32 {
+    (dt.min(NOMINAL_DT) / DT_SUB_MAX).ceil() as u32
+}
 
 // Density error scales with dt squared, so short substeps need fewer
 // refine passes. The film compr guard covers the shallow end.
@@ -225,7 +236,7 @@ pub fn film(
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32)
-            .max((dt / DT_SUB_MAX).ceil() as u32)
+            .max(substep_floor(dt))
             .max(n_min)
             .min(cap);
         field_keep = match keep_pin {
@@ -1936,7 +1947,7 @@ impl Renderer {
             // actually encoded.
             s.substeps_used = if dt > 0.0 {
                 ((dt * s.stats[6] / (0.4 * s.spacing)).ceil() as u32)
-                    .max((dt / DT_SUB_MAX).ceil() as u32)
+                    .max(substep_floor(dt))
                     .min(s.max_substeps)
             } else {
                 0

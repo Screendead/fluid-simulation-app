@@ -1035,3 +1035,25 @@ and roughly double the solver cost. After the wedge fix and the
 curvature cut, the jitter floor is set by the solver's noise
 sources, not the discretization. 2.5 mm stays the default, now on
 evidence rather than budget.
+
+### The basin the cap dug, and the climb out (2026-08-31)
+
+Jack, on the physics-pass build: looks superb, and moving the phone
+takes five seconds to answer. The console shows why: n railed at
+15-16 with the fluid at rest (v 0.09), interval p50 29-43 ms. The
+substep floor divided the measured interval, so a slow frame
+demanded more substeps and made the next frame slower — positive
+feedback with two self-consistent states, and the warm phone found
+the bad one. The felt five seconds is time dilation on top: the sim
+integrates at most MAX_DT (33 ms) per frame while real frames ran
+36-43 ms, so sim time fell behind wall time by a fifth, and the
+phone's pose ran seconds ahead of the pool's.
+
+The fix keeps the convergence principle and breaks the feedback: the
+floor divides the nominal frame (1/120 s), never the measured one —
+a slow frame keeps the floor of the frame the display is aiming for.
+The CFL term still reads the measured dt, so real violence still
+raises n. A second cost bite in the same commit: the cohesion spline
+was computing pow(c, 9) per neighbour pair per substep; the pair
+loop now hoists both spline constants. Film: boil 0.13 mm,
+unchanged. Device numbers follow the redeploy.
