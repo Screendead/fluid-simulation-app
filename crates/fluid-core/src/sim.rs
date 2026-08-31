@@ -94,24 +94,78 @@ pub(crate) fn seed_slab(spacing: f32, extent: [f32; 2], fill: f32) -> Vec<f32> {
 }
 
 /// Uniform hash-driven seeding over the same region seed_slab fills, for
-/// the visual tracers: massless, so no lattice is needed.
-pub(crate) fn seed_tracers(count: u32, extent: [f32; 2], fill: f32) -> Vec<f32> {
+/// the visual tracers: massless, so no lattice is needed. Two u32 a
+/// tracer, at rest, in the packed record sim_tracers.wgsl reads.
+pub(crate) fn seed_tracers(count: u32, extent: [f32; 2], fill: f32) -> Vec<u32> {
     let half = [
         extent[0] - 0.001,
         extent[1] - 0.001,
         0.5 * SLAB_DEPTH - 0.001,
     ];
     let unit = |h: u32| h as f32 / u32::MAX as f32;
-    let mut out = Vec::with_capacity(count as usize * 4);
+    let mut out = Vec::with_capacity(count as usize * 2);
     for i in 0..count {
-        out.extend_from_slice(&[
+        let pos = [
             (unit(hash(i * 3)) * 2.0 - 1.0) * half[0],
             -half[1] + unit(hash(i * 3 + 1)) * 2.0 * half[1] * fill,
             (unit(hash(i * 3 + 2)) * 2.0 - 1.0) * half[2],
-            0.0,
-        ]);
+        ];
+        out.extend_from_slice(&pack_tracer(pos, 0.0, extent));
     }
     out
+}
+
+/// The 8-byte tracer record store_tracer writes in sim_tracers.wgsl:
+/// pos.xy quantised over the box half-extent by pack2x16unorm, then
+/// pos.z and the speed as the two halves of pack2x16float.
+fn pack_tracer(pos: [f32; 3], speed: f32, extent: [f32; 2]) -> [u32; 2] {
+    let unorm = |v: f32, e: f32| ((v / e * 0.5 + 0.5).clamp(0.0, 1.0) * 65535.0 + 0.5) as u32;
+    [
+        unorm(pos[0], extent[0]) | (unorm(pos[1], extent[1]) << 16),
+        u32::from(half_bits(pos[2])) | (u32::from(half_bits(speed)) << 16),
+    ]
+}
+
+/// IEEE half bits of a finite value below half's overflow at 65504. The
+/// box extent and a tracer's speed stay far under it, so the infinity
+/// and NaN encodings have no producer. Rounds to nearest even, as
+/// pack2x16float does.
+fn half_bits(x: f32) -> u16 {
+    let sign = (x.to_bits() >> 16) as u16 & 0x8000;
+    let a = x.abs();
+    if a < f32::from_bits(113 << 23) {
+        // The f32 step at 0.5 is half's subnormal step, so adding 0.5
+        // rounds a onto the subnormal grid and the bits then count it.
+        let magic = f32::from_bits(126 << 23);
+        sign | ((a + magic).to_bits() - magic.to_bits()) as u16
+    } else {
+        let bits = a.to_bits();
+        sign | (((bits + 0x0fff + ((bits >> 13) & 1)) - (112 << 23)) >> 13) as u16
+    }
+}
+
+/// The inverse of `pack_tracer`: the three position components, then the
+/// speed.
+#[cfg(test)]
+pub(crate) fn unpack_tracer(raw: [u32; 2], extent: [f32; 2]) -> [f32; 4] {
+    let unorm = |q: u32, e: f32| (q as f32 / 65535.0 * 2.0 - 1.0) * e;
+    [
+        unorm(raw[0] & 0xffff, extent[0]),
+        unorm(raw[0] >> 16, extent[1]),
+        half_value(raw[1] as u16),
+        half_value((raw[1] >> 16) as u16),
+    ]
+}
+
+/// The inverse of `half_bits`, over the same finite domain.
+#[cfg(test)]
+fn half_value(bits: u16) -> f32 {
+    let raw = u32::from(bits);
+    let mut o = f32::from_bits(((raw & 0x7fff) << 13) + (112 << 23));
+    if raw & 0x7c00 == 0 {
+        o = f32::from_bits(o.to_bits() + (1 << 23)) - f32::from_bits(113 << 23);
+    }
+    f32::from_bits(o.to_bits() | ((raw & 0x8000) << 16))
 }
 
 /// The Step immediates block in sim_solve.wgsl: force on 16-byte vec3
@@ -329,7 +383,8 @@ mod tests {
     fn tracers_seed_inside_the_fluid_region() {
         let extent = [0.0357, 0.0774];
         let seeded = seed_tracers(1000, extent, 0.5);
-        for p in seeded.as_chunks::<4>().0 {
+        for raw in seeded.as_chunks::<2>().0 {
+            let p = unpack_tracer(*raw, extent);
             assert!(p[0].abs() < extent[0] && p[2].abs() < 0.5 * SLAB_DEPTH);
             assert!(p[1] > -extent[1] && p[1] < 0.0 + 0.001);
         }

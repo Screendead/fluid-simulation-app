@@ -885,7 +885,7 @@ impl Sim {
         let vel_grid = storage("sim vel grid", u64::from(cells) * 16, none);
         let tracers = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim tracers"),
-            size: u64::from(tracer_count.max(1)) * 16,
+            size: u64::from(tracer_count.max(1)) * 8,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: true,
         });
@@ -2371,12 +2371,16 @@ mod tests {
         assert_eq!(ring.percentile(1.0), RING as f32);
     }
 
+    /// The box every headless test builds, and the box read_tracers must
+    /// unpack the quantised positions against.
+    const TEST_EXTENT: [f32; 2] = [0.0357, 0.0774];
+
     fn headless_sim() -> Option<(wgpu::Device, wgpu::Queue, Sim)> {
         let (device, queue) = headless_device()?;
         let sim = Sim::new(
             &device,
             wgpu::TextureFormat::Bgra8Unorm,
-            [0.0357, 0.0774],
+            TEST_EXTENT,
             7,
             SIM_SPACING,
             4096,
@@ -2603,7 +2607,7 @@ mod tests {
         assert!(f[4] >= 0.0 && f[5] < 1.0e4, "pressure {}..{}", f[4], f[5]);
     }
     fn read_tracers(device: &wgpu::Device, queue: &wgpu::Queue, sim: &Sim) -> Vec<[f32; 4]> {
-        let size = sim.tracer_count as u64 * 16;
+        let size = sim.tracer_count as u64 * 8;
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("tracer staging"),
             size,
@@ -2622,17 +2626,15 @@ mod tests {
             .expect("poll");
         let bytes = staging.get_mapped_range(..).expect("mapped");
         bytes
-            .as_chunks::<16>()
+            .as_chunks::<8>()
             .0
             .iter()
             .map(|c| {
-                let f = c.as_chunks::<4>().0;
-                [
-                    f32::from_le_bytes(f[0]),
-                    f32::from_le_bytes(f[1]),
-                    f32::from_le_bytes(f[2]),
-                    f32::from_le_bytes(f[3]),
-                ]
+                let u = c.as_chunks::<4>().0;
+                sim::unpack_tracer(
+                    [u32::from_le_bytes(u[0]), u32::from_le_bytes(u[1])],
+                    TEST_EXTENT,
+                )
             })
             .collect()
     }

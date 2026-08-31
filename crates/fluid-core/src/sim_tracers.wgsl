@@ -27,7 +27,7 @@ var<immediate> step: Step;
 @group(0) @binding(1) var<storage, read> positions: array<vec4f>;
 @group(0) @binding(2) var<storage, read> velocities: array<vec4f>;
 @group(0) @binding(3) var<storage, read_write> vel_grid: array<atomic<i32>>;
-@group(0) @binding(4) var<storage, read_write> tracers: array<vec4f>;
+@group(0) @binding(4) var<storage, read_write> tracers: array<vec2u>;
 // The same buffer as binding 3, read without atomics: advect only
 // gathers, and the serial compute encoder already orders it after the
 // splat.
@@ -50,6 +50,28 @@ fn pcg(x: u32) -> u32 {
     return (h >> 22u) ^ h;
 }
 
+fn box_extent() -> vec3f {
+    return -(params.box_min + vec3f(params.cell));
+}
+
+fn load_tracer(i: u32) -> vec4f {
+    let t = tracers[i];
+    let xy = (unpack2x16unorm(t.x) * 2.0 - vec2f(1.0)) * box_extent().xy;
+    let zs = unpack2x16float(t.y);
+    return vec4f(xy, zs.x, zs.y);
+}
+
+// pack2x16unorm rounds to nearest, so the snap never accumulates drift;
+// a tracer slower than ~1.3e-4 m/s lands back on its own lattice point
+// and freezes, which the eye cannot see because the draw already blanks
+// dots below 0.05 m/s.
+fn store_tracer(i: u32, p: vec3f, s: f32) {
+    tracers[i] = vec2u(
+        pack2x16unorm(p.xy / box_extent().xy * 0.5 + vec2f(0.5)),
+        pack2x16float(vec2f(p.z, s)),
+    );
+}
+
 fn respawn(slot: u32, r: u32) {
     let r1 = pcg(r);
     let r2 = pcg(r1);
@@ -58,9 +80,8 @@ fn respawn(slot: u32, r: u32) {
     let jitter = (vec3f(vec3u(r2, r3, r4) >> vec3u(20u)) / 4096.0 - vec3f(0.5))
         * (params.cell * 0.5);
     let j = r1 % params.count;
-    let lo = params.box_min + vec3f(params.cell);
-    let p = clamp(positions[j].xyz + jitter, lo, -lo);
-    tracers[slot] = vec4f(p, length(velocities[j].xyz));
+    let e = box_extent();
+    store_tracer(slot, clamp(positions[j].xyz + jitter, -e, e), length(velocities[j].xyz));
 }
 
 fn cell_count() -> u32 {
@@ -107,7 +128,7 @@ fn advect(@builtin(global_invocation_id) id: vec3u) {
         respawn(id.x, r0);
         return;
     }
-    var pos = tracers[id.x].xyz;
+    var pos = load_tracer(id.x).xyz;
     // Trilinear over the eight nearest cell centres.
     let gp = (pos - params.box_min) / params.cell - vec3f(0.5);
     let base = vec3u(clamp(vec3i(floor(gp)), vec3i(0), vec3i(params.dims) - vec3i(2)));
@@ -132,7 +153,6 @@ fn advect(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     pos += v * step.dt;
-    let lo = params.box_min + vec3f(params.cell);
-    pos = clamp(pos, lo, -lo);
-    tracers[id.x] = vec4f(pos, length(v));
+    let e = box_extent();
+    store_tracer(id.x, clamp(pos, -e, e), length(v));
 }

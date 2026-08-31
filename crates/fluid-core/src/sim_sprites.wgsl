@@ -48,7 +48,7 @@ fn glow(in: SpriteVertex) -> @location(0) vec4f {
     return vec4f(in.colour * a, a);
 }
 
-@group(0) @binding(3) var<storage, read> tracers: array<vec4f>;
+@group(0) @binding(3) var<storage, read> tracers: array<vec2u>;
 
 struct PointVertex {
     @builtin(position) clip: vec4f,
@@ -59,13 +59,14 @@ struct PointVertex {
 // vertex stage needs no writable-storage feature.
 @vertex
 fn point(@builtin(vertex_index) i: u32) -> PointVertex {
-    let extent = -(params.box_min.xy + vec2f(params.cell));
     let t = tracers[i];
     var out: PointVertex;
-    out.clip = vec4f(t.xy / extent, 0.0, 1.0);
+    // The record quantises over the box this draw projects with, so the
+    // unorm pair is already clip space; the packed z goes unread.
+    out.clip = vec4f(unpack2x16unorm(t.x) * 2.0 - vec2f(1.0), 0.0, 1.0);
     // Brightness rides on speed: a resting dot vanishes instead of
     // speckling the body, and fast water glints.
-    let s = clamp((t.w - 0.05) / FULL_SPEED, 0.0, 1.0);
+    let s = clamp((unpack2x16float(t.y).y - 0.05) / FULL_SPEED, 0.0, 1.0);
     out.colour = mix(CALM, LIVELY, s) * (s * 0.9);
     return out;
 }
