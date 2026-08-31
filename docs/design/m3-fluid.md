@@ -584,6 +584,40 @@ exceeds the budget, so the hardest transients will drop frames. The
 trade between the 16-substep ceiling and clean pacing is Jack's
 call, priced by his next on-device shake.
 
+### The resting jitter was a convergence failure at one substep (2026-08-31)
+
+Jack, on the near-pressure build: flat pose spasms cascade through
+the pool, and a reclined pose (on its back, ~30 % lifted) jumps a
+couple of times per second. Both reproduce on film once the harness
+gained RECLINE and FLAT poses and a jump meter (per-frame pool-level
+delta and per-pixel stir; stills cannot show a 2 Hz event, which is
+how the flat check missed it). Attribution: with near-pressure OFF
+the jumps are five to ten times worse — the term reduced them; weak
+in-plane gravity had simply been hiding the solver's resting noise
+in every pose Jack had watched before.
+
+The discriminating test: forcing four substeps at rest kills the
+reclined jumping completely (level delta 0.26 mm/frame at one
+substep, 0.005 at four, same model). So the noise is not the model:
+at a full 8.3 ms substep the density solve cannot converge against
+the wall and near-pressure springs, and the residual limit-cycles.
+More iterations at one substep help upright (0.80 to 0.45 mm boil at
+16 iterations) but sharpen reclined stick-slip (occasional 3.5 mm
+avalanches) — tight convergence at a too-long timestep stiffens the
+contact instead of stabilizing it.
+
+Shipped: a substep floor of two, and a low-n iteration schedule —
+ten density refines at n <= 2, five in between, two past eight.
+Film: reclined jumps 0.26 to 0.007 mm/frame (dead calm), upright
+tripod raw boil 2.56 (this morning) to 0.73 mm. The rest cost rises
+by roughly one substep (~0.6 ms GPU, to be measured on device); the
+idle gate reclaims all of it when a settled phone stops stepping.
+Flat-pose spasms remain, improved but real: at four substeps flat
+only halves, so it is a genuine model error — every particle sits in
+the z-wall contact layer under normal load there, where the analytic
+wall fill is least accurate. That is the wall-model follow-up's
+first target.
+
 ### The spray gate: CFL is a validity condition, not physics (2026-08-31)
 
 Jack asked why the sim clamps velocity at all — a correct integrator

@@ -19,6 +19,14 @@ fn force_at(frame: u32) -> [f32; 3] {
         }
         return f;
     }
+    // RECLINE: on its back, lifted ~17 degrees from flat — the pose
+    // whose collective jumps Jack reported. FLAT: dead flat.
+    if std::env::var("RECLINE").as_deref() == Ok("1") {
+        return [0.0, -0.3 * G, -0.954 * G];
+    }
+    if std::env::var("FLAT").as_deref() == Ok("1") {
+        return [0.0, 0.0, -G];
+    }
     let pose = |a: [f32; 3], b: [f32; 3], p: f32| -> [f32; 3] {
         let e = 0.5 - 0.5 * (p.clamp(0.0, 1.0) * std::f32::consts::PI).cos();
         std::array::from_fn(|i| a[i] + (b[i] - a[i]) * e)

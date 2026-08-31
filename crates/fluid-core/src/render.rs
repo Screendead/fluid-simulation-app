@@ -169,8 +169,14 @@ pub fn film(
     let mut rows = vec![0u8; (WIDTH * 4 * HEIGHT) as usize];
     for f in 0..frames {
         let force = force_at(f);
-        // The production CFL, fed by the previous frame's v_max.
-        let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32).clamp(1, cap);
+        // The production CFL, fed by the previous frame's v_max. NMIN
+        // is a diagnostic floor: halving the rest timestep separates
+        // timestep-stability noise from model noise.
+        let n_min: u32 = std::env::var("NMIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2);
+        let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32).clamp(n_min, cap);
         field_keep = match keep_pin {
             Some(k) => k,
             None => field_keep + (field_keep_target(v_max) - field_keep) * 0.25,
@@ -213,7 +219,13 @@ pub fn film(
                 // Short substeps converge fast: density error scales
                 // with dt squared, so past eight substeps two refine
                 // passes hold it. The compr stat guards the cut.
-                for _ in 0..if n >= 8 { 2 } else { 5 } {
+                for _ in 0..if n >= 8 {
+                    2
+                } else if n <= 2 {
+                    10
+                } else {
+                    5
+                } {
                     pass.set_pipeline(&sim.den_kappa);
                     pass.dispatch_workgroups(particles, 1, 1);
                     pass.set_pipeline(&sim.den_apply);
@@ -1757,7 +1769,13 @@ impl Renderer {
             // the stats readback drained. The GPU clamp enforces the dt
             // actually encoded.
             s.substeps_used = if dt > 0.0 {
-                ((dt * s.stats[6] / (0.4 * s.spacing)).ceil() as u32).clamp(1, s.max_substeps)
+                // Floor of two: at a full 8.3 ms substep the density
+                // solve cannot converge against the wall and near-
+                // pressure springs, and the residual is the resting
+                // jitter. Halving the substep stabilizes it (film:
+                // reclined pool jumps 0.26 mm/frame at one substep,
+                // 0.007 at two with the low-n iteration boost).
+                ((dt * s.stats[6] / (0.4 * s.spacing)).ceil() as u32).clamp(2, s.max_substeps)
             } else {
                 0
             };
@@ -1864,7 +1882,13 @@ impl Renderer {
                         // scales with dt squared, so past eight
                         // substeps two refine passes hold it. The
                         // compr stat guards the cut.
-                        for _ in 0..if n >= 8 { 2 } else { 5 } {
+                        for _ in 0..if n >= 8 {
+                            2
+                        } else if n <= 2 {
+                            10
+                        } else {
+                            5
+                        } {
                             pass.set_pipeline(&s.den_kappa);
                             pass.dispatch_workgroups(particles, 1, 1);
                             pass.set_pipeline(&s.den_apply);
