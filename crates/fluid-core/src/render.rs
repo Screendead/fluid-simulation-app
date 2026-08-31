@@ -161,6 +161,7 @@ pub fn film(
     let dt = 1.0 / 120.0;
     let mut v_max = 0.0f32;
     let mut field_keep = FIELD_KEEP;
+    let mut compr_max = 0.0f32;
     let mut rows = vec![0u8; (WIDTH * 4 * HEIGHT) as usize];
     for f in 0..frames {
         let force = force_at(f);
@@ -202,7 +203,10 @@ pub fn film(
                 pass.dispatch_workgroups(particles, 1, 1);
                 pass.set_pipeline(&sim.den_apply);
                 pass.dispatch_workgroups(particles, 1, 1);
-                for _ in 0..5 {
+                // Short substeps converge fast: density error scales
+                // with dt squared, so past eight substeps two refine
+                // passes hold it. The compr stat guards the cut.
+                for _ in 0..if n >= 8 { 2 } else { 5 } {
                     pass.set_pipeline(&sim.den_kappa);
                     pass.dispatch_workgroups(particles, 1, 1);
                     pass.set_pipeline(&sim.den_apply);
@@ -316,6 +320,7 @@ pub fn film(
         {
             let bytes = stats.get_mapped_range(..).expect("mapped");
             v_max = f32::from_le_bytes(bytes[24..28].try_into().expect("stat"));
+            compr_max = compr_max.max(f32::from_le_bytes(bytes[4..8].try_into().expect("stat")));
         }
         stats.unmap();
         if sampled {
@@ -336,6 +341,7 @@ pub fn film(
             eprintln!("film: frame {f}/{frames}, {n} substeps");
         }
     }
+    eprintln!("compr max {compr_max:.3} %");
     Some([WIDTH, HEIGHT])
 }
 
@@ -1847,7 +1853,11 @@ impl Renderer {
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&s.den_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
-                        for _ in 0..5 {
+                        // Short substeps converge fast: density error
+                        // scales with dt squared, so past eight
+                        // substeps two refine passes hold it. The
+                        // compr stat guards the cut.
+                        for _ in 0..if n >= 8 { 2 } else { 5 } {
                             pass.set_pipeline(&s.den_kappa);
                             pass.dispatch_workgroups(particles, 1, 1);
                             pass.set_pipeline(&s.den_apply);

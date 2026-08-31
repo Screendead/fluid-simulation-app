@@ -519,6 +519,23 @@ into the blend constant (1 - keep), so decay and splat stay exact
 complements at every keep and the steady state and thresholds hold
 unchanged. At rest nothing changed; in motion the field is raw.
 
+### The refine cut at high n (2026-08-31)
+
+Jack's shake recording also showed pacing collapse: interval p99
+33.8 ms, gpu p99 28.9 ms at n 16 (device, 2026-08-31) — the GPU
+itself runs 3.5x over the 8.3 ms budget at the violent peak, and the
+cpu p99 in the 30s is back-pressure from the swapchain, not encode.
+Density error scales with dt squared, so past eight substeps the
+warm-started density solve now runs two refine passes instead of
+five. The film guard: max compression over the scripted shake is
+0.377 % at five refines, 0.381 % at two — identical. The film now
+prints that number every run (stderr), so every future solver
+experiment carries the guard for free. The cut removes about a
+quarter of the dispatches per high-n substep; the violent peak still
+exceeds the budget, so the hardest transients will drop frames. The
+trade between the 16-substep ceiling and clean pacing is Jack's
+call, priced by his next on-device shake.
+
 ### The look pass (2026-08-31)
 
 Jack's verdict on the first cap-16 recording: "this looks like shit."
