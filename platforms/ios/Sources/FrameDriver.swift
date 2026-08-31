@@ -32,7 +32,7 @@ final class FrameDriver {
         let radius = env["FLUID_RADIUS"].flatMap(Float.init) ?? 0.0006
         let bench = env["FLUID_BENCH"].flatMap(UInt32.init) ?? 0
         let spacing = env["FLUID_SPACING"].flatMap(Float.init) ?? 0
-        let sim = env["FLUID_SIM"].flatMap(UInt32.init) ?? 0
+        let sim = env["FLUID_SIM"].flatMap(UInt32.init) ?? 7
         let tracers = env["FLUID_TRACERS"].flatMap(UInt32.init) ?? 131_072
         renderer = fluid_renderer_create(
             Unmanaged.passUnretained(layer).toOpaque(), width, height, count, radius,

@@ -117,6 +117,10 @@ The substep count is dynamic — n = ceil(dt·v_max / 0.4 d), clamped to
 the FLUID_SIM cap (the knob is now a ceiling, not a count). At rest n
 is 1.
 
+An unset FLUID_SIM now defaults to a cap of 7, so an icon launch runs
+the solver. Zero selects the M2 demo, by explicit request only. Before
+2026-08-31 the default was zero: every icon launch showed the demo.
+
 Per-substep uniforms go through push constants (`immediate_size`).
 There is no fallback branch: wgpu 30's Metal backend grants immediates
 unconditionally (wgpu-hal metal/adapter.rs), both targets are Metal,
