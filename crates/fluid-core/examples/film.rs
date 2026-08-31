@@ -15,6 +15,28 @@ fn noise(state: &mut u32) -> f32 {
     (*state as f32 / u32::MAX as f32 - 0.5) * 3.464
 }
 
+// The box's angular velocity, rad/s about the screen axes. Only the
+// SPIN pose rotates: ramp to one rev/s over half a second, hold two,
+// stop - the hold after the stop is the swirl decay window.
+fn omega_at(frame: u32) -> [f32; 3] {
+    if std::env::var("SPIN").as_deref() != Ok("1") {
+        return [0.0; 3];
+    }
+    let preroll: f32 = std::env::var("PREROLL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    let t = frame as f32 / 120.0 - preroll;
+    let w = match t {
+        t if t < 3.0 => 0.0,
+        t if t < 3.5 => 6.0 * (t - 3.0) / 0.5,
+        t if t < 5.5 => 6.0,
+        t if t < 6.0 => 6.0 * (6.0 - t) / 0.5,
+        _ => 0.0,
+    };
+    [0.0, 0.0, w]
+}
+
 fn force_at(frame: u32) -> [f32; 3] {
     // PREROLL: shift every pose schedule later by this many seconds,
     // so a scaled world's longer fall-and-settle finishes first. Every
@@ -49,6 +71,14 @@ fn force_at(frame: u32) -> [f32; 3] {
             f[1] += 12.0 * (t * 2.0 * std::f32::consts::PI * 9.1).sin();
         }
         return f;
+    }
+    // SPIN: flat on the table, spun about the screen normal. Gravity
+    // never moves in the box frame and userAcceleration stays zero, so
+    // the gyro path is the only thing that can move the water: the
+    // discriminating film for the rotation physics, and the swirl
+    // meter's driver.
+    if std::env::var("SPIN").as_deref() == Ok("1") {
+        return [jitter[0], jitter[1], -G + jitter[2]];
     }
     // RECLINE: on its back, lifted ~17 degrees from flat — the pose
     // whose collective jumps Jack reported. FLAT: dead flat.
@@ -147,9 +177,16 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(((19.0 + preroll) * 120.0) as u32);
-    let dims = fluid_core::film(frames, 4, spacing, cap, force_at, |rows| {
-        raw.write_all(rows).expect("write");
-    })
+    let dims = fluid_core::film(
+        frames,
+        4,
+        spacing,
+        cap,
+        |f| (force_at(f), omega_at(f)),
+        |rows| {
+            raw.write_all(rows).expect("write");
+        },
+    )
     .expect("no GPU adapter");
     raw.flush().expect("flush");
     println!("{}x{}", dims[0], dims[1]);

@@ -17,7 +17,9 @@ struct SimParams {
 struct Step {
     force: vec3f,
     dt: f32,
+    omega: vec3f,
     v_clamp: f32,
+    domega: vec3f,
     seed: u32,
 }
 

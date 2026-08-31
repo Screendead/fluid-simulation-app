@@ -8,6 +8,7 @@ struct MotionReadout: View {
         VStack(alignment: .leading, spacing: 12) {
             row("gravity (g)", motion.gravity.x, motion.gravity.y, motion.gravity.z)
             row("user (g)", motion.userAcceleration.x, motion.userAcceleration.y, motion.userAcceleration.z)
+            row("spin (rad/s)", motion.rotationRate.x, motion.rotationRate.y, motion.rotationRate.z)
             row("body force (m/s²)", Double(motion.bodyForce.x), Double(motion.bodyForce.y), Double(motion.bodyForce.z))
             Text("samples \(motion.sampleCount)")
             Text(statsLine).font(.system(.caption2, design: .monospaced))

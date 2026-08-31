@@ -13,12 +13,15 @@ pub const STANDARD_GRAVITY: f32 = 9.806_65;
 pub const WORLD_SCALE: f32 = 4.0;
 
 /// One reading of the motion sensors in the device frame: x to the right of
-/// the screen, y to its top, z out of it. Both vectors are in g, the CoreMotion
-/// convention: a phone lying face up reads a gravity of (0, 0, -1).
+/// the screen, y to its top, z out of it. The acceleration vectors are in g,
+/// the CoreMotion convention: a phone lying face up reads a gravity of
+/// (0, 0, -1). `rotation_rate` is the gyroscope, radians per second about
+/// the same axes, right-handed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MotionSample {
     pub gravity: [f32; 3],
     pub user_acceleration: [f32; 3],
+    pub rotation_rate: [f32; 3],
 }
 
 impl MotionSample {
@@ -39,6 +42,7 @@ mod tests {
         let sample = MotionSample {
             gravity: [0.0, 0.0, -1.0],
             user_acceleration: [0.0; 3],
+            rotation_rate: [0.0, 0.0, 0.0],
         };
         assert_eq!(sample.body_force(), [0.0, 0.0, -STANDARD_GRAVITY]);
     }
@@ -48,6 +52,7 @@ mod tests {
         let sample = MotionSample {
             gravity: [0.0, 0.0, -1.0],
             user_acceleration: [0.5, 0.0, 0.0],
+            rotation_rate: [0.0, 0.0, 0.0],
         };
         let [x, _, _] = sample.body_force();
         assert_eq!(x, -0.5 * STANDARD_GRAVITY);

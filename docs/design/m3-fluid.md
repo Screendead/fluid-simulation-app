@@ -1440,3 +1440,53 @@ scale, and the grip build is the one his hand approved. The
 provisional framing in the `wall_adh_sum` comment ("standing until
 the restlessness has a root fix") is stale on both counts and is
 replaced.
+
+## The rotation, missing (2026-09-01)
+
+Jack, watching the M4 caustics track particle positions, verbatim: "it
+IS tied directly to the particle positions, and they are NOT swirling
+at all." He was right, structurally: the sim read only the
+accelerometer, and a spatially uniform body force has zero curl - no
+rotation could ever enter the water. The gyroscope was named in the
+sensor directive from day one and never wired.
+
+The model, landed the same night: `MotionSample` carries
+`rotation_rate` (the device's own gyro, rad/s, device axes), and the
+box frame becomes an honestly rotating frame. Each substep the solver
+applies the fictitious triple
+
+    a = -(dOmega/dt) x r  -  Omega x (Omega x r)  -  2 Omega x v
+
+- Euler from spin-up (the vorticity injector: its curl is -2 dOmega/dt),
+centrifugal from steady spin, Coriolis on anything already moving.
+Omega is smoothed lightly (25 ms time constant; the gyro is far
+cleaner than the accelerometer) and differentiated with a spike clamp;
+the derivative is zeroed across frame gaps. The rotation centre is the
+IMU's location, approximated as the box centre; the residual is a
+uniform Omega^2 times a few centimetres, absorbed by the accelerometer
+term. Omega applies unscaled at 4x - the modeled tank turns exactly as
+the device does, like gravity.
+
+The idle gate wakes on |Omega| > 0.05 rad/s: a flat phone spun about
+its normal holds gravity fixed in the box frame, so rotation is the
+one mover the force tests cannot see. The film harness gained the
+same pose (SPIN=1: flat, ramp to 6 rad/s, hold two seconds, stop).
+
+Evidence, first films: during spin the caustic dapple draws swirl arms
+across the whole sheet; after the stop the pattern keeps churning
+(458k of 891k pixels moving per 0.3 s). At Omega = 0 the fictitious
+term vanishes exactly, and the ring film confirms it: cross-build PSNR
+32.7 dB against the pre-gyro build, run-to-run same-build 33.8 dB -
+inside solver-atomics chaos - with compression and rest velocity
+identical.
+
+Open, measured next: how long the swirl survives. XSPH at 48/s is an
+effective viscosity of roughly rate x h^2 ~ 7e-3 m^2/s - thousands of
+times water's 1e-6, Reynolds ~10 where a real hand-swirled box sits
+near 1e5. Real water at this depth holds rotation for tens of seconds.
+The swirl meter (tracer angular momentum, spin-down tau) and an
+XSPH-rate ladder guarded by ring, dance and wake will say how much of
+that the rate buys back; vorticity confinement is the recorded next
+lever if the ladder is not enough. Turbulence proper - the cascade -
+is beyond any 1,620-particle sim; the honest goal is that the scales
+this sim can resolve actually swirl.

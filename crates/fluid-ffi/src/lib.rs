@@ -30,6 +30,9 @@ pub extern "C" fn fluid_body_force(gravity: FluidVec3, user_acceleration: FluidV
     MotionSample {
         gravity: gravity.into(),
         user_acceleration: user_acceleration.into(),
+        // The body force does not read the gyro; this helper feeds the
+        // readout only.
+        rotation_rate: [0.0; 3],
     }
     .body_force()
     .into()
@@ -128,11 +131,13 @@ pub unsafe extern "C" fn fluid_renderer_frame(
     renderer: *mut FluidRenderer,
     gravity: FluidVec3,
     user_acceleration: FluidVec3,
+    rotation_rate: FluidVec3,
     now_ms: f64,
 ) -> u32 {
     let sample = MotionSample {
         gravity: gravity.into(),
         user_acceleration: user_acceleration.into(),
+        rotation_rate: rotation_rate.into(),
     };
     u32::from(unsafe { &mut *renderer }.0.frame(sample, now_ms))
 }

@@ -140,7 +140,7 @@ pub fn film(
     every: u32,
     spacing: f32,
     cap: u32,
-    force_at: impl Fn(u32) -> [f32; 3],
+    force_at: impl Fn(u32) -> ([f32; 3], [f32; 3]),
     mut sink: impl FnMut(&[u8]),
 ) -> Option<[u32; 2]> {
     const WIDTH: u32 = 642;
@@ -196,6 +196,7 @@ pub fn film(
     let mut compr_max = 0.0f32;
     let mut clamp_total = 0.0f32;
     let mut filter = ForceFilter::new();
+    let mut rotation = RotationTracker::new();
     // IDLE=0 keeps the solver stepping for metrology films: a boil or
     // jump measurement over a settled window is meaningless if the gate
     // froze the window.
@@ -205,8 +206,10 @@ pub fn film(
     let mut was_asleep = false;
     let mut rows = vec![0u8; (WIDTH * 4 * HEIGHT) as usize];
     for f in 0..frames {
-        let (force, dev) = filter.apply(force_at(f));
-        if gate_on && gate.asleep(force, dev, v_max) {
+        let (raw_force, raw_omega) = force_at(f);
+        let (force, dev) = filter.apply(raw_force);
+        let (omega, domega) = rotation.apply(raw_omega, dt);
+        if gate_on && gate.asleep(force, dev, omega, v_max) {
             if !was_asleep {
                 eprintln!("film: sleep at frame {f}");
                 was_asleep = true;
@@ -241,7 +244,7 @@ pub fn film(
         };
         let dt_sub = dt / n as f32;
         let v_clamp = 0.4 * spacing / dt_sub;
-        let step = sim::pack_step(force, dt_sub, v_clamp, 0);
+        let step = sim::pack_step(force, omega, domega, dt_sub, v_clamp, 0);
         let particles = sim.count.div_ceil(256);
         let mut encoder = device.create_command_encoder(&Default::default());
         {
@@ -283,7 +286,7 @@ pub fn film(
             pass.dispatch_workgroups(1, 1, 1);
             pass.set_bind_group(0, &sim.tracer_bind, &[]);
             pass.set_pipeline(&sim.clear_vel);
-            pass.set_immediates(0, &sim::pack_step(force, dt, 0.0, f));
+            pass.set_immediates(0, &sim::pack_step(force, [0.0; 3], [0.0; 3], dt, 0.0, f));
             pass.dispatch_workgroups(sim.vel_groups, 1, 1);
             pass.set_pipeline(&sim.splat);
             pass.dispatch_workgroups(particles, 1, 1);
@@ -578,6 +581,41 @@ impl ForceFilter {
     }
 }
 
+/// Smooths the gyroscope and differentiates it for the Euler term. The
+/// gyro is far cleaner than the accelerometer, so the smoothing is
+/// light; the derivative is clamped against flick spikes and zeroed
+/// across pauses, where the frame gap is not a rotation interval.
+struct RotationTracker {
+    smooth: [f32; 3],
+    primed: bool,
+}
+
+impl RotationTracker {
+    fn new() -> Self {
+        Self {
+            smooth: [0.0; 3],
+            primed: false,
+        }
+    }
+
+    /// Returns the smoothed angular velocity and its time derivative.
+    fn apply(&mut self, omega: [f32; 3], dt: f32) -> ([f32; 3], [f32; 3]) {
+        if !self.primed || dt <= 0.0 || dt > 0.1 {
+            self.primed = true;
+            self.smooth = omega;
+            return (omega, [0.0; 3]);
+        }
+        let alpha = 1.0 - (-dt / 0.025).exp();
+        let prev = self.smooth;
+        for (s, o) in self.smooth.iter_mut().zip(omega) {
+            *s += (o - *s) * alpha;
+        }
+        let domega =
+            std::array::from_fn(|i| ((self.smooth[i] - prev[i]) / dt).clamp(-200.0, 200.0));
+        (self.smooth, domega)
+    }
+}
+
 /// Sleeps the simulation once the pool has settled and nothing moves the
 /// phone: a still phone encodes no GPU work at all ("idle costs nothing").
 /// The gate runs every tick, asleep or not — the filter it reads must stay
@@ -605,6 +643,11 @@ impl IdleGate {
     /// degrees, a real tilt crosses this within two idle ticks.
     const COS_WAKE: f32 = 0.999_657;
     const MAG_WAKE: f32 = 0.3;
+    /// Desk-still gyro noise is under 0.01 rad/s; a deliberate turn
+    /// crosses this in a tick. Rotation moves water that the force
+    /// tests cannot see - a flat phone spun about its normal holds
+    /// gravity fixed in the box frame.
+    const OMEGA_WAKE: f32 = 0.05;
 
     fn new() -> Self {
         Self {
@@ -618,21 +661,26 @@ impl IdleGate {
     }
 
     /// True while the frame may be skipped.
-    fn asleep(&mut self, smooth: [f32; 3], dev: f32, v_max: f32) -> bool {
+    fn asleep(&mut self, smooth: [f32; 3], dev: f32, omega: [f32; 3], v_max: f32) -> bool {
         fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
             a.iter().zip(&b).map(|(x, y)| x * y).sum()
         }
+        let spinning = dot(omega, omega).sqrt() > Self::OMEGA_WAKE;
         if let Some(rest) = self.sleep_force {
             let cos = dot(smooth, rest) / (dot(smooth, smooth) * dot(rest, rest)).sqrt().max(1e-6);
             let mag_shift = (dot(smooth, smooth).sqrt() - dot(rest, rest).sqrt()).abs();
-            if dev > Self::DEV_WAKE || cos < Self::COS_WAKE || mag_shift > Self::MAG_WAKE {
+            if dev > Self::DEV_WAKE
+                || cos < Self::COS_WAKE
+                || mag_shift > Self::MAG_WAKE
+                || spinning
+            {
                 self.sleep_force = None;
                 self.still = 0;
                 return false;
             }
             return true;
         }
-        if v_max < Self::V_SLEEP && dev < Self::DEV_SLEEP {
+        if v_max < Self::V_SLEEP && dev < Self::DEV_SLEEP && !spinning {
             self.still += 1;
             if self.still >= Self::STILL_FRAMES {
                 self.sleep_force = Some(smooth);
@@ -1291,9 +1339,9 @@ impl Sim {
         };
         let grid_pl = pipe_layout("sim grid", &grid_layout, 0);
         let scan_pl = pipe_layout("sim scan", &scan_layout, 0);
-        let solve_pl = pipe_layout("sim solve", &solve_layout, 32);
+        let solve_pl = pipe_layout("sim solve", &solve_layout, 48);
         let sprite_pl = pipe_layout("sim sprites", &sprite_layout, 0);
-        let tracer_pl = pipe_layout("sim tracers", &tracer_layout, 32);
+        let tracer_pl = pipe_layout("sim tracers", &tracer_layout, 48);
         let tracer_draw_pl = pipe_layout("sim tracer draw", &tracer_draw_layout, 0);
         let pipeline =
             |layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, entry_point: &str| {
@@ -1920,6 +1968,7 @@ pub struct Renderer {
     gpu_us: Ring,
     gpu_timing: Option<GpuTiming>,
     force_filter: ForceFilter,
+    rotation: RotationTracker,
     idle: IdleGate,
     idle_frames: u64,
     mode: Mode,
@@ -2049,6 +2098,7 @@ impl Renderer {
             gpu_us: Ring::new(),
             gpu_timing,
             force_filter: ForceFilter::new(),
+            rotation: RotationTracker::new(),
             idle: IdleGate::new(),
             idle_frames: 0,
             mode,
@@ -2085,8 +2135,11 @@ impl Renderer {
         let interval_us = ((now_ms - self.last_frame_ms) * 1_000.0) as f32;
         let was_asleep = self.idle.sleeping();
         let (force, dev) = self.force_filter.apply(sample.body_force());
+        let (omega, domega) = self
+            .rotation
+            .apply(sample.rotation_rate, interval_us / 1_000_000.0);
         if let Mode::Sim(s) = &self.mode
-            && self.idle.asleep(force, dev, s.stats[6])
+            && self.idle.asleep(force, dev, omega, s.stats[6])
         {
             // The clock still advances, so the wake frame steps one
             // tick, not the whole nap.
@@ -2193,7 +2246,7 @@ impl Renderer {
                     let n = s.substeps_used;
                     let dt_sub = dt / n as f32;
                     let v_clamp = 0.4 * s.spacing / dt_sub;
-                    let step = sim::pack_step(force, dt_sub, v_clamp, 0);
+                    let step = sim::pack_step(force, omega, domega, dt_sub, v_clamp, 0);
                     let particles = s.count.div_ceil(256);
                     for _ in 0..n {
                         pass.set_bind_group(0, &s.grid_bind, &[]);
@@ -2235,7 +2288,10 @@ impl Renderer {
                         // solved end-of-frame field, with the frame dt.
                         pass.set_bind_group(0, &s.tracer_bind, &[]);
                         pass.set_pipeline(&s.clear_vel);
-                        pass.set_immediates(0, &sim::pack_step(force, dt, 0.0, s.frame_seed));
+                        pass.set_immediates(
+                            0,
+                            &sim::pack_step(force, [0.0; 3], [0.0; 3], dt, 0.0, s.frame_seed),
+                        );
                         pass.dispatch_workgroups(s.vel_groups, 1, 1);
                         pass.set_pipeline(&s.splat);
                         pass.dispatch_workgroups(particles, 1, 1);
@@ -2512,24 +2568,47 @@ mod tests {
     #[test]
     fn idle_gate_sleeps_when_still_and_wakes_on_shake_or_tilt() {
         let g = 9.81;
+        let still = [0.0f32; 3];
         let upright = [0.0, -g, 0.0];
         let mut gate = IdleGate::new();
         for _ in 0..IdleGate::STILL_FRAMES - 1 {
-            assert!(!gate.asleep(upright, 0.1, 0.03));
+            assert!(!gate.asleep(upright, 0.1, still, 0.03));
         }
-        assert!(gate.asleep(upright, 0.1, 0.03));
+        assert!(gate.asleep(upright, 0.1, still, 0.03));
         // Noise peaks sit between the sleep and wake thresholds: no
         // false wake.
-        assert!(gate.asleep(upright, 0.8, 0.03));
+        assert!(gate.asleep(upright, 0.8, still, 0.03));
         // A shake crosses the deviation test in one tick.
-        assert!(!gate.asleep(upright, 2.0, 0.03));
+        assert!(!gate.asleep(upright, 2.0, still, 0.03));
         for _ in 0..IdleGate::STILL_FRAMES {
-            gate.asleep(upright, 0.1, 0.03);
+            gate.asleep(upright, 0.1, still, 0.03);
         }
-        assert!(gate.asleep(upright, 0.1, 0.03));
+        assert!(gate.asleep(upright, 0.1, still, 0.03));
         // A settled 2.9-degree tilt is far past the 1.5-degree wake
         // angle even though its deviation never crossed anything.
-        assert!(!gate.asleep([g * 0.05, -g, 0.0], 0.1, 0.03));
+        assert!(!gate.asleep([g * 0.05, -g, 0.0], 0.1, still, 0.03));
+    }
+
+    // The gyro-only pose: a flat phone spun about its normal holds
+    // gravity fixed in the box frame, so rotation is the one signal
+    // that can move the water - the gate must see it.
+    #[test]
+    fn idle_gate_wakes_on_pure_rotation() {
+        let flat = [0.0, 0.0, -9.81];
+        let mut gate = IdleGate::new();
+        for _ in 0..IdleGate::STILL_FRAMES {
+            gate.asleep(flat, 0.1, [0.0; 3], 0.03);
+        }
+        assert!(gate.asleep(flat, 0.1, [0.0, 0.0, 0.01], 0.03), "gyro noise");
+        assert!(
+            !gate.asleep(flat, 0.1, [0.0, 0.0, 0.5], 0.03),
+            "a real turn"
+        );
+        // And a spin blocks falling asleep in the first place.
+        let mut spun = IdleGate::new();
+        for _ in 0..2 * IdleGate::STILL_FRAMES {
+            assert!(!spun.asleep(flat, 0.1, [0.0, 0.0, 0.5], 0.03));
+        }
     }
 
     #[test]
@@ -2625,7 +2704,14 @@ mod tests {
         } else {
             0.4 * SIM_SPACING / dt
         };
-        let step = sim::pack_step(gravity, if substeps == 0 { 0.0 } else { dt }, v_clamp, 0);
+        let step = sim::pack_step(
+            gravity,
+            [0.0; 3],
+            [0.0; 3],
+            if substeps == 0 { 0.0 } else { dt },
+            v_clamp,
+            0,
+        );
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -2670,7 +2756,10 @@ mod tests {
                     let frame_dt = if substeps == 0 { 0.0 } else { 1.0 / 120.0 };
                     pass.set_bind_group(0, &sim.tracer_bind, &[]);
                     pass.set_pipeline(&sim.clear_vel);
-                    pass.set_immediates(0, &sim::pack_step(gravity, frame_dt, 0.0, f));
+                    pass.set_immediates(
+                        0,
+                        &sim::pack_step(gravity, [0.0; 3], [0.0; 3], frame_dt, 0.0, f),
+                    );
                     pass.dispatch_workgroups(sim.vel_groups, 1, 1);
                     pass.set_pipeline(&sim.splat);
                     pass.dispatch_workgroups(particles, 1, 1);
@@ -3011,7 +3100,10 @@ mod tests {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_bind_group(0, &sim.tracer_bind, &[]);
             pass.set_pipeline(&sim.advect);
-            pass.set_immediates(0, &sim::pack_step([-9.81, 0.0, 0.0], 6.0, 0.0, 601));
+            pass.set_immediates(
+                0,
+                &sim::pack_step([-9.81, 0.0, 0.0], [0.0; 3], [0.0; 3], 6.0, 0.0, 601),
+            );
             pass.dispatch_workgroups(sim.tracer_count.div_ceil(256), 1, 1);
         }
         queue.submit(std::iter::once(encoder.finish()));

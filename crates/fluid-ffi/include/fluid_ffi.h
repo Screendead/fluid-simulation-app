@@ -90,6 +90,7 @@ struct FluidRenderer *fluid_renderer_create(void *metal_layer,
 uint32_t fluid_renderer_frame(struct FluidRenderer *renderer,
                               struct FluidVec3 gravity,
                               struct FluidVec3 user_acceleration,
+                              struct FluidVec3 rotation_rate,
                               double now_ms);
 
 /**

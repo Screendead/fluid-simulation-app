@@ -168,18 +168,32 @@ fn half_value(bits: u16) -> f32 {
     f32::from_bits(o.to_bits() | ((raw & 0x8000) << 16))
 }
 
-/// The Step immediates block in sim_solve.wgsl: force on 16-byte vec3
-/// alignment, dt in the vec3 tail slot, the CFL clamp speed after it,
-/// then padding to the struct's 32-byte size.
-pub(crate) fn pack_step(force: [f32; 3], dt: f32, v_clamp: f32, seed: u32) -> [u8; 32] {
-    let mut raw = [0u8; 32];
-    for (slot, v) in [force[0], force[1], force[2], dt, v_clamp]
-        .into_iter()
-        .enumerate()
+/// The Step immediates block, one layout shared by sim_solve.wgsl and
+/// sim_tracers.wgsl: two vec3s on 16-byte alignment — the body force
+/// and the box's angular velocity — with dt and the CFL clamp speed in
+/// their tail slots, then the angular acceleration with the tracer
+/// seed in its tail. Real rotation reaches this from exactly two
+/// places, the device frame path and the film harness; every other
+/// caller passes zeros.
+pub(crate) fn pack_step(
+    force: [f32; 3],
+    omega: [f32; 3],
+    domega: [f32; 3],
+    dt: f32,
+    v_clamp: f32,
+    seed: u32,
+) -> [u8; 48] {
+    let mut raw = [0u8; 48];
+    for (slot, v) in [
+        force[0], force[1], force[2], dt, omega[0], omega[1], omega[2], v_clamp, domega[0],
+        domega[1], domega[2],
+    ]
+    .into_iter()
+    .enumerate()
     {
         raw[slot * 4..slot * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
-    raw[20..24].copy_from_slice(&seed.to_le_bytes());
+    raw[44..48].copy_from_slice(&seed.to_le_bytes());
     raw
 }
 
@@ -392,13 +406,21 @@ mod tests {
 
     #[test]
     fn step_immediates_land_at_the_shader_offsets() {
-        let raw = pack_step([1.0, 2.0, 3.0], 4.0, 5.0, 6);
-        for (slot, want) in [1.0f32, 2.0, 3.0, 4.0, 5.0].into_iter().enumerate() {
-            let got = f32::from_le_bytes(raw[slot * 4..slot * 4 + 4].try_into().unwrap());
-            assert_eq!(got, want);
-        }
-        assert_eq!(u32::from_le_bytes(raw[20..24].try_into().unwrap()), 6);
-        assert_eq!(&raw[24..32], &[0u8; 8]);
+        let raw = pack_step(
+            [1.0, 2.0, 3.0],
+            [7.0, 8.0, 9.0],
+            [10.0, 11.0, 12.0],
+            4.0,
+            5.0,
+            6,
+        );
+        let f = |i: usize| f32::from_le_bytes(raw[i..i + 4].try_into().unwrap());
+        assert_eq!([f(0), f(4), f(8)], [1.0, 2.0, 3.0], "force");
+        assert_eq!(f(12), 4.0, "dt");
+        assert_eq!([f(16), f(20), f(24)], [7.0, 8.0, 9.0], "omega");
+        assert_eq!(f(28), 5.0, "v_clamp");
+        assert_eq!([f(32), f(36), f(40)], [10.0, 11.0, 12.0], "domega");
+        assert_eq!(u32::from_le_bytes(raw[44..48].try_into().unwrap()), 6);
     }
 
     #[test]

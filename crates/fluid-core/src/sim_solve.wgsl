@@ -15,11 +15,16 @@ struct SimParams {
     rho0: f32,
 }
 
-// One block per substep: the CPU decides dt and the CFL clamp speed.
+// One block per substep: the CPU decides dt, the CFL clamp speed,
+// and the box's rotation from the gyroscope. The layout is shared
+// with sim_tracers.wgsl; pack_step in sim.rs is the packer.
 struct Step {
     force: vec3f,
     dt: f32,
+    omega: vec3f,
     v_clamp: f32,
+    domega: vec3f,
+    seed: u32,
 }
 
 var<immediate> step: Step;
@@ -445,8 +450,20 @@ fn forces_apply(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let a = accel[id.x];
+    // The box frame rotates with the device, so the fluid feels the
+    // fictitious forces of that frame: Euler from spin-up, centrifugal
+    // from steady spin, Coriolis on anything already moving. This is
+    // the only door vorticity has into the box — a uniform body force
+    // has zero curl. The rotation centre is the IMU, approximated as
+    // the box centre; the residual is a uniform Omega^2 times a few
+    // centimetres, absorbed by the accelerometer term.
+    let r = positions[id.x].xyz;
+    let v = velocities[id.x].xyz;
+    let fict = -cross(step.domega, r)
+        - cross(step.omega, cross(step.omega, r))
+        - 2.0 * cross(step.omega, v);
     velocities[id.x] = vec4f(
-        velocities[id.x].xyz + step.dt * (step.force + a.xyz)
+        v + step.dt * (step.force + fict + a.xyz)
             + (1.0 - exp(-XSPH_RATE * step.dt)) * xsph[id.x].xyz,
         0.0,
     );

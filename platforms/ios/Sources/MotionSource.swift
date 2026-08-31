@@ -6,6 +6,7 @@ import Observation
 final class MotionSource {
     private(set) var gravity = CMAcceleration()
     private(set) var userAcceleration = CMAcceleration()
+    private(set) var rotationRate = CMRotationRate()
     private(set) var bodyForce = FluidVec3(x: 0, y: 0, z: 0)
     private(set) var sampleCount = 0
     private let manager = CMMotionManager()
@@ -21,6 +22,7 @@ final class MotionSource {
     private func take(_ motion: CMDeviceMotion) {
         gravity = motion.gravity
         userAcceleration = motion.userAcceleration
+        rotationRate = motion.rotationRate
         bodyForce = fluid_body_force(FluidVec3(gravity), FluidVec3(userAcceleration))
         sampleCount += 1
     }
@@ -29,5 +31,9 @@ final class MotionSource {
 extension FluidVec3 {
     init(_ a: CMAcceleration) {
         self.init(x: Float(a.x), y: Float(a.y), z: Float(a.z))
+    }
+
+    init(_ r: CMRotationRate) {
+        self.init(x: Float(r.x), y: Float(r.y), z: Float(r.z))
     }
 }

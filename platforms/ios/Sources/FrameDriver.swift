@@ -57,6 +57,7 @@ final class FrameDriver {
             renderer,
             FluidVec3(motion.gravity),
             FluidVec3(motion.userAcceleration),
+            FluidVec3(motion.rotationRate),
             link.timestamp * 1000.0) != 0
         if stepped != active {
             active = stepped
