@@ -425,7 +425,10 @@ gradient measured in field texels so a thin flat-lying layer does not
 wear rings, and so the gate survives any render resolution. The field
 dropped from half to quarter resolution: the body pass was the whole
 regression from 6.2 to 9.2 ms settled gpu p50, and overdraw scales
-with field area. Device numbers follow the next deploy.
+with field area. Deployed and measured on the device, 2026-08-31:
+settled gpu p50 6327..6393 us over a 160 s soak, interval p50 and
+p99 both 8334 us, so the whole surface rendering costs about 0.15 ms
+against the pre-surface baseline and 120 Hz holds locked.
 
 ### The boil, measured, and the missing physics
 
