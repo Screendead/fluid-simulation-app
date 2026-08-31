@@ -211,7 +211,9 @@ storage has no atomic add) and sampled trilinearly, so the whole layer
 is four dispatches a frame and never enters a substep. An unsampled
 tracer sits still until the fluid returns to it; re-seeding is
 deferred. FLUID_TRACERS sets the count; zero restores the solver
-sprites.
+sprites. Measured on the device: 262,144 tracers double the GPU frame
+(bunched-tracer additive overdraw) and drop hard slosh to 60 Hz;
+131,072 holds p50 = p99 = 8,334 µs in motion and is the default.
 
 ### The exit measurement
 
