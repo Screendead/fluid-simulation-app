@@ -417,6 +417,158 @@ mod tests {
         assert_eq!(&raw[44..48], &[0u8; 4]);
     }
 
+    // Copies the shader's wedge polynomials; a drifted edit to either
+    // side fails here.
+    fn wedge_fit(t1: f64, t2: f64) -> f64 {
+        if t1 * t1 + t2 * t2 >= 4.0 {
+            return 0.0;
+        }
+        (2.5005807e-01
+            + t2 * (-3.4681153e-01
+                + t2 * (-4.0986882e-02
+                    + t2 * (3.0301620e-01
+                        + t2 * (-1.9202736e-01 + t2 * (4.6947582e-02 + t2 * (-3.8543515e-03)))))))
+            + t1 * ((-3.4681153e-01
+                + t2 * (4.8587248e-01
+                    + t2 * (1.0092180e-02
+                        + t2 * (-2.9978363e-01 + t2 * (1.5320335e-01 + t2 * (-2.2544282e-02))))))
+                + t1 * ((-4.0986882e-02
+                    + t2 * (1.0092180e-02
+                        + t2 * (-5.4145610e-02 + t2 * (7.9597369e-02 + t2 * (-2.3350373e-02)))))
+                    + t1 * ((3.0301620e-01
+                        + t2 * (-2.9978363e-01 + t2 * (7.9597369e-02 + t2 * (-8.2431946e-03))))
+                        + t1 * ((-1.9202736e-01 + t2 * (1.5320335e-01 + t2 * (-2.3350373e-02)))
+                            + t1 * ((4.6947582e-02 + t2 * (-2.2544282e-02))
+                                + t1 * (-3.8543515e-03))))))
+    }
+
+    fn wedge_d_fit(t1: f64, t2: f64) -> f64 {
+        if t1 * t1 + t2 * t2 >= 4.0 {
+            return 0.0;
+        }
+        (-3.4611994e-01
+            + t2 * (4.4757673e-01
+                + t2 * (1.1932939e-01
+                    + t2 * (-4.6460101e-01
+                        + t2 * (2.7637253e-01 + t2 * (-6.2846025e-02 + t2 * (4.3871652e-03)))))))
+            + t1 * ((-6.3622823e-02
+                + t2 * (2.0521006e-01
+                    + t2 * (-3.7311339e-01
+                        + t2 * (3.7508155e-01 + t2 * (-1.6629713e-01 + t2 * (2.5030129e-02))))))
+                + t1 * ((7.8352497e-01
+                    + t2 * (-1.2658344e+00
+                        + t2 * (5.8898945e-01 + t2 * (-1.0772903e-01 + t2 * (1.3535777e-02)))))
+                    + t1 * ((-4.9470084e-01
+                        + t2 * (9.1302071e-01 + t2 * (-3.4330355e-01 + t2 * (2.4034609e-02))))
+                        + t1 * ((-2.5605481e-02 + t2 * (-2.0067981e-01 + t2 * (5.9854468e-02)))
+                            + t1 * ((8.8898623e-02 + t2 * (3.9914838e-03))
+                                + t1 * (-1.7788321e-02))))))
+    }
+
+    #[test]
+    fn wedge_polynomials_match_quadrature() {
+        // The cubic kernel in h units, its line integral L along the
+        // wedge's free axis, then I2 as the quarter-plane integral of
+        // L and D2 as -integral of L along the t1 = const line.
+        let w = |q: f64| -> f64 {
+            let s = 1.0 / std::f64::consts::PI;
+            if q < 1.0 {
+                s * (1.0 - 1.5 * q * q * (1.0 - q / 2.0))
+            } else if q < 2.0 {
+                s * 0.25 * (2.0 - q).powi(3)
+            } else {
+                0.0
+            }
+        };
+        let n = 1000usize;
+        let dq = 2.0 / n as f64;
+        let line = |rho: f64| -> f64 {
+            let mut sum = 0.0;
+            for i in 0..n {
+                let z0 = i as f64 * dq;
+                sum += (w((rho * rho + z0 * z0).sqrt())
+                    + w((rho * rho + (z0 + dq).powi(2)).sqrt()))
+                    / 2.0
+                    * dq;
+            }
+            2.0 * sum
+        };
+        let m = 400usize;
+        let du = 2.0 / m as f64;
+        for i in 0..=6 {
+            for j in 0..=6 {
+                let (a, b) = (i as f64 * 0.3, j as f64 * 0.3);
+                if a * a + b * b >= 4.0 {
+                    continue;
+                }
+                let mut i2 = 0.0;
+                let mut d2 = 0.0;
+                for p in 0..m {
+                    let u1 = a + (p as f64 + 0.5) * du;
+                    if u1 >= 2.0 {
+                        continue;
+                    }
+                    for q in 0..m {
+                        let u2 = b + (q as f64 + 0.5) * du;
+                        if u2 < 2.0 {
+                            i2 += line((u1 * u1 + u2 * u2).sqrt()) * du * du;
+                        }
+                    }
+                }
+                for q in 0..m {
+                    let u2 = b + (q as f64 + 0.5) * du;
+                    if u2 < 2.0 {
+                        d2 -= line((a * a + u2 * u2).sqrt()) * du;
+                    }
+                }
+                assert!(
+                    (wedge_fit(a, b) - i2).abs() < 1.5e-3,
+                    "I2({a},{b}): fit {} quad {i2}",
+                    wedge_fit(a, b)
+                );
+                assert!(
+                    (wedge_d_fit(a, b) - d2).abs() < 8e-3,
+                    "D2({a},{b}): fit {} quad {d2}",
+                    wedge_d_fit(a, b)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_wedge_term_closes_the_edge_lattice_gap() {
+        let d = 0.0025_f32;
+        let h = 1.2 * d;
+        let mass = REST_DENSITY * d * d * d;
+        for (lx, ly) in [(0, 0), (0, 1), (1, 1), (0, 2), (2, 2)] {
+            let (x0, y0) = ((lx as f32 + 0.5) * d, (ly as f32 + 0.5) * d);
+            let mut quarter = 0.0;
+            let mut bulk = 0.0;
+            for x in -6i32..=6 {
+                for y in -6i32..=6 {
+                    for z in -6i32..=6 {
+                        let dx = (x as f32 + 0.5) * d - x0;
+                        let dy = (y as f32 + 0.5) * d - y0;
+                        let dz = z as f32 * d;
+                        let w = mass * kernel((dx * dx + dy * dy + dz * dz).sqrt(), h);
+                        bulk += w;
+                        if x >= 0 && y >= 0 {
+                            quarter += w;
+                        }
+                    }
+                }
+            }
+            // The same midpoint-rule honesty as the half-lattice test,
+            // compounded by two walls: the corner-most layer reads
+            // +8.6% without the wedge term and +3.4% with it, and the
+            // residual is the pristine-lattice bias, not geometry.
+            let fill = wall_density(x0 / h) + wall_density(y0 / h)
+                - wedge_fit((x0 / h) as f64, (y0 / h) as f64) as f32;
+            let err = (quarter + REST_DENSITY * fill - bulk) / bulk;
+            assert!(err.abs() < 0.06, "layers ({lx},{ly}): err {err}");
+        }
+    }
+
     // Copies the shader's wall_adhesion polynomial; a drifted edit to
     // either side fails here.
     fn wall_adhesion(t: f64) -> f64 {

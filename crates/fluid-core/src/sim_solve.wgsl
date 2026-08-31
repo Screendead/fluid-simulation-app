@@ -142,21 +142,92 @@ fn wall_lo() -> vec3f {
     return params.box_min + vec3f(params.cell);
 }
 
-// Sum over the six walls of f(per-wall gradient integral, normal): the
-// caller folds each wall's vector term. Returns the summed vector, in
-// units of the mass-gradient sum (kg / m^4).
+
+// The kernel's integral over the quarter-space behind two
+// perpendicular walls (wedge), and its t1 partial (wedge_d): the
+// region the additive per-axis wall fill counts twice. An edge
+// contact particle is otherwise over-filled by 5% of rest density,
+// which is the spasm engine the flat-pose films showed hugging the
+// box perimeter. Degree-6 fits of the exact integrals, pinned to
+// quadrature by the sim.rs tests; errors 0.2% and 1.1% of scale.
+fn wedge(t1: f32, t2: f32) -> f32 {
+    if t1 * t1 + t2 * t2 >= 4.0 {
+        return 0.0;
+    }
+    return (2.5005807e-01
+        + t2 * (-3.4681153e-01
+            + t2 * (-4.0986882e-02
+                + t2 * (3.0301620e-01
+                    + t2 * (-1.9202736e-01 + t2 * (4.6947582e-02 + t2 * (-3.8543515e-03)))))))
+        + t1 * ((-3.4681153e-01
+            + t2 * (4.8587248e-01
+                + t2 * (1.0092180e-02
+                    + t2 * (-2.9978363e-01 + t2 * (1.5320335e-01 + t2 * (-2.2544282e-02))))))
+            + t1 * ((-4.0986882e-02
+                + t2 * (1.0092180e-02
+                    + t2 * (-5.4145610e-02 + t2 * (7.9597369e-02 + t2 * (-2.3350373e-02)))))
+                + t1 * ((3.0301620e-01
+                    + t2 * (-2.9978363e-01 + t2 * (7.9597369e-02 + t2 * (-8.2431946e-03))))
+                    + t1 * ((-1.9202736e-01 + t2 * (1.5320335e-01 + t2 * (-2.3350373e-02)))
+                        + t1 * ((4.6947582e-02 + t2 * (-2.2544282e-02))
+                            + t1 * (-3.8543515e-03))))));
+}
+
+fn wedge_d(t1: f32, t2: f32) -> f32 {
+    if t1 * t1 + t2 * t2 >= 4.0 {
+        return 0.0;
+    }
+    return (-3.4611994e-01
+        + t2 * (4.4757673e-01
+            + t2 * (1.1932939e-01
+                + t2 * (-4.6460101e-01
+                    + t2 * (2.7637253e-01 + t2 * (-6.2846025e-02 + t2 * (4.3871652e-03)))))))
+        + t1 * ((-6.3622823e-02
+            + t2 * (2.0521006e-01
+                + t2 * (-3.7311339e-01
+                    + t2 * (3.7508155e-01 + t2 * (-1.6629713e-01 + t2 * (2.5030129e-02))))))
+            + t1 * ((7.8352497e-01
+                + t2 * (-1.2658344e+00
+                    + t2 * (5.8898945e-01 + t2 * (-1.0772903e-01 + t2 * (1.3535777e-02)))))
+                + t1 * ((-4.9470084e-01
+                    + t2 * (9.1302071e-01 + t2 * (-3.4330355e-01 + t2 * (2.4034609e-02))))
+                    + t1 * ((-2.5605481e-02 + t2 * (-2.0067981e-01 + t2 * (5.9854468e-02)))
+                        + t1 * ((8.8898623e-02 + t2 * (3.9914838e-03))
+                            + t1 * (-1.7788321e-02))))));
+}
+
+fn wedge_dsum(t: f32, p: vec4f) -> f32 {
+    return wedge_d(t, p.x) + wedge_d(t, p.y) + wedge_d(t, p.z) + wedge_d(t, p.w);
+}
+
+fn wedge_sum(tl: vec3f, th: vec3f) -> f32 {
+    var w = wedge(tl.x, tl.y) + wedge(tl.x, th.y) + wedge(th.x, tl.y) + wedge(th.x, th.y);
+    w += wedge(tl.x, tl.z) + wedge(tl.x, th.z) + wedge(th.x, tl.z) + wedge(th.x, th.z);
+    w += wedge(tl.y, tl.z) + wedge(tl.y, th.z) + wedge(th.y, tl.z) + wedge(th.y, th.z);
+    return w;
+}
+
+// Sum over the six walls of f(per-wall gradient integral, normal),
+// each wall's term relieved of its wedge double-counts against the
+// four perpendicular walls. Returns the summed vector, in units of
+// the mass-gradient sum (kg / m^4).
 fn wall_grad_sum(pos: vec3f) -> vec3f {
     let lo = wall_lo();
     let hi = -lo;
     let inv_h = 1.0 / params.h;
+    let tl = (pos - lo) * inv_h;
+    let th = (hi - pos) * inv_h;
     let scale = params.rho0 * inv_h;
+    let pyz = vec4f(tl.y, th.y, tl.z, th.z);
+    let pxz = vec4f(tl.x, th.x, tl.z, th.z);
+    let pxy = vec4f(tl.x, th.x, tl.y, th.y);
     var g = vec3f(0.0);
-    g.x -= scale * wall_gradient((pos.x - lo.x) * inv_h);
-    g.x += scale * wall_gradient((hi.x - pos.x) * inv_h);
-    g.y -= scale * wall_gradient((pos.y - lo.y) * inv_h);
-    g.y += scale * wall_gradient((hi.y - pos.y) * inv_h);
-    g.z -= scale * wall_gradient((pos.z - lo.z) * inv_h);
-    g.z += scale * wall_gradient((hi.z - pos.z) * inv_h);
+    g.x -= scale * (wall_gradient(tl.x) + wedge_dsum(tl.x, pyz));
+    g.x += scale * (wall_gradient(th.x) + wedge_dsum(th.x, pyz));
+    g.y -= scale * (wall_gradient(tl.y) + wedge_dsum(tl.y, pxz));
+    g.y += scale * (wall_gradient(th.y) + wedge_dsum(th.y, pxz));
+    g.z -= scale * (wall_gradient(tl.z) + wedge_dsum(tl.z, pxy));
+    g.z += scale * (wall_gradient(th.z) + wedge_dsum(th.z, pxy));
     return g;
 }
 
@@ -250,11 +321,14 @@ fn density_div(@builtin(global_invocation_id) id: vec3u) {
     let lo = wall_lo();
     let hi = -lo;
     let inv_h = 1.0 / params.h;
+    let tl = (pos - lo) * inv_h;
+    let th = (hi - pos) * inv_h;
     var fill = 0.0;
-    fill += wall_density((pos.x - lo.x) * inv_h) + wall_density((hi.x - pos.x) * inv_h);
-    fill += wall_density((pos.y - lo.y) * inv_h) + wall_density((hi.y - pos.y) * inv_h);
-    fill += wall_density((pos.z - lo.z) * inv_h) + wall_density((hi.z - pos.z) * inv_h);
-    rho += params.rho0 * fill * 0.978;
+    fill += wall_density(tl.x) + wall_density(th.x);
+    fill += wall_density(tl.y) + wall_density(th.y);
+    fill += wall_density(tl.z) + wall_density(th.z);
+    fill -= wedge_sum(tl, th);
+    rho += params.rho0 * fill;
     let wall_grad = wall_grad_sum(pos);
     grad_sum += wall_grad;
     density[id.x] = rho;
