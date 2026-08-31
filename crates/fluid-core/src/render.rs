@@ -1804,7 +1804,9 @@ impl Renderer {
             width,
             height,
             present_mode: wgpu::PresentMode::Fifo,
-            desired_maximum_frame_latency: 2,
+            // One in-flight frame: the third drawable was 13.6 MiB of
+            // slack the 120 Hz p99 must now be measured without.
+            desired_maximum_frame_latency: 1,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
         };
