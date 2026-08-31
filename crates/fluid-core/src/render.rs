@@ -1089,8 +1089,8 @@ fn field_view(device: &wgpu::Device, surface: [u32; 2]) -> wgpu::TextureView {
         .create_texture(&wgpu::TextureDescriptor {
             label: Some("sim field"),
             size: wgpu::Extent3d {
-                width: (surface[0] / 2).max(1),
-                height: (surface[1] / 2).max(1),
+                width: (surface[0] / 4).max(1),
+                height: (surface[1] / 4).max(1),
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
