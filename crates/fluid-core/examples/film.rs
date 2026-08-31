@@ -46,6 +46,31 @@ fn force_at(frame: u32) -> [f32; 3] {
     if std::env::var("FLAT").as_deref() == Ok("1") {
         return [jitter[0], jitter[1], -G + jitter[2]];
     }
+    // TILT: on its back at ~5 degrees, held four seconds, then the
+    // tilt direction swings 180 degrees over eight. Jack's 2026-08-31
+    // recording: the puddle must creep with the swing, not sit pinned
+    // as a solid patch.
+    if std::env::var("TILT").as_deref() == Ok("1") {
+        let a = 0.09 * G;
+        let phi =
+            0.25 * std::f32::consts::PI + std::f32::consts::PI * ((t - 4.0) / 8.0).clamp(0.0, 1.0);
+        return [
+            a * phi.cos() + jitter[0],
+            a * phi.sin() + jitter[1],
+            -0.996 * G + jitter[2],
+        ];
+    }
+    // RING: upright, three settled seconds, a quarter-second sideways
+    // nudge, then still. The slosh ring-down oracle: water oscillates
+    // near the box's 3.5 Hz gravity-wave mode for seconds; jelly dies
+    // in one swing.
+    if std::env::var("RING").as_deref() == Ok("1") {
+        let mut f = [jitter[0], -G + jitter[1], -0.5 + jitter[2]];
+        if (3.0..3.25).contains(&t) {
+            f[0] += 1.0;
+        }
+        return f;
+    }
     // WAKE=1: six flat seconds — long enough to sleep — then a slow
     // eased tilt to recline. The idle-gate wake oracle: the gate must
     // sleep once, wake within the tilt's first two degrees, and never

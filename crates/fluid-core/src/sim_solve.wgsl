@@ -41,9 +41,13 @@ var<immediate> step: Step;
 @group(0) @binding(14) var<storage, read_write> accel: array<vec4f>;
 @group(0) @binding(15) var<storage, read_write> xsph: array<vec4f>;
 
-// The XSPH blend strength; the DFSPH paper pairs its solver with this
-// filter, and without it a settled deep column never stops ringing.
-const XSPH_EPS: f32 = 0.1;
+// XSPH velocity blending as a per-second rate, not a per-substep
+// fraction: the substep count follows the pacing policy, so a fixed
+// fraction ties the fluid's damping to whatever the policy does
+// (2026-08-31: the 2.2 ms cap doubled it overnight). 48/s equals the
+// 0.1-per-2.2ms the verdict films were tuned at; without the filter a
+// settled deep column never stops ringing.
+const XSPH_RATE: f32 = 48.0;
 
 // Near-pressure, the repulsive half of Clavet 2005: a second, sharper
 // kernel whose pressure is never negative. It removes the pair-clumping
@@ -437,7 +441,8 @@ fn forces_apply(@builtin(global_invocation_id) id: vec3u) {
     }
     let a = accel[id.x];
     velocities[id.x] = vec4f(
-        velocities[id.x].xyz + step.dt * (step.force + a.xyz) + XSPH_EPS * xsph[id.x].xyz,
+        velocities[id.x].xyz + step.dt * (step.force + a.xyz)
+            + (1.0 - exp(-XSPH_RATE * step.dt)) * xsph[id.x].xyz,
         0.0,
     );
     temperature[id.x] += step.dt * a.w;
