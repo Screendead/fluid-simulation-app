@@ -341,6 +341,7 @@ pub fn film(
                 ..Default::default()
             });
             pass.set_pipeline(&sim.fill);
+            pass.set_immediates(0, &pack_optics(force, sim.extent));
             pass.set_bind_group(0, &sim.fill_bind, &[]);
             pass.draw(0..3, 0..1);
             pass.set_pipeline(&sim.points);
@@ -436,6 +437,35 @@ fn buffer_entry(
 /// 37 ms average of a surface moving at shake speed smears centimetres
 /// of fog, which looks worse than the flicker it prevents.
 const FIELD_KEEP: f32 = 0.8;
+
+/// The settled interior value of the splatted field, dimensionless.
+/// Measured 5.297 (this machine, 2026-08-31, 600 upright frames).
+/// The surface shader divides by it to turn field into water thickness
+/// (M4 record, "Thickness"); the_settled_field_matches_the_calibration
+/// measures it and pins this constant.
+const FIELD_SETTLED: f32 = 5.3;
+
+/// The Optics immediates block in sim_surface.wgsl: force on 16-byte
+/// vec3 alignment with the calibration scalar in its tail slot, then
+/// extent and the slab depth.
+fn pack_optics(force: [f32; 3], extent: [f32; 2]) -> [u8; 32] {
+    let mut raw = [0u8; 32];
+    for (slot, v) in [
+        force[0],
+        force[1],
+        force[2],
+        FIELD_SETTLED,
+        extent[0],
+        extent[1],
+        sim::SLAB_DEPTH,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        raw[slot * 4..slot * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    raw
+}
 
 /// Adaptive low-pass on the body force. Accelerometer noise
 /// (~0.15 m/s^2 RMS) pumps the pool hard enough that it never
@@ -834,6 +864,7 @@ struct Sim {
     stats_staging: [StagingSlot; 3],
     stats: [f32; 10],
     spacing: f32,
+    extent: [f32; 2],
     tracer_count: u32,
     vel_groups: u32,
     count: u32,
@@ -1156,7 +1187,7 @@ impl Sim {
         let field = field_view(device, surface);
         let fill_bind = field_bind(device, &fill_layout, &field, &field_sampler);
         let surface_module = module("sim_surface", include_str!("sim_surface.wgsl"));
-        let fill_pl = pipe_layout("sim surface", &fill_layout, 0);
+        let fill_pl = pipe_layout("sim surface", &fill_layout, 32);
         let grid_pl = pipe_layout("sim grid", &grid_layout, 0);
         let scan_pl = pipe_layout("sim scan", &scan_layout, 0);
         let solve_pl = pipe_layout("sim solve", &solve_layout, 32);
@@ -1346,6 +1377,7 @@ impl Sim {
             stats_staging,
             stats: [0.0; 10],
             spacing,
+            extent,
             tracer_count,
             vel_groups: (cells * 4).div_ceil(256),
             count,
@@ -2173,6 +2205,7 @@ impl Renderer {
                 }
                 Mode::Sim(s) => {
                     pass.set_pipeline(&s.fill);
+                    pass.set_immediates(0, &pack_optics(force, s.extent));
                     pass.set_bind_group(0, &s.fill_bind, &[]);
                     pass.draw(0..3, 0..1);
                     if s.tracer_count > 0 {
@@ -2387,6 +2420,16 @@ mod tests {
 
     /// The box every headless test builds, and the box read_tracers must
     /// unpack the quantised positions against.
+    #[test]
+    fn optics_immediates_land_at_the_shader_offsets() {
+        let raw = pack_optics([1.0, 2.0, 3.0], [4.0, 5.0]);
+        let f = |i: usize| f32::from_le_bytes(raw[i..i + 4].try_into().unwrap());
+        assert_eq!([f(0), f(4), f(8)], [1.0, 2.0, 3.0]);
+        assert_eq!(f(12), FIELD_SETTLED);
+        assert_eq!([f(16), f(20)], [4.0, 5.0]);
+        assert_eq!(f(24), sim::SLAB_DEPTH);
+    }
+
     const TEST_EXTENT: [f32; 2] = [crate::WORLD_SCALE * 0.0357, crate::WORLD_SCALE * 0.0774];
 
     fn headless_sim() -> Option<(wgpu::Device, wgpu::Queue, Sim)> {
@@ -2584,6 +2627,128 @@ mod tests {
     // A second of the solve, phone flat on the desk (gravity into the
     // screen): the state the device diverged in. Settling is allowed;
     // explosion is not.
+    // The surface shader divides the field by FIELD_SETTLED to get
+    // water thickness. This measures the real settled splat — five
+    // upright seconds, then one raw draw (splat constant 1, the EMA's
+    // steady state at rest) — and pins the constant to it. TEST_EXTENT
+    // matches the phone's world to four digits, and the splat is a
+    // point-sampled continuous field, so the small target reads the
+    // same plateau the phone renders.
+    #[test]
+    fn the_settled_field_matches_the_calibration() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let f = read_stats(&device, &queue, &sim, 7, 600, [0.0, -9.81, -0.5]);
+        assert!(f[6] < 0.2, "not settled: v_max {}", f[6]);
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("calibration field"),
+            size: wgpu::Extent3d {
+                width: 32,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("calibration readback"),
+            size: 256 * 64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&sim.body);
+            pass.set_blend_constant(wgpu::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            });
+            pass.set_bind_group(0, &sim.sprite_bind, &[]);
+            pass.draw(0..4, 0..sim.count);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: 32,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+        readback.map_async(wgpu::MapMode::Read, .., |_| {});
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let bytes = readback.get_mapped_range(..).expect("mapped");
+        // Field values live in f16's normal range; zero rows decode to
+        // exactly zero through the e == 0 arm.
+        let f16 = |h: u16| -> f32 {
+            let e = u32::from(h >> 10) & 0x1f;
+            if e == 0 {
+                return 0.0;
+            }
+            f32::from_bits(
+                (u32::from(h & 0x8000) << 16) | ((e + 112) << 23) | (u32::from(h & 0x3ff) << 13),
+            )
+        };
+        let mut vals = Vec::new();
+        for row in 0..64 {
+            let base = row * 256;
+            for pair in bytes[base..base + 64].as_chunks::<2>().0 {
+                vals.push(f16(u16::from_le_bytes(*pair)));
+            }
+        }
+        let max = vals.iter().copied().fold(0.0, f32::max);
+        let mut interior: Vec<f32> = vals.into_iter().filter(|v| *v >= 0.6 * max).collect();
+        interior.sort_unstable_by(f32::total_cmp);
+        let plateau = interior[interior.len() / 2];
+        eprintln!(
+            "settled field: plateau {plateau:.3}, max {max:.3}, interior texels {}",
+            interior.len()
+        );
+        assert!(
+            (plateau / FIELD_SETTLED - 1.0).abs() < 0.1,
+            "plateau {plateau} vs calibrated {FIELD_SETTLED}"
+        );
+    }
+
     #[test]
     fn a_second_of_the_solve_settles_flat() {
         let Some((device, queue, sim)) = headless_sim() else {
