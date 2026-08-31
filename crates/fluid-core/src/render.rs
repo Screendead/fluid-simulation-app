@@ -264,7 +264,6 @@ pub fn film(
             pass.dispatch_workgroups(sim.vel_groups, 1, 1);
             pass.set_pipeline(&sim.splat);
             pass.dispatch_workgroups(particles, 1, 1);
-            pass.set_bind_group(0, &sim.tracer_advect_bind, &[]);
             pass.set_pipeline(&sim.advect);
             pass.dispatch_workgroups(sim.tracer_count.div_ceil(256), 1, 1);
         }
@@ -786,7 +785,6 @@ struct Sim {
     field: wgpu::TextureView,
     fill_bind: wgpu::BindGroup,
     tracer_bind: wgpu::BindGroup,
-    tracer_advect_bind: wgpu::BindGroup,
     tracer_draw_bind: wgpu::BindGroup,
     grid_bind: wgpu::BindGroup,
     scan_bind: wgpu::BindGroup,
@@ -975,10 +973,6 @@ impl Sim {
             ],
         );
         let tracer_layout = layout("sim tracers", &[uniform(0), ro(1), ro(2), rw(3), rw(4)]);
-        let tracer_advect_layout = layout(
-            "sim tracer advect",
-            &[uniform(0), ro(1), ro(2), rw(4), ro(5)],
-        );
         let tracer_draw_layout = layout(
             "sim tracer draw",
             &[
@@ -1074,17 +1068,6 @@ impl Sim {
                 entry(4, &tracers),
             ],
         );
-        let tracer_advect_bind = bind(
-            "sim tracer advect",
-            &tracer_advect_layout,
-            &[
-                entry(0, &params),
-                entry(1, &positions),
-                entry(2, &velocities),
-                entry(4, &tracers),
-                entry(5, &vel_grid),
-            ],
-        );
         let tracer_draw_bind = bind(
             "sim tracer draw",
             &tracer_draw_layout,
@@ -1134,7 +1117,6 @@ impl Sim {
         let solve_pl = pipe_layout("sim solve", &solve_layout, 32);
         let sprite_pl = pipe_layout("sim sprites", &sprite_layout, 0);
         let tracer_pl = pipe_layout("sim tracers", &tracer_layout, 32);
-        let tracer_advect_pl = pipe_layout("sim tracer advect", &tracer_advect_layout, 32);
         let tracer_draw_pl = pipe_layout("sim tracer draw", &tracer_draw_layout, 0);
         let pipeline =
             |layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, entry_point: &str| {
@@ -1191,7 +1173,7 @@ impl Sim {
             }),
             clear_vel: pipeline(&tracer_pl, &tracer_module, "clear_vel"),
             splat: pipeline(&tracer_pl, &tracer_module, "splat"),
-            advect: pipeline(&tracer_advect_pl, &tracer_module, "advect"),
+            advect: pipeline(&tracer_pl, &tracer_module, "advect"),
             points: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("sim points"),
                 layout: Some(&tracer_draw_pl),
@@ -1309,7 +1291,6 @@ impl Sim {
             field,
             fill_bind,
             tracer_bind,
-            tracer_advect_bind,
             tracer_draw_bind,
             grid_bind,
             scan_bind,
@@ -1804,9 +1785,7 @@ impl Renderer {
             width,
             height,
             present_mode: wgpu::PresentMode::Fifo,
-            // One in-flight frame: the third drawable was 13.6 MiB of
-            // slack the 120 Hz p99 must now be measured without.
-            desired_maximum_frame_latency: 1,
+            desired_maximum_frame_latency: 2,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
         };
@@ -2083,7 +2062,6 @@ impl Renderer {
                         pass.dispatch_workgroups(s.vel_groups, 1, 1);
                         pass.set_pipeline(&s.splat);
                         pass.dispatch_workgroups(particles, 1, 1);
-                        pass.set_bind_group(0, &s.tracer_advect_bind, &[]);
                         pass.set_pipeline(&s.advect);
                         pass.dispatch_workgroups(s.tracer_count.div_ceil(256), 1, 1);
                     }
@@ -2459,7 +2437,6 @@ mod tests {
                     pass.dispatch_workgroups(sim.vel_groups, 1, 1);
                     pass.set_pipeline(&sim.splat);
                     pass.dispatch_workgroups(particles, 1, 1);
-                    pass.set_bind_group(0, &sim.tracer_advect_bind, &[]);
                     pass.set_pipeline(&sim.advect);
                     pass.dispatch_workgroups(sim.tracer_count.div_ceil(256), 1, 1);
                 }
@@ -2671,7 +2648,7 @@ mod tests {
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
-            pass.set_bind_group(0, &sim.tracer_advect_bind, &[]);
+            pass.set_bind_group(0, &sim.tracer_bind, &[]);
             pass.set_pipeline(&sim.advect);
             pass.set_immediates(0, &sim::pack_step([-9.81, 0.0, 0.0], 6.0, 0.0, 601));
             pass.dispatch_workgroups(sim.tracer_count.div_ceil(256), 1, 1);

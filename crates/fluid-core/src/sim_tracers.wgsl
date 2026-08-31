@@ -28,10 +28,6 @@ var<immediate> step: Step;
 @group(0) @binding(2) var<storage, read> velocities: array<vec4f>;
 @group(0) @binding(3) var<storage, read_write> vel_grid: array<atomic<i32>>;
 @group(0) @binding(4) var<storage, read_write> tracers: array<vec2u>;
-// The same buffer as binding 3, read without atomics: advect only
-// gathers, and the serial compute encoder already orders it after the
-// splat.
-@group(0) @binding(5) var<storage, read> vel_read: array<vec4i>;
 
 // Velocities land in the grid as 16.16 fixed point; f32 storage has no
 // atomic add.
@@ -140,10 +136,14 @@ fn advect(@builtin(global_invocation_id) id: vec3u) {
         let w = mix(vec3f(1.0) - f, f, vec3f(o));
         let weight = w.x * w.y * w.z;
         let coord = base + o;
-        let c = (coord.z * params.dims.y + coord.y) * params.dims.x + coord.x;
-        let g = vel_read[c];
-        moment += weight * vec3f(g.xyz);
-        weight_count += weight * f32(g.w);
+        let c = ((coord.z * params.dims.y + coord.y) * params.dims.x + coord.x) * 4u;
+        moment += weight
+            * vec3f(
+                f32(atomicLoad(&vel_grid[c])),
+                f32(atomicLoad(&vel_grid[c + 1u])),
+                f32(atomicLoad(&vel_grid[c + 2u])),
+            );
+        weight_count += weight * f32(atomicLoad(&vel_grid[c + 3u]));
     }
     var v = vec3f(0.0);
     if weight_count > 0.0 {
