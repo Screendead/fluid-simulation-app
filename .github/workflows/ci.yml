@@ -18,7 +18,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  gate:
+  # Everything portable, at 1x billing. The iOS build inside gate.sh
+  # self-skips off macOS; GPU tests self-skip on adapterless runners.
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen@0.29.4
+      - run: scripts/gate.sh
+  # Only what needs macOS (10x billing): the iOS static library and
+  # the unsigned shell build. CI proves the shell compiles and links;
+  # only a device proves it runs.
+  ios:
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -26,12 +41,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: aarch64-apple-ios,aarch64-apple-ios-sim
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cbindgen@0.29.4
+      - run: cargo build -p fluid-ffi --target aarch64-apple-ios --target aarch64-apple-ios-sim
       - run: brew install xcodegen
-      - run: scripts/gate.sh
-      # Unsigned: CI proves the shell compiles and links; only a device proves it runs.
       - run: |
           cd platforms/ios
           xcodegen generate --quiet
