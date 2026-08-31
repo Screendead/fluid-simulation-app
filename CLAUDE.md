@@ -44,8 +44,10 @@ scripts/run-ios.sh     # build, sign, install and launch on the reference device
 scripts/run-sim.sh     # build and launch in the simulator: a link-and-launch check only
 ```
 
-CI runs the gate on every push and pull request, then builds the iOS app
-unsigned. Run the gate before you push. Three notes:
+CI runs the gate on every push to master and every pull request, then
+builds the iOS app unsigned. Topic-branch pushes do not run CI: the
+macOS runner bills minutes at 10x, and the local gate is the same
+script. Run the gate before you push. Three notes:
 
 - The gate is strict. One clippy warning or one unformatted file fails it.
 - The phone is the default target for every run: measurement, validation,

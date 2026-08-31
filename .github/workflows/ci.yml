@@ -1,8 +1,13 @@
 name: CI
 
+# macOS runners bill at 10x; unrestricted push triggers burned the
+# whole free tier in one month (2026-08). Topic branches rely on the
+# local gate; run CI on demand with workflow_dispatch.
 on:
   push:
+    branches: [master]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
