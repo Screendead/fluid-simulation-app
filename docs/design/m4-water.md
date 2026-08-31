@@ -106,11 +106,72 @@ dimensional — so every "exact" claim stops at the model boundary.
 
 ## Budget
 
-The composite rewrite is estimated at +0.3 to +0.8 ms GPU. That is an
-estimate, not a measurement; the oracle is the before/after on the
-reference device, and the measured number replaces this line when it
-lands. For reference: settled 4x GPU p50 was 6.27 ms against the
-8.33 ms frame (reference device, 2026-08-31), and motion runs higher.
+Estimated +0.3 to +0.8 ms GPU before the build. Measured on the
+reference device, 2026-08-31 night, thermal state "serious" on both
+sides of every pair, settled upright, pre-sleep awake window:
+
+| Build | GPU p50 | Note |
+|---|---|---|
+| old renderer (7416b49 line) | 6.694 ms | re-measured, same session |
+| first glass build (426e9a8) | 8.563 ms | +1.87 ms; over the frame, drops to intermittent 60 Hz |
+| restructured (5728036) | 7.557 ms | +0.86 ms; inside the 8.33 ms frame, 120 Hz held |
+
+The restructure that bought the millisecond back: lighting that is
+uniform across a frame (world up, glint half vector, folded gain)
+precomputed into the immediates; per-sector stripe families baked to
+a table; stripe filtering by the analytic screen-space rate instead
+of fwidth, which frees air pixels to take an early return past the
+whole water path. All three were confirmed findings of the
+adversarial review of 426e9a8.
+
+Motion, same session, from Jack's hard shake: the frame enters a
+locked failure basin. Captured timeline: v decays to 0.01 — water at
+rest — while substeps stay pinned at 8, the display at 60 Hz, GPU at
+~19 ms, because 60 Hz makes dt 16.7 ms, dt floors substeps at 8 for
+stability, and ~184 solver dispatches at 50-90 us fixed overhead each
+cost more than the 16.7 ms frame: the loop feeds itself. The idle
+gate's sleep is currently the only exit — the wake after sleep
+returns at n 4, 8.3 ms, 120 Hz. This basin is the optimisation
+pass's first target; the capture lives in the session scratchpad
+(after2-m4.txt).
+
+## The first device session (2026-08-31, night)
+
+Jack's verdict, verbatim: "this looks incredible. shook it, tilted
+it, played for a while". The M4 oracle's "looks like water" clause
+passes its first reading. Four notes, verbatim, with dispositions:
+
+1. "minor jitter when upright and still" — the interior stripe-crawl
+   the flicker meter already quantifies (settled-awake mean 6,700-
+   8,800 px/frame; the idle gate zeroes it once asleep). Work item:
+   the record's blur contingency — a small separable blur of the
+   field before the gradient, judged by the flicker meter and the
+   eye. Open.
+2. "you can tell (from looking at the reflections) that the water
+   inside the body isn't really 'swirling' much even after large
+   movements - but it should be, ideally" — true by construction:
+   the optics read the splatted thickness field only, so internal
+   motion with a flat surface is invisible. Direction to design: an
+   advected perturbation field — a quarter-res scalar advected
+   through the existing velocity grid (the tracer machinery already
+   advects through it), injected by speed, decaying over seconds,
+   perturbing the refraction normal. Water would then visibly churn
+   after motion and calm down. Needs its own design entry before
+   code. Open.
+3. "the water is a little hard to see, when it's the main subject
+   and we've put so much work into it. i'm not sure the right
+   approach is to colour it differently - suggest some options" —
+   options tabled for Jack's pick in HANDOFF; front-runners are
+   caustics on the back wall (brightness from surface curvature —
+   light focused by the wavy surface) and scattering (the wall reads
+   slightly frosted through water: widen the stripe filter width
+   with thickness — near-free, no palette change). Open, Jack's
+   call.
+4. "the performance is still questionable, given a hard shake it
+   will then go back into the lag failure mode where subsequent
+   movements are not reacted to in real time" — the substep-floor
+   basin measured and mechanised in the Budget section above.
+   Optimisation-pass target. Open.
 
 ## Sequencing: renderer before the aggressive optimisation pass
 

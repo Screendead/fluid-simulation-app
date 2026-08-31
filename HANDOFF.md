@@ -98,8 +98,10 @@ the 1x desk phone never slept. Invisible in the picture (the
 movers are a few particles, plausibly circulating at the contact
 line). The scale change below ended the starvation without
 explaining the floor. The pacing and cost picture is unchanged;
-sustained 120 Hz still waits on the optimisation pass, which is
-sequenced after the M4 renderer (the M4 record holds the decision).
+sustained 120 Hz still waits on the optimisation pass: a hard shake
+drops the frame into a 60 Hz substep-floor basin that only the idle
+gate's sleep exits (measured 2026-08-31, M4 record Budget). The pass
+is sequenced after the M4 look notes (the M4 record holds the decision).
 
 2026-08-31, the scale: Jack asked whether the feel was locked
 behind a non-1:1 scale, and the measured ladder (1x/2x/4x/8x; M3
@@ -154,14 +156,28 @@ The stats call costs 102 µs once a second, off the frame path. GPU
 timestamps read real values on this device in M2; the M1 note that the
 adapter lacks `TIMESTAMP_QUERY` did not hold — trust the M2 observation.
 
-## The next task — M4, the water renderer
+## The next task — M4, the look notes
 
-Build the liquid-glass renderer from the M4 record
-(`docs/design/m4-water.md`). Work on branch `m4-water`, stacked on
-`m3-fluid`. After M4: the aggressive optimisation pass (budget O2,
-battery bound, frame-latency-1 experiment, the named M3 reclaim
-targets, and the adaptive-resolution decision), run once on the
-complete frame.
+The liquid-glass renderer is built, reviewed, and on the phone
+(branch `m4-water`, through 5728036). Jack's first device verdict,
+2026-08-31: "this looks incredible." Settled cost is measured at
++0.86 ms GPU, inside the frame; the M4 record's Budget and
+first-device-session sections hold the numbers and the four open
+notes. The task now:
+
+1. Jack picks the water-visibility direction (options in the M4
+   record: caustics from surface curvature, scattering that frosts
+   the wall through water, a refraction-gain dial — or a mix).
+2. Design and build the advected perturbation field, so the water
+   visibly churns after motion (needs its design entry first).
+3. The still-water jitter: try the record's blur contingency, judged
+   by the flicker meter.
+
+After M4: the aggressive optimisation pass (budget O2, battery bound,
+frame-latency-1 experiment, the named M3 reclaim targets, the
+adaptive-resolution decision, and — first target — the substep-floor
+60 Hz basin captured in the M4 record's Budget section), run once on
+the complete frame.
 
 M3 close waits on the optimisation pass: the roadmap's closure rule
 needs the oracle measured on the device, and three measurements are
