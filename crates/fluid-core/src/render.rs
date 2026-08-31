@@ -234,12 +234,20 @@ pub fn film(
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 ..Default::default()
             });
+            pass.set_pipeline(&sim.decay);
+            pass.set_blend_constant(wgpu::Color {
+                r: FIELD_KEEP,
+                g: FIELD_KEEP,
+                b: FIELD_KEEP,
+                a: FIELD_KEEP,
+            });
+            pass.draw(0..3, 0..1);
             pass.set_pipeline(&sim.body);
             pass.set_bind_group(0, &sim.sprite_bind, &[]);
             pass.draw(0..4, 0..sim.count);
@@ -343,6 +351,23 @@ fn buffer_entry(
         count: None,
     }
 }
+
+/// The splatted field keeps this fraction each frame (about 37 ms at
+/// 120 Hz); sim_sprites.wgsl scales the splat by the complement.
+const FIELD_KEEP: f64 = 0.8;
+
+const DECAY: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::Constant,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::Constant,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
 
 const OVER: wgpu::BlendState = wgpu::BlendState {
     color: wgpu::BlendComponent {
@@ -573,6 +598,7 @@ struct Sim {
     advect: wgpu::ComputePipeline,
     points: wgpu::RenderPipeline,
     body: wgpu::RenderPipeline,
+    decay: wgpu::RenderPipeline,
     fill: wgpu::RenderPipeline,
     fill_layout: wgpu::BindGroupLayout,
     field_sampler: wgpu::Sampler,
@@ -1019,6 +1045,37 @@ impl Sim {
                     targets: &[Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::R16Float,
                         blend: Some(ADDITIVE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            }),
+            decay: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim decay"),
+                layout: Some(
+                    &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("sim decay"),
+                        bind_group_layouts: &[],
+                        immediate_size: 0,
+                    }),
+                ),
+                vertex: wgpu::VertexState {
+                    module: &surface_module,
+                    entry_point: Some("fill"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &surface_module,
+                    entry_point: Some("decay_frag"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::R16Float,
+                        blend: Some(DECAY),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
@@ -1792,7 +1849,7 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -1801,6 +1858,14 @@ impl Renderer {
                 occlusion_query_set: None,
                 ..Default::default()
             });
+            pass.set_pipeline(&s.decay);
+            pass.set_blend_constant(wgpu::Color {
+                r: FIELD_KEEP,
+                g: FIELD_KEEP,
+                b: FIELD_KEEP,
+                a: FIELD_KEEP,
+            });
+            pass.draw(0..3, 0..1);
             pass.set_pipeline(&s.body);
             pass.set_bind_group(0, &s.sprite_bind, &[]);
             pass.draw(0..4, 0..s.count);

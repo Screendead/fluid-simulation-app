@@ -92,6 +92,9 @@ fn body(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyV
 @fragment
 fn weight(in: BodyVertex) -> @location(0) vec4f {
     let falloff = max(1.0 - dot(in.corner, in.corner), 0.0);
-    return vec4f(falloff * falloff, 0.0, 0.0, 0.0);
+    // 1 - the field's keep fraction: the decay draw holds the other
+    // 0.8, so the field is a ~37 ms average and the rim cannot
+    // flicker at frame rate. Steady state matches an unsmoothed splat.
+    return vec4f(falloff * falloff * 0.2, 0.0, 0.0, 0.0);
 }
 

@@ -24,6 +24,13 @@ fn fill(@builtin(vertex_index) v: u32) -> FillVertex {
     return out;
 }
 
+// The decay draw: source factor zero, destination factor the keep
+// fraction, so only the blend does the work.
+@fragment
+fn decay_frag(in: FillVertex) -> @location(0) vec4f {
+    return vec4f(0.0);
+}
+
 @fragment
 fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     let d = textureSample(field, field_sampler, in.uv).r;

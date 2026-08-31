@@ -462,3 +462,51 @@ and one divergence iteration stands, since neither pays for its cost
 or its extra damping once the wall is calibrated. h at 1.5x spacing
 was tried and diverged at rest; the wall integrals are calibrated
 for 1.2 and stay there.
+
+### Surface tension: tried, measured, not shipped
+
+The boil pointed at missing capillary physics, so Akinci cohesion plus
+curvature went in behind a normals pass (one extra neighbour sweep, a
+sixteenth storage binding, walls entering normals through their
+analytic integrals). The film boil meter swept the coefficient:
+
+| gamma | Boil, median mm |
+|---|---|
+| 0.5 | 1.32 |
+| 1.0 | 0.93 |
+| 1.5 | 1.14 |
+| 2.0 | 1.17 |
+| 3.0 | 1.12 |
+| 10 | 5.37, seven substeps at rest |
+| curvature only, 1.0 | 4.28 |
+
+Best case 0.93 mm, a third of baseline — and unshippable. At every
+effective strength the flat pose balls the puddle into one blob mid
+screen, where real water at 4.75 mm depth over 71 mm sheets across
+the glass (Bond number far above one). The tension able to kill
+millimetre chop at 2.5 mm spacing is orders above physical, and at
+that strength cohesion beats gravity and wetting. Curvature alone
+destabilises: cohesion's near branch is what regularises spacing.
+Two open observations, not diagnosed: a standing central fountain at
+rest and gummy-looking slosh, both at gamma 1.0. The diff is
+preserved outside the repository. The next experiment is wall
+adhesion, Akinci's companion term, built on the same analytic wall
+integrals: it is the mechanism that makes water wet glass, it fights
+the balling directly, and it carries a physical prediction (the
+contact angle follows the adhesion-to-cohesion ratio), so it is a new
+mechanism rather than a knob. Richer neighbourhoods at 2.0 mm may
+also reopen the plain model; that waits on the encode pass.
+
+### The field averages 37 milliseconds
+
+Shipped instead, in the rendering domain the water shader deferral
+already owns: the splatted field keeps 0.8 of itself each frame (a
+decay draw with a constant blend factor) and the body splat scales by
+the complement, so the field is an exponential average with a 37 ms
+time constant and an unchanged steady state — the thresholds hold.
+The rim cannot flicker at frame rate; the boil meter, which samples
+at 30 fps and so barely sees frame-rate sparkle, still drops 2.34 to
+2.07 mm. The solver's slow hump migration remains and remains the
+solver's problem: this smooths the drawn boundary, not the fluid.
+Film shows no rim detachment from the dots through the fastest
+scripted tilt; the dots lead the rim only as faint spray.
