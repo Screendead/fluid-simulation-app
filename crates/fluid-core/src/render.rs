@@ -21,13 +21,14 @@ const METRES_PER_PIXEL: f32 = 0.0254 / 458.0;
 /// a pause cannot fling the particles.
 const MAX_DT: f32 = 1.0 / 30.0;
 
-// A substep near a full 8.3 ms frame cannot converge against the wall
-// and near-pressure springs, and the residual is resting jitter (film:
-// reclined jumps 0.26 mm/frame at 8.3 ms substeps, 0.007 at half
-// that). This and refine_passes key on substep length, not count, so a
-// 60 Hz frame splits twice as often and converges the same. Slightly
-// above 1/240 s, so measured 120 Hz interval jitter stays at two.
-const DT_SUB_MAX: f32 = 0.0044;
+// The resting boil is timestep error: the 2026-08-31 convergence
+// ladder (M3 record) halves upright boil twice over by halving the
+// substep (0.42 mm at 4.2 ms, 0.14 at 2.1) while refine depth changes
+// nothing at either length. This and refine_passes key on substep
+// length, not count, so a 60 Hz frame splits twice as often and
+// converges the same. Slightly above 8.334/4 ms, so measured 120 Hz
+// interval jitter stays at four substeps.
+const DT_SUB_MAX: f32 = 0.0022;
 
 // Density error scales with dt squared, so short substeps need fewer
 // refine passes. The film compr guard covers the shallow end.

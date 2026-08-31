@@ -863,3 +863,42 @@ Lesson, standing: a change whose risk note names a device-only failure
 mode gets a device check before the next feature lands on top of it,
 and before the user meets it. The film harness cannot see pacing or
 cross-dispatch hazards.
+
+## The physics pass: fix the jitters, budget later
+
+Jack's directive, 2026-08-31: fix the jitters properly, disregard the
+frame budget, optimise after the fact. This pass trades microseconds
+for accuracy on purpose. Every cost it adds is a named target for the
+optimisation pass that follows it.
+
+### The convergence ladder: the boil was timestep error (2026-08-31)
+
+Two latent frame-rate couplings fell first. The substep floor was a
+count, so a 60 Hz frame ran 8.3 ms substeps — the length the record
+proved non-convergent. The refine depth keyed on the count too. Both
+now key on substep length (`DT_SUB_MAX`, `refine_passes`), so film at
+120 Hz and a throttled device agree by construction.
+
+The ladder: {4.2 ms cap, 2.1 ms cap} x {shipped refines, 16 refines}
+x {upright, reclined, flat}, tripod, NOISE=0.15, raw field, gate off.
+
+| Config | Upright boil mm | Reclined jump mm/frame | Flat stir |
+|---|---|---|---|
+| 4.2 ms, shipped | 0.42 | 0.077 | 1.62 |
+| 4.2 ms, deep | 0.47 | 0.075 | 1.59 |
+| 2.1 ms, shipped | **0.14** | 0.074 | 1.38 |
+| 2.1 ms, deep | 0.14 | 0.074 | 1.41 |
+
+The verdict is unambiguous. Refine depth changes nothing at either
+substep length: the density solve is already converged, and the boil
+is the integrator's dt-squared error, not iteration residual. Halving
+the substep to 2.1 ms cuts upright boil threefold (0.42 to 0.14 mm),
+ends the rest clamp storm (20,705 to 437 over the film), and settles
+the post-tilt corner ten times calmer (v_max 0.36 to 0.03). Reclined
+was already at its floor. Flat spasms survive every config — the
+wall-model error stands as its own workstream.
+
+Shipped: DT_SUB_MAX 2.2 ms. Rest runs four substeps instead of two,
+about +1.1 ms GPU at rest on the M3 solver-cost split. The refine
+schedule is saturated at 2.1 ms (16 refines buy nothing over 5), so
+the optimisation pass can cut refines there with the compr guard.
