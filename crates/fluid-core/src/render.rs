@@ -121,7 +121,7 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         required_features: wgpu::Features::IMMEDIATES,
         required_limits: wgpu::Limits {
             max_storage_buffers_per_shader_stage: 16,
-            max_immediate_size: 32,
+            max_immediate_size: 48,
             ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
         },
         ..Default::default()
@@ -445,19 +445,59 @@ const FIELD_KEEP: f32 = 0.8;
 /// measures it and pins this constant.
 const FIELD_SETTLED: f32 = 5.3;
 
-/// The Optics immediates block in sim_surface.wgsl: force on 16-byte
-/// vec3 alignment with the calibration scalar in its tail slot, then
-/// extent and the slab depth.
-fn pack_optics(force: [f32; 3], extent: [f32; 2]) -> [u8; 32] {
-    let mut raw = [0u8; 32];
+/// Peak glint output; two percent of it — the Fresnel floor — is what
+/// reaches the screen.
+const SUN: f32 = 60.0;
+
+/// Schlick reflectance at normal incidence, mirrored by F0 in
+/// sim_surface.wgsl.
+const GLINT_F0: f32 = 0.02;
+
+/// The Optics immediates block in sim_surface.wgsl: two 16-byte vec3
+/// slots with scalars packed into their tails. The lighting that is
+/// uniform across a frame — world up, the glint half vector, and the
+/// folded gain — is computed here once instead of per pixel.
+fn pack_optics(force: [f32; 3], extent: [f32; 2]) -> [u8; 48] {
+    let norm = |v: [f32; 3], floor: f32| -> ([f32; 3], f32) {
+        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(floor);
+        ([v[0] / l, v[1] / l, v[2] / l], l)
+    };
+    // World up from the filtered force; under a metre per second
+    // squared the box is near free fall and the sky holds still.
+    let (mg, gl) = norm(force, 1e-6);
+    let up = if gl > 1.0 {
+        [-mg[0], -mg[1], -mg[2]]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    // The light hangs over the viewer's shoulder, pinned to world up.
+    let (light, _) = norm([up[0], up[1], up[2] + 0.8], 1e-6);
+    // Half vector against the fixed view (0, 0, -1). Face down, light
+    // meets the view head on; the floored divide keeps the glint zero
+    // instead of a NaN frame.
+    let (h, _) = norm([light[0], light[1], light[2] + 1.0], 1e-5);
+    // An orthographic view under a directional light is degenerate on
+    // flat water — every pixel hits the glint angle at once, and
+    // face-up is exactly that pose. The viewer's own head shades it:
+    // the sun fades out as up aligns with the view axis. All the way
+    // out: any floor lets the lobe resolve the particle lattice on a
+    // one-layer sheet as a honeycomb of florets.
+    let s = ((up[2] - 0.85) / 0.13).clamp(0.0, 1.0);
+    let fade = 1.0 - s * s * (3.0 - 2.0 * s);
+    let schlick = GLINT_F0 + (1.0 - GLINT_F0) * (1.0 - h[2]).powi(5);
+    let mut raw = [0u8; 48];
     for (slot, v) in [
-        force[0],
-        force[1],
-        force[2],
+        up[0],
+        up[1],
+        up[2],
         FIELD_SETTLED,
         extent[0],
         extent[1],
         sim::SLAB_DEPTH,
+        SUN * schlick * fade,
+        h[0],
+        h[1],
+        h[2],
     ]
     .into_iter()
     .enumerate()
@@ -1187,7 +1227,7 @@ impl Sim {
         let field = field_view(device, surface);
         let fill_bind = field_bind(device, &fill_layout, &field, &field_sampler);
         let surface_module = module("sim_surface", include_str!("sim_surface.wgsl"));
-        let fill_pl = pipe_layout("sim surface", &fill_layout, 32);
+        let fill_pl = pipe_layout("sim surface", &fill_layout, 48);
         let grid_pl = pipe_layout("sim grid", &grid_layout, 0);
         let scan_pl = pipe_layout("sim scan", &scan_layout, 0);
         let solve_pl = pipe_layout("sim solve", &solve_layout, 32);
@@ -1848,7 +1888,7 @@ impl Renderer {
             // binds: the sim layouts hold five storage buffers a stage.
             required_limits: wgpu::Limits {
                 max_storage_buffers_per_shader_stage: 16,
-                max_immediate_size: 32,
+                max_immediate_size: 48,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
             ..Default::default()
@@ -2420,12 +2460,33 @@ mod tests {
 
     #[test]
     fn optics_immediates_land_at_the_shader_offsets() {
-        let raw = pack_optics([1.0, 2.0, 3.0], [4.0, 5.0]);
+        let raw = pack_optics([0.0, -9.81, 0.0], [4.0, 5.0]);
         let f = |i: usize| f32::from_le_bytes(raw[i..i + 4].try_into().unwrap());
-        assert_eq!([f(0), f(4), f(8)], [1.0, 2.0, 3.0]);
+        assert_eq!([f(0), f(4), f(8)], [0.0, 1.0, 0.0], "up");
         assert_eq!(f(12), FIELD_SETTLED);
-        assert_eq!([f(16), f(20)], [4.0, 5.0]);
+        assert_eq!([f(16), f(20)], [4.0, 5.0], "extent");
         assert_eq!(f(24), sim::SLAB_DEPTH);
+        // Upright: up.z = 0, no fade, so the gain is SUN scaled by
+        // Schlick at the half vector's z.
+        let h = [f(32), f(36), f(40)];
+        assert!(
+            (h[0] * h[0] + h[1] * h[1] + h[2] * h[2] - 1.0).abs() < 1e-5,
+            "h unit"
+        );
+        let schlick = GLINT_F0 + (1.0 - GLINT_F0) * (1.0 - h[2]).powi(5);
+        assert!((f(28) - SUN * schlick).abs() < 1e-4, "gain {}", f(28));
+        // Face up fades the sun out; face down degenerates h to zero
+        // and the gain with it — neither may go NaN.
+        let flat = pack_optics([0.0, 0.0, -9.81], [4.0, 5.0]);
+        assert_eq!(
+            f32::from_le_bytes(flat[28..32].try_into().unwrap()),
+            0.0,
+            "face-up fade"
+        );
+        let down = pack_optics([0.0, 0.0, 9.81], [4.0, 5.0]);
+        for chunk in down.as_chunks::<4>().0 {
+            assert!(f32::from_le_bytes(*chunk).is_finite());
+        }
     }
 
     /// The box every headless test builds, and the box read_tracers must
