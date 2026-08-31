@@ -37,10 +37,26 @@ const FIXED: f32 = 65536.0;
 // respawns at a solver particle.
 const TAU: f32 = 3.0;
 
+// A stranded tracer is visible dust, so it waits far less.
+const TAU_STRAY: f32 = 0.25;
+
 fn pcg(x: u32) -> u32 {
     var h = x * 747796405u + 2891336453u;
     h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
     return (h >> 22u) ^ h;
+}
+
+fn respawn(slot: u32, r: u32) {
+    let r1 = pcg(r);
+    let r2 = pcg(r1);
+    let r3 = pcg(r2);
+    let r4 = pcg(r3);
+    let jitter = (vec3f(vec3u(r2, r3, r4) >> vec3u(20u)) / 4096.0 - vec3f(0.5))
+        * (params.cell * 0.5);
+    let j = r1 % params.count;
+    let lo = params.box_min + vec3f(params.cell);
+    let p = clamp(positions[j].xyz + jitter, lo, -lo);
+    tracers[slot] = vec4f(p, length(velocities[j].xyz));
 }
 
 fn cell_count() -> u32 {
@@ -84,16 +100,7 @@ fn advect(@builtin(global_invocation_id) id: vec3u) {
     // time constant TAU.
     let r0 = pcg(id.x ^ pcg(step.seed));
     if f32(r0) / 4294967295.0 < step.dt / TAU {
-        let r1 = pcg(r0);
-        let r2 = pcg(r1);
-        let r3 = pcg(r2);
-        let r4 = pcg(r3);
-        let jitter = (vec3f(vec3u(r2, r3, r4) >> vec3u(20u)) / 4096.0 - vec3f(0.5))
-            * (params.cell * 0.5);
-        let j = r1 % params.count;
-        let lo = params.box_min + vec3f(params.cell);
-        let p = clamp(positions[j].xyz + jitter, lo, -lo);
-        tracers[id.x] = vec4f(p, length(velocities[j].xyz));
+        respawn(id.x, r0);
         return;
     }
     var pos = tracers[id.x].xyz;
@@ -120,9 +127,10 @@ fn advect(@builtin(global_invocation_id) id: vec3u) {
     var v = vec3f(0.0);
     if weight_count > 0.0 {
         v = moment / (weight_count * FIXED);
+    } else if f32(pcg(r0 ^ 0x85ebca6bu)) / 4294967295.0 < step.dt / TAU_STRAY {
+        respawn(id.x, pcg(r0 ^ 0x632be59bu));
+        return;
     }
-    // An unsampled tracer sits outside the fluid and waits; the field
-    // carries it again when the fluid returns.
     pos += v * step.dt;
     let lo = params.box_min + vec3f(params.cell);
     pos = clamp(pos, lo, -lo);

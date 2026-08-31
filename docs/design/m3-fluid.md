@@ -364,3 +364,12 @@ queued: the corner-versus-upright delta collapsed without it.
 (Mac numbers, 2026-08-31; the device capture follows the next
 deploy.)
 
+Stray escalation (2026-08-31): Jack reports straggler dots at the
+fluid edge; the frame analysis of his second recording shows a dust
+field fading out 50..500 capture pixels from the mass, fully replaced
+each sample. A stranded tracer waited up to TAU for the field to
+return. An unsampled tracer now recycles with time constant
+TAU_STRAY, 0.25 s, so dust clears about twelve times faster. The
+respawn path is shared with the base recycle the regression test
+forces.
+
