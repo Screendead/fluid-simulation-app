@@ -49,4 +49,6 @@ mod tests {
 mod particles;
 mod render;
 mod sim;
+#[cfg(feature = "film")]
+pub use render::film;
 pub use render::{RenderOptions, RenderStats, Renderer};

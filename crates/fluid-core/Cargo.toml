@@ -8,5 +8,13 @@ publish.workspace = true
 [lib]
 crate-type = ["rlib"]
 
+# film: the desk look-oracle (scripts/film.sh). Never in the iOS build.
+[features]
+film = []
+
+[[example]]
+name = "film"
+required-features = ["film"]
+
 [dependencies]
 wgpu = { workspace = true, features = ["std", "metal", "parking_lot", "wgsl"] }

@@ -87,6 +87,246 @@ fn ready<T>(fut: impl Future<Output = T>) -> T {
     }
 }
 
+/// None on an adapterless runner (bare CI), which callers skip.
+#[cfg(any(test, feature = "film"))]
+fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    let instance = wgpu::Instance::default();
+    let Ok(adapter) = ready(instance.request_adapter(&Default::default())) else {
+        eprintln!("no GPU adapter; skipping");
+        return None;
+    };
+    let (device, queue) = ready(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: None,
+        required_features: wgpu::Features::IMMEDIATES,
+        required_limits: wgpu::Limits {
+            max_storage_buffers_per_shader_stage: 16,
+            max_immediate_size: 32,
+            ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
+        },
+        ..Default::default()
+    }))
+    .expect("device");
+    Some((device, queue))
+}
+
+/// Runs the solver against a scripted body force and hands every
+/// `every`-th frame to `sink` as tightly packed RGBA rows. The box is
+/// the reference phone's whatever the render size, and frames advance
+/// at a fixed 1/120 s: film is the look oracle, never the cost oracle.
+#[cfg(feature = "film")]
+pub fn film(
+    frames: u32,
+    every: u32,
+    spacing: f32,
+    force_at: impl Fn(u32) -> [f32; 3],
+    mut sink: impl FnMut(&[u8]),
+) -> Option<[u32; 2]> {
+    const WIDTH: u32 = 642;
+    const HEIGHT: u32 = 1388;
+    let (device, queue) = headless_device()?;
+    let sim = Sim::new(
+        &device,
+        wgpu::TextureFormat::Rgba8Unorm,
+        [
+            1284.0 * 0.5 * METRES_PER_PIXEL,
+            2778.0 * 0.5 * METRES_PER_PIXEL,
+        ],
+        7,
+        spacing,
+        131_072,
+        [WIDTH, HEIGHT],
+    );
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("film target"),
+        size: wgpu::Extent3d {
+            width: WIDTH,
+            height: HEIGHT,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&Default::default());
+    let padded = (WIDTH * 4).next_multiple_of(256);
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("film readback"),
+        size: u64::from(padded) * u64::from(HEIGHT),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let stats = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("film stats"),
+        size: 40,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let dt = 1.0 / 120.0;
+    let mut v_max = 0.0f32;
+    let mut rows = vec![0u8; (WIDTH * 4 * HEIGHT) as usize];
+    for f in 0..frames {
+        let force = force_at(f);
+        // The production CFL, fed by the previous frame's v_max.
+        let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32).clamp(1, 7);
+        let dt_sub = dt / n as f32;
+        let v_clamp = 0.4 * spacing / dt_sub;
+        let step = sim::pack_step(force, dt_sub, v_clamp, 0);
+        let particles = sim.count.div_ceil(256);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            for _ in 0..n {
+                pass.set_bind_group(0, &sim.grid_bind, &[]);
+                pass.set_pipeline(&sim.clear_counts);
+                pass.dispatch_workgroups(sim.cell_groups, 1, 1);
+                pass.set_pipeline(&sim.count_cells);
+                pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_bind_group(0, &sim.scan_bind, &[]);
+                pass.set_pipeline(&sim.scan_single);
+                pass.dispatch_workgroups(1, 1, 1);
+                pass.set_bind_group(0, &sim.grid_bind, &[]);
+                pass.set_pipeline(&sim.scatter);
+                pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_bind_group(0, &sim.solve_bind, &[]);
+                pass.set_pipeline(&sim.density_factor);
+                pass.set_immediates(0, &step);
+                pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_pipeline(&sim.div_kappa);
+                pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_pipeline(&sim.div_apply);
+                pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_pipeline(&sim.forces_eval);
+                pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_pipeline(&sim.forces_apply);
+                pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_pipeline(&sim.den_warm);
+                pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_pipeline(&sim.den_apply);
+                pass.dispatch_workgroups(particles, 1, 1);
+                for _ in 0..5 {
+                    pass.set_pipeline(&sim.den_kappa);
+                    pass.dispatch_workgroups(particles, 1, 1);
+                    pass.set_pipeline(&sim.den_apply);
+                    pass.dispatch_workgroups(particles, 1, 1);
+                }
+                pass.set_pipeline(&sim.integrate);
+                pass.dispatch_workgroups(particles, 1, 1);
+            }
+            pass.set_pipeline(&sim.reduce_stats);
+            pass.dispatch_workgroups(1, 1, 1);
+            pass.set_bind_group(0, &sim.tracer_bind, &[]);
+            pass.set_pipeline(&sim.clear_vel);
+            pass.set_immediates(0, &sim::pack_step(force, dt, 0.0, f));
+            pass.dispatch_workgroups(sim.vel_groups, 1, 1);
+            pass.set_pipeline(&sim.splat);
+            pass.dispatch_workgroups(particles, 1, 1);
+            pass.set_pipeline(&sim.advect);
+            pass.dispatch_workgroups(sim.tracer_count.div_ceil(256), 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &sim.field,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&sim.body);
+            pass.set_bind_group(0, &sim.sprite_bind, &[]);
+            pass.draw(0..4, 0..sim.count);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(clear_colour(force)),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&sim.fill);
+            pass.set_bind_group(0, &sim.fill_bind, &[]);
+            pass.draw(0..3, 0..1);
+            pass.set_pipeline(&sim.points);
+            pass.set_bind_group(0, &sim.tracer_draw_bind, &[]);
+            pass.draw(0..sim.tracer_count, 0..1);
+        }
+        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &stats, 0, 40);
+        let sampled = f % every == 0;
+        if sampled {
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &target,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded),
+                        rows_per_image: None,
+                    },
+                },
+                wgpu::Extent3d {
+                    width: WIDTH,
+                    height: HEIGHT,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        queue.submit(std::iter::once(encoder.finish()));
+        stats.map_async(wgpu::MapMode::Read, .., |_| {});
+        if sampled {
+            readback.map_async(wgpu::MapMode::Read, .., |_| {});
+        }
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        {
+            let bytes = stats.get_mapped_range(..).expect("mapped");
+            v_max = f32::from_le_bytes(bytes[24..28].try_into().expect("stat"));
+        }
+        stats.unmap();
+        if sampled {
+            let bytes = readback.get_mapped_range(..).expect("mapped");
+            for (row, src) in rows
+                .as_chunks_mut::<{ (WIDTH * 4) as usize }>()
+                .0
+                .iter_mut()
+                .zip(bytes.chunks_exact(padded as usize))
+            {
+                row.copy_from_slice(&src[..(WIDTH * 4) as usize]);
+            }
+            drop(bytes);
+            readback.unmap();
+            sink(&rows);
+        }
+        if f % 240 == 0 {
+            eprintln!("film: frame {f}/{frames}, {n} substeps");
+        }
+    }
+    Some([WIDTH, HEIGHT])
+}
+
 fn buffer_entry(
     binding: u32,
     visibility: wgpu::ShaderStages,
@@ -1800,22 +2040,7 @@ mod tests {
     }
 
     fn headless_sim() -> Option<(wgpu::Device, wgpu::Queue, Sim)> {
-        let instance = wgpu::Instance::default();
-        let Ok(adapter) = ready(instance.request_adapter(&Default::default())) else {
-            eprintln!("no GPU adapter; skipping");
-            return None;
-        };
-        let (device, queue) = ready(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: None,
-            required_features: wgpu::Features::IMMEDIATES,
-            required_limits: wgpu::Limits {
-                max_storage_buffers_per_shader_stage: 16,
-                max_immediate_size: 32,
-                ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
-            },
-            ..Default::default()
-        }))
-        .expect("device");
+        let (device, queue) = headless_device()?;
         let sim = Sim::new(
             &device,
             wgpu::TextureFormat::Bgra8Unorm,
