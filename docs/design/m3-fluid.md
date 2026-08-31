@@ -584,6 +584,32 @@ exceeds the budget, so the hardest transients will drop frames. The
 trade between the 16-substep ceiling and clean pacing is Jack's
 call, priced by his next on-device shake.
 
+### The sensor was pumping the pool (2026-08-31)
+
+The substep-floor build behaved opposite to film on device: flat
+mostly fixed, reclined unchanged — and the stats line showed why.
+The device fluid never settles: v_max parks at 0.13–0.24 m/s
+(film tripod: 0.03–0.05), the CFL holds n at 3–4, the clamp fires
+~17,000 times a second at rest, and the GPU sits over budget at 60 Hz
+under a serious thermal state. The film feeds a constant force; the
+phone feeds accelerometer noise. With NOISE=0.15 (m/s^2 RMS, the
+new film knob) the desk reproduces every device number: v_max 0.15–
+0.24, a clamp storm, reclined jumps back. Jack asked on day one
+whether smoothing the raw sensor data would help; the tripod control
+only proved solver churn existed without input — it never tested
+noise on top. He was right.
+
+Shipped: an adaptive low-pass on the body force in the core, shared
+by production and film. Blend factor = deviation / 2 m/s^2, clamped
+to 0.1..1: stationary noise meets an ~80 ms time constant, a real
+tilt or shake opens the filter within a frame. With noise on, film:
+reclined jumps 39 to 1 (v_max settles to 0.012, clamps 3494 to 135),
+upright raw boil 0.51 mm — the best measured, from 2.56 this
+morning — and the shake film is unchanged in violence, with the
+mid-tilt pour showing no visible lag. The settled v_max also lets
+the CFL fall back to the floor of two, which unwinds the clamp storm,
+the GPU load, and with it the 60 Hz thermal spiral.
+
 ### The resting jitter was a convergence failure at one substep (2026-08-31)
 
 Jack, on the near-pressure build: flat pose spasms cascade through

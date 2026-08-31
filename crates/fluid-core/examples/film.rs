@@ -7,12 +7,31 @@ use std::io::{BufWriter, Write};
 
 const G: f32 = fluid_core::STANDARD_GRAVITY;
 
+// xorshift, so the noise is reproducible run to run.
+fn noise(state: &mut u32) -> f32 {
+    *state ^= *state << 13;
+    *state ^= *state >> 17;
+    *state ^= *state << 5;
+    (*state as f32 / u32::MAX as f32 - 0.5) * 3.464
+}
+
 fn force_at(frame: u32) -> [f32; 3] {
     let t = frame as f32 / 120.0;
+    // NOISE: accelerometer noise in m/s^2 RMS per axis, the term the
+    // harness never modelled and the phone always has.
+    let sigma: f32 = std::env::var("NOISE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    let mut rng = frame.wrapping_mul(2654435761).wrapping_add(1);
+    let mut jitter = [0.0f32; 3];
+    for j in &mut jitter {
+        *j = sigma * noise(&mut rng);
+    }
     // SHAKE=1: two violent upright seconds, then a settle. The splash
     // oracle.
     if std::env::var("SHAKE").as_deref() == Ok("1") {
-        let mut f = [0.0, -G, -0.5];
+        let mut f = [jitter[0], -G + jitter[1], -0.5 + jitter[2]];
         if (1.0..3.0).contains(&t) {
             f[0] += 30.0 * (t * 2.0 * std::f32::consts::PI * 4.5).sin();
             f[1] += 12.0 * (t * 2.0 * std::f32::consts::PI * 9.1).sin();
@@ -22,10 +41,10 @@ fn force_at(frame: u32) -> [f32; 3] {
     // RECLINE: on its back, lifted ~17 degrees from flat — the pose
     // whose collective jumps Jack reported. FLAT: dead flat.
     if std::env::var("RECLINE").as_deref() == Ok("1") {
-        return [0.0, -0.3 * G, -0.954 * G];
+        return [jitter[0], -0.3 * G + jitter[1], -0.954 * G + jitter[2]];
     }
     if std::env::var("FLAT").as_deref() == Ok("1") {
-        return [0.0, 0.0, -G];
+        return [jitter[0], jitter[1], -G + jitter[2]];
     }
     let pose = |a: [f32; 3], b: [f32; 3], p: f32| -> [f32; 3] {
         let e = 0.5 - 0.5 * (p.clamp(0.0, 1.0) * std::f32::consts::PI).cos();
@@ -50,8 +69,9 @@ fn force_at(frame: u32) -> [f32; 3] {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1.0);
-    f[0] += tremor * 0.20 * (t * 2.0 * std::f32::consts::PI * 6.3).sin();
-    f[1] += tremor * 0.12 * (t * 2.0 * std::f32::consts::PI * 1.7).sin();
+    f[0] += tremor * 0.20 * (t * 2.0 * std::f32::consts::PI * 6.3).sin() + jitter[0];
+    f[1] += tremor * 0.12 * (t * 2.0 * std::f32::consts::PI * 1.7).sin() + jitter[1];
+    f[2] += jitter[2];
     f
 }
 

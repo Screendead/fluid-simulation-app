@@ -166,9 +166,11 @@ pub fn film(
     // rendered average and the metric drifts from what the eye sees.
     let keep_pin: Option<f32> = std::env::var("KEEP").ok().and_then(|v| v.parse().ok());
     let mut compr_max = 0.0f32;
+    let mut clamp_total = 0.0f32;
+    let mut filter = ForceFilter::new();
     let mut rows = vec![0u8; (WIDTH * 4 * HEIGHT) as usize];
     for f in 0..frames {
-        let force = force_at(f);
+        let force = filter.apply(force_at(f));
         // The production CFL, fed by the previous frame's v_max. NMIN
         // is a diagnostic floor: halving the rest timestep separates
         // timestep-stability noise from model noise.
@@ -340,6 +342,7 @@ pub fn film(
             let bytes = stats.get_mapped_range(..).expect("mapped");
             v_max = f32::from_le_bytes(bytes[24..28].try_into().expect("stat"));
             compr_max = compr_max.max(f32::from_le_bytes(bytes[4..8].try_into().expect("stat")));
+            clamp_total = f32::from_le_bytes(bytes[36..40].try_into().expect("stat"));
         }
         stats.unmap();
         if sampled {
@@ -360,7 +363,7 @@ pub fn film(
             eprintln!("film: frame {f}/{frames}, {n} substeps");
         }
     }
-    eprintln!("compr max {compr_max:.3} %");
+    eprintln!("compr max {compr_max:.3} % | clamps {clamp_total:.0} | v_max end {v_max:.3}");
     Some([WIDTH, HEIGHT])
 }
 
@@ -386,6 +389,42 @@ fn buffer_entry(
 /// 37 ms average of a surface moving at shake speed smears centimetres
 /// of fog, which looks worse than the flicker it prevents.
 const FIELD_KEEP: f32 = 0.8;
+
+/// Adaptive low-pass on the body force. Accelerometer noise
+/// (~0.15 m/s^2 RMS) pumps the pool hard enough that it never
+/// settles — v_max parks at the CFL clamp and the clamp fires tens of
+/// thousands of times a second at rest, which reads as jumping. The
+/// blend opens with the deviation, so a real tilt or shake passes at
+/// full rate while stationary noise meets an ~80 ms time constant.
+struct ForceFilter {
+    smooth: [f32; 3],
+    started: bool,
+}
+
+impl ForceFilter {
+    fn new() -> Self {
+        Self {
+            smooth: [0.0; 3],
+            started: false,
+        }
+    }
+
+    fn apply(&mut self, force: [f32; 3]) -> [f32; 3] {
+        if !self.started {
+            self.started = true;
+            self.smooth = force;
+        }
+        let dev = (0..3)
+            .map(|i| (force[i] - self.smooth[i]).powi(2))
+            .sum::<f32>()
+            .sqrt();
+        let alpha = (dev / 2.0).clamp(0.1, 1.0);
+        for i in 0..3 {
+            self.smooth[i] += (force[i] - self.smooth[i]) * alpha;
+        }
+        self.smooth
+    }
+}
 
 /// Rest keep down to zero across the hand-tremor..shake band of v_max.
 fn field_keep_target(v_max: f32) -> f32 {
@@ -1601,6 +1640,7 @@ pub struct Renderer {
     encode_us: Ring,
     gpu_us: Ring,
     gpu_timing: Option<GpuTiming>,
+    force_filter: ForceFilter,
     mode: Mode,
     frames: u64,
     last_frame_ms: f64,
@@ -1724,6 +1764,7 @@ impl Renderer {
             encode_us: Ring::new(),
             gpu_us: Ring::new(),
             gpu_timing,
+            force_filter: ForceFilter::new(),
             mode,
             frames: 0,
             last_frame_ms: 0.0,
@@ -1763,7 +1804,7 @@ impl Renderer {
         } else {
             (interval_us / 1_000_000.0).clamp(0.0, MAX_DT)
         };
-        let force = sample.body_force();
+        let force = self.force_filter.apply(sample.body_force());
         if let Mode::Sim(s) = &mut self.mode {
             // CFL: dt <= 0.4 d / v_max, from the one-frame-stale v_max
             // the stats readback drained. The GPU clamp enforces the dt
