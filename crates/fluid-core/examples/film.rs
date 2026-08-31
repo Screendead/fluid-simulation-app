@@ -18,7 +18,12 @@ fn noise(state: &mut u32) -> f32 {
 fn force_at(frame: u32) -> [f32; 3] {
     let t = frame as f32 / 120.0;
     // NOISE: accelerometer noise in m/s^2 RMS per axis, the term the
-    // harness never modelled and the phone always has.
+    // harness never modelled and the phone always has. Measured on the
+    // reference device 2026-08-31 (motion-log build, desk-still):
+    // raw sigma 0.02-0.08 per axis, worst on z. The old standard 0.15
+    // came from a handled-launch reading and overstates the still
+    // phone about twofold; desk-still films run NOISE=0.08 (M3
+    // record, "The noise, found").
     let sigma: f32 = std::env::var("NOISE")
         .ok()
         .and_then(|v| v.parse().ok())

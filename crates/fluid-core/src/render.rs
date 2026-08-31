@@ -470,7 +470,15 @@ impl ForceFilter {
             .map(|(s, f)| (f - s).powi(2))
             .sum::<f32>()
             .sqrt();
-        let alpha = (dev / 2.0).clamp(0.1, 1.0);
+        // The floor is the still-phase cutoff (~0.4 Hz at 120 Hz), and
+        // it is the rest-noise root fix (M3 record, "The noise,
+        // found"): desk-still sensor noise is 0.02-0.08 m/s^2 per
+        // axis, and at the old 0.1 floor (~1.9 Hz) enough reached the
+        // fluid's 3.3-3.7 Hz slosh band to pump the ungripped lattice
+        // past the 0.05 m/s dot cutoff. Real motion spikes dev and
+        // lifts alpha within a frame, so only true stillness is
+        // filtered this hard.
+        let alpha = (dev / 2.0).clamp(0.02, 1.0);
         for (s, f) in self.smooth.iter_mut().zip(force) {
             *s += (f - *s) * alpha;
         }

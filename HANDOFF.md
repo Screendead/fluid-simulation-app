@@ -79,13 +79,27 @@ that followed (the meniscus without the stickiness) doubled ring
 life and tripled tilt response, but on the device it unmasked the
 solver's rest-state noise as visible dancing (M3 record, "The
 dancing"): full face grip is the only found suppressor, and the
-grip is the jelly. Reverted the same night on Jack's call. The open
-task he set: root-fix the rest-state noise so the de-jelly geometry
-becomes livable. Measured leads, in order: the warm-start
-half-pressure factor (never re-measured on the dance meter), the
-refine schedule's dance response, and per-substep solve kicks. The
-pacing and cost picture is unchanged, and the optimisation pass
-remains the blocker in front of sustained 120 Hz.
+grip is the jelly. Reverted the same night on Jack's call, and the root fix he set as
+the open task landed the same night (M3 record, "The noise,
+found"): the dancing was input noise, not a solver defect. The
+still phone's real sensor noise is 0.02-0.08 m/s^2 (measured on
+the device; the harness's 0.15 was a handled-launch misread), and
+the force filter's still-phase floor now sits at 0.02 instead of
+0.1, which takes the de-jelly geometry from 100-235 dance flips to
+4 at the measured noise, with ring, tilt, shake and wake guards
+intact. Two things remain open from that night. First, Jack's
+call: grip versus side-walls, now with honest numbers (grip +
+filter dances 0; side-walls + filter dance 4 and keep the doubled
+ring life and free tilt creep). Second, a defect found on the way:
+a sigma-independent rest v_max floor (0.056-0.107, present at
+NOISE=0) has starved the idle gate since tension landed — the
+WAKE film's sleep oracle fails at HEAD in every configuration and
+the desk phone never sleeps. Invisible in the picture (the movers
+are a few particles, plausibly circulating at the contact line);
+"idle costs nothing" is violated. Next hunt; the record names the
+tools. The pacing and cost picture is unchanged, and the
+optimisation pass remains the blocker in front of sustained
+120 Hz.
 
 Test baseline: 27 Rust tests pass, 2026-08-31.
 

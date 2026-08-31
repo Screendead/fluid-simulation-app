@@ -1217,3 +1217,92 @@ is load-bearing at rest, not head-room. The remaining lead is the
 solve's per-substep kick statistics, which needs instrumentation,
 not films. The side-wall geometry stays in this record as the
 proven de-jelly, waiting for the noise fix that makes it livable.
+
+## The noise, found (2026-08-31, night)
+
+The hunt above ends here. Nothing in the solver injects the visible
+rest-state dancing. The injector is the sensor-noise input, and the
+fix is the force filter's still-phase floor. A second, separate
+defect surfaced on the way and stays open: a noise-independent
+v_max floor that has starved the idle gate since tension landed.
+
+Films first, all on the dance meter, upright, dry faces (the
+de-jelly geometry) unless said:
+
+- NOISE=0, tremor off: 0 flips, three runs. Grip at NOISE=0: 0.
+  The visible dancing needs input noise; the solver alone injects
+  none of it.
+- Warm start 0.0 re-shot dry: 134 and 56. Refine 10 re-shot dry:
+  146. Dry baseline the same night: 100 and 235. Round M had
+  measured both dials only under full grip, where the cage clamps
+  the observable to 13; re-shot where the noise shows, they are
+  still not injectors. Both leads are closed in every configuration.
+- The transfer curve: sigma 0.02 -> 0; 0.05 -> 4; 0.10 -> 29;
+  0.15 -> 100-235. Threshold-shaped, as a crossing counter must be.
+  Tremor-only (the two real-motion sines, no white floor): 9.
+
+Then the real input, measured on the reference device (2026-08-31):
+a motion-log build printed raw gravity, userAcceleration and the
+CoreMotion sample counter every tick. Desk-still, raw
+userAcceleration sigma is 0.02-0.08 m/s^2 per axis, worst on z. The
+harness's standard NOISE=0.15 overstates the still phone about
+twofold. The same capture caught the phone being picked up for its
+first thirty seconds (gravity sigma 3 m/s^2), which is how a
+handled launch reads as "rest" noise. CoreMotion holds one sample
+in six against the 120 Hz link; the beat sits at 20 Hz and is not
+the pump.
+
+One wrong turn, kept: the 3-4 Hz in-band power alone (film-
+equivalent white sigma 0.023-0.036) predicted the dry build calm on
+a desk. The device refuted it — five minutes untouched, the dry
+build holds v_max 0.07-0.12 and the idle gate never sleeps. The
+pump is broadband; total sigma is the honest film equivalent, and
+at 0.05-0.08 the film rows dance 4-29, which is what the desk
+phone does.
+
+The fix: the force filter's still-phase floor, alpha 0.1 -> 0.02
+(cutoff ~1.9 Hz -> ~0.4 Hz at 120 Hz). Electronic noise is not
+motion of the box; the 1.9 Hz floor passed half the slosh band.
+Real motion spikes the raw-to-smooth deviation and lifts alpha
+within a frame, so the heavy filter binds only true stillness.
+Guards, filter at 0.02, dry faces, NOISE at the measured 0.08:
+dance 4 (was ~15-30 interpolated); tremor-only 2 (was 9); ring
+tau_e 0.50 s (the de-jelly keeps its doubled ring life); tilt hold
+drift 10.4 mm, swing travel 62 mm (creep intact); shake violence
+untouched (dev ~1 during a shake, the filter is transparent). At
+the legacy sigma 0.15 the floor does not help (249) — dev itself
+rises with sigma and lifts alpha past the floor — but 0.15
+describes no real condition. The shipped configuration, full grip
+plus the 0.02 floor at the measured 0.08: dance 0. Gate green, 27
+tests.
+
+The separate defect: every film ends with v_max 0.056-0.107 at
+rest, sigma-independent — 0.077 at NOISE=0 — and the WAKE film's
+sleep oracle fails at HEAD in every configuration, old filter or
+new, grip or dry, even at zero noise. The idle gate has been
+starved since surface tension landed (V_SLEEP is 0.04; the floor
+sits above it), and the device confirmed it live: five minutes
+desk-still, idle 0. The picture shows nothing — the movers are a
+few particles, most plausibly circulating at the tension contact
+line, and the drawn tracers ride the resolved field, which stays
+under the 0.05 draw cutoff. "Idle costs nothing" is violated on a
+desk-resting phone. Raising V_SLEEP cannot fix it honestly (the
+floor reaches 0.107; the flat-bead freeze regression bounds the
+dial at ~0.05). The fix is to find and kill the circulation, or to
+key the gate on what the picture shows rather than the particle
+max. Next hunt, and the per-pass readback probe (velocity dumped
+between every solve stage) is the tool for it; the meter must
+argmax the fast particles and watch their positions.
+
+A meter note for the next reader: the dance meter's 10 px erosion
+exists because the meniscus rim renders bright and its antialiased
+edge flickers across the 90-gray threshold every frame — a raw
+lit-pixel count reads thousands of rim flips on a dead-still pool.
+The erosion is load-bearing; do not measure without it.
+
+What stands: the dance map of the revert record is real
+measurement, taken at about twice real still-phone noise under the
+old filter floor. With the floor at 0.02 and the measured NOISE
+0.08, the de-jelly geometry scores 4 on the meter that scored it
+100-235. The grip-versus-side-wall trade returns to Jack with these
+numbers; the shipped build keeps full grip until he rules.
