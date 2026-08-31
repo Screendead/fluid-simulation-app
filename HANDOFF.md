@@ -92,14 +92,28 @@ call: grip versus side-walls, now with honest numbers (grip +
 filter dances 0; side-walls + filter dance 4 and keep the doubled
 ring life and free tilt creep). Second, a defect found on the way:
 a sigma-independent rest v_max floor (0.056-0.107, present at
-NOISE=0) has starved the idle gate since tension landed — the
-WAKE film's sleep oracle fails at HEAD in every configuration and
-the desk phone never sleeps. Invisible in the picture (the movers
-are a few particles, plausibly circulating at the contact line);
-"idle costs nothing" is violated. Next hunt; the record names the
-tools. The pacing and cost picture is unchanged, and the
-optimisation pass remains the blocker in front of sustained
-120 Hz.
+NOISE=0) had starved the idle gate at 1x since tension landed —
+the WAKE film's sleep oracle failed in every 1x configuration and
+the 1x desk phone never slept. Invisible in the picture (the
+movers are a few particles, plausibly circulating at the contact
+line). The scale change below ended the starvation without
+explaining the floor. The pacing and cost picture is unchanged,
+and the optimisation pass remains the blocker in front of
+sustained 120 Hz.
+
+2026-08-31, the scale: Jack asked whether the feel was locked
+behind a non-1:1 scale, and the measured ladder (1x/2x/4x/8x; M3
+record, "The scale, chosen") said yes. The world now models a tank
+4x the device — WORLD_SCALE in lib.rs; the sensors still feed
+real m/s^2. Jack's verdict on the device build, verbatim: "4x
+feels right - lock it in." At 4x: slosh 1.47 Hz, ring-down 6.5 s
+(13x the 1x life), tilt unpinned, rest dead calm, 120 Hz
+locked at gpu p50 6.27 ms — and the idle gate sleeps on the desk
+(settled v 0.02, under V_SLEEP), because the 1x rest-velocity
+floor does not scale with the world. The 1x floor stays recorded
+and unexplained; its hunt is academic while 4x ships. Still open:
+the grip-versus-side-wall call, worth re-measuring at 4x before
+Jack rules.
 
 Test baseline: 27 Rust tests pass, 2026-08-31.
 

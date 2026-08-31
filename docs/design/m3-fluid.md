@@ -1306,3 +1306,95 @@ old filter floor. With the floor at 0.02 and the measured NOISE
 0.08, the de-jelly geometry scores 4 on the meter that scored it
 100-235. The grip-versus-side-wall trade returns to Jack with these
 numbers; the shipped build keeps full grip until he rules.
+
+## The scale, chosen (2026-08-31, evening)
+
+Jack's question, verbatim: "I wonder if the feel I'm really looking
+for is locked behind a non-1:1 scale -- instead modeling the water as
+if it's 2x, 4x, 8x the size of the physical iPhone itself. Can we
+explore that?" His verdict on the 4x device build, verbatim: "4x
+feels right - lock it in."
+
+This section amends the reading of section 2. The water is still 1:1
+real water: real SI constants, real gravity from the sensors, real
+m/s^2. What changed is the tank. The modeled box is now WORLD_SCALE
+(4x) the device interior in every dimension. The screen is a window
+into a larger body of water. On-screen resolution is unchanged: the
+spacing scales with the tank, so the particle count and every relative
+bound in section 2 carry over. In modeled units the continuum bound
+coarsens to sub-10 mm (4 x 2.5 mm); on screen it is the same picture.
+
+### Method
+
+Scale METRES_PER_PIXEL, SLAB_DEPTH and the spacing together by S.
+Same particle count, geometric similarity. The sensors are untouched:
+absolute forcing on a larger tank. Tension, adhesion and near-pressure
+derive from the support radius at run time, so the physics scales with
+no retuning. The film harness gained PREROLL (settle time added before
+the pose schedules) because a larger world falls and settles slower.
+
+### The ladder (films, desk harness, NOISE=0.08, PREROLL 0/1/2/4 s)
+
+Lengths in modeled-world mm; on-screen mm = modeled / S.
+
+| S | slosh Hz | ring s | tau_e s | kick mm | tilt hold mm | swing mm | dance | compr max % | clamps up/ring/tilt/shake |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 4.04 | 0.50 | 0.25 | 4.4 | 2.4 | 50.3 | 0 | 0.061 | 249/275/80/20551 |
+| 2 | 2.42 | 2.00 | 1.25 | 11.7 | 7.1 | 72.5 | 0 | 0.046 | 204/229/3/3156 |
+| 4 | 1.47 | 6.50 | 2.50 | 25.7 | 11.8 | 115.6 | 0 | 0.034 | 0/0/0/1856 |
+| 8 | 1.20 | 13.50 | 3.00 | 43.7 | 24.1 | 230.2 | 1 mean | 0.018 | 0/0/0/860 |
+
+What the ladder says:
+
+- Slosh frequency falls with scale. The 1x-to-2x drop is steeper than
+  gravity-wave scaling because the capillary stiffening dies: the Bond
+  number grows as S^2, and the jelly dissolves out of the dispersion
+  relation.
+- Ring-down life was the make-or-break number. XSPH damping is an
+  absolute rate (48/s); had it been the ceiling, ring would have
+  pinned near one second at every scale. It grows 0.5 -> 2.0 -> 6.5
+  -> 13.5 s. XSPH is acquitted. At 4x, ring lands at 6.5 s, 13x the
+  1x life. The 3-6 s real-water estimate elsewhere in this record
+  was derived for the 1x cell; viscous damping time grows with the
+  cell, so real water in a 4x cell rings longer still and the sim
+  keeps under-ringing reality. The oracle that matters is the hand,
+  and it ruled below.
+- Tilt unpins by 2x: hold drift is 5.0% of tank width at 2x and
+  settles to ~4.2% at 4x and 8x, against 3.4% pinned at 1x.
+  On-screen swing travel shrinks
+  (50 -> 29 mm): the same phone motion moves relatively less water,
+  slower. That is the heavier feel.
+- The solver gets healthier with scale: compression and clamps fall
+  monotonically.
+- 8x caveats: the water is still settling when the films end (tilt
+  v_max end 0.522) and rest shows a whisper of dance (mean 1
+  flip/frame) — both plausibly preroll starvation against its ~3 s
+  decay time. Re-shoot longer before judging 8x rest.
+
+### The device (iPhone 13 Pro Max, 2026-08-31, 4x build)
+
+Settled line: 120 Hz locked (interval p50 = p99 = max = 8334 us), gpu
+p50 6.27 ms, cpu p50 1.08 ms, 4 substeps, 0 clamps, compr max 0.188%
+(launch splash; avg 0.001%), mem 64.9 MB, battery 100%, thermal
+nominal. Cost did not grow with the world: same particle count,
+gentler relative dynamics.
+
+And the idle gate sleeps. Settled v reads 0.02 — under V_SLEEP
+(0.04) — and the idle counter climbs on the desk. The
+sigma-independent 1x rest floor (0.056-0.107, "The noise, found")
+does not scale with the world, which fits the contact-line
+circulation hypothesis: the movers are tension-driven, and tension
+weakens as S^2. At the shipped scale, "idle costs nothing" holds
+again. The 1x floor remains unexplained and recorded; the hunt is
+academic while 4x ships.
+
+### What follows
+
+- WORLD_SCALE (lib.rs) carries the factor; SLAB_DEPTH, METRES_PER_PIXEL
+  and the spacing derive from it. 2x and 8x are one edit away.
+- The grip-versus-side-wall call (still Jack's) should be re-measured
+  at 4x before he rules: tension matters less here, and the trade may
+  have changed shape.
+- Rejected: Froude scaling (g x S) — it reaches the same slow-slosh
+  feel by faking gravity, and the sensors stop meaning m/s^2. The
+  window-into-a-larger-tank model keeps the sensors honest.

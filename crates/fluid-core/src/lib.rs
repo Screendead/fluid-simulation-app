@@ -4,6 +4,14 @@
 /// Standard gravity in metres per second squared.
 pub const STANDARD_GRAVITY: f32 = 9.806_65;
 
+/// The modeled tank is this many times the physical device in every
+/// dimension; the sensors still feed real m/s^2, so the screen is a
+/// window into a larger body of water. Jack's pick, 2026-08-31, from the
+/// measured scale ladder (M3 record, "The scale, chosen"). Every length
+/// that describes the modeled world carries this factor; a length that
+/// describes the device or its sensors must not.
+pub const WORLD_SCALE: f32 = 4.0;
+
 /// One reading of the motion sensors in the device frame: x to the right of
 /// the screen, y to its top, z out of it. Both vectors are in g, the CoreMotion
 /// convention: a phone lying face up reads a gravity of (0, 0, -1).

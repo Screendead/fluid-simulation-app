@@ -13,9 +13,10 @@ use std::task::{Context, Poll, Waker};
 
 const RING: usize = 240;
 
-/// The reference device's 458 ppi (CLAUDE.md section 5); a second device
-/// would bring its own density in through the shell.
-const METRES_PER_PIXEL: f32 = 0.0254 / 458.0;
+/// The reference device's 458 ppi (CLAUDE.md section 5) times the world
+/// scale; a second device would bring its own density in through the
+/// shell.
+const METRES_PER_PIXEL: f32 = crate::WORLD_SCALE * 0.0254 / 458.0;
 
 /// One integration step never exceeds two 60 Hz frames, so a resume after
 /// a pause cannot fling the particles.
@@ -498,8 +499,9 @@ struct IdleGate {
 }
 
 impl IdleGate {
-    /// Device rest v_max wanders 0.03..0.12 m/s under sensor noise
-    /// (2026-08-31); the threshold sits just above that band.
+    /// Device rest v_max: 0.02 settled at the shipped 4x scale, 0.03..0.12
+    /// wandering at 1x under sensor noise (both 2026-08-31); the threshold
+    /// sits between the 4x rest and real motion.
     // Just under the draw's 0.05 m/s dot-blanking cutoff: the gate may
     // only freeze a picture that already shows nothing moving. At the
     // old 0.12 the flat-pose bead — which translates under tension —
@@ -792,8 +794,9 @@ enum Mode {
     Sim(Box<Sim>),
 }
 
-/// The M3 record's starting spacing, used when FLUID_SPACING is unset.
-const SIM_SPACING: f32 = 0.0025;
+/// The M3 record's 2.5 mm spacing times the world scale — the same
+/// on-screen resolution at every scale. Used when FLUID_SPACING is unset.
+const SIM_SPACING: f32 = crate::WORLD_SCALE * 0.0025;
 
 struct Sim {
     clear_counts: wgpu::ComputePipeline,
@@ -1458,9 +1461,9 @@ impl Bench {
         let spacing = if options.bench_spacing > 0.0 {
             options.bench_spacing
         } else {
-            0.002
+            0.8 * SIM_SPACING
         }
-        .clamp(0.001, 0.01);
+        .clamp(0.4 * SIM_SPACING, 4.0 * SIM_SPACING);
         let h = 1.2 * spacing;
         let grid = sim::Grid::new(extent, 2.0 * h);
         let cells = grid.cell_count();
@@ -1843,7 +1846,9 @@ impl Renderer {
         } else if options.sim_substeps > 0 {
             // FLUID_SPACING serves both modes; zero means the default.
             let spacing = if options.bench_spacing > 0.0 {
-                options.bench_spacing.clamp(0.001, 0.01)
+                options
+                    .bench_spacing
+                    .clamp(0.4 * SIM_SPACING, 4.0 * SIM_SPACING)
             } else {
                 SIM_SPACING
             };
@@ -2382,7 +2387,7 @@ mod tests {
 
     /// The box every headless test builds, and the box read_tracers must
     /// unpack the quantised positions against.
-    const TEST_EXTENT: [f32; 2] = [0.0357, 0.0774];
+    const TEST_EXTENT: [f32; 2] = [crate::WORLD_SCALE * 0.0357, crate::WORLD_SCALE * 0.0774];
 
     fn headless_sim() -> Option<(wgpu::Device, wgpu::Queue, Sim)> {
         let (device, queue) = headless_device()?;
@@ -2688,7 +2693,10 @@ mod tests {
         }
         queue.submit(std::iter::once(encoder.finish()));
         let tracers = read_tracers(&device, &queue, &sim);
-        let strays = tracers.iter().filter(|t| t[0] > 0.015).count();
+        let strays = tracers
+            .iter()
+            .filter(|t| t[0] > crate::WORLD_SCALE * 0.015)
+            .count();
         let max_x = tracers.iter().fold(f32::MIN, |m, t| m.max(t[0]));
         eprintln!("strays {strays}, max x {max_x:.4}");
         assert_eq!(strays, 0, "max x {max_x}");

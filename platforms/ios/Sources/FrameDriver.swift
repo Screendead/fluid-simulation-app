@@ -30,7 +30,9 @@ final class FrameDriver {
         }
         let env = ProcessInfo.processInfo.environment
         let count = env["FLUID_PARTICLES"].flatMap(UInt32.init) ?? 50_000
-        let radius = env["FLUID_RADIUS"].flatMap(Float.init) ?? 0.0006
+        // 0.0006 times the core's WORLD_SCALE (4): demo sprites keep
+        // their relative size in the scaled tank.
+        let radius = env["FLUID_RADIUS"].flatMap(Float.init) ?? 0.0024
         let bench = env["FLUID_BENCH"].flatMap(UInt32.init) ?? 0
         let spacing = env["FLUID_SPACING"].flatMap(Float.init) ?? 0
         let sim = env["FLUID_SIM"].flatMap(UInt32.init) ?? 16

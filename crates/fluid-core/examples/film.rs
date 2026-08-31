@@ -16,7 +16,14 @@ fn noise(state: &mut u32) -> f32 {
 }
 
 fn force_at(frame: u32) -> [f32; 3] {
-    let t = frame as f32 / 120.0;
+    // PREROLL: shift every pose schedule later by this many seconds,
+    // so a scaled world's longer fall-and-settle finishes first. Every
+    // pose clamps negative time to its initial state.
+    let preroll: f32 = std::env::var("PREROLL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    let t = frame as f32 / 120.0 - preroll;
     // NOISE: accelerometer noise in m/s^2 RMS per axis, the term the
     // harness never modelled and the phone always has. Measured on the
     // reference device 2026-08-31 (motion-log build, desk-still):
@@ -67,8 +74,8 @@ fn force_at(frame: u32) -> [f32; 3] {
     }
     // RING: upright, three settled seconds, a quarter-second sideways
     // nudge, then still. The slosh ring-down oracle: water oscillates
-    // near the box's 3.5 Hz gravity-wave mode for seconds; jelly dies
-    // in one swing.
+    // near the box's gravity-wave mode (1.47 Hz at the shipped 4x
+    // scale, 3.5-4 Hz at 1x) for seconds; jelly dies in one swing.
     if std::env::var("RING").as_deref() == Ok("1") {
         let mut f = [jitter[0], -G + jitter[1], -0.5 + jitter[2]];
         if (3.0..3.25).contains(&t) {
@@ -125,15 +132,21 @@ fn main() {
     let spacing: f32 = std::env::var("SPACING")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(0.0025);
+        .unwrap_or(fluid_core::WORLD_SCALE * 0.0025);
     let cap: u32 = std::env::var("CAP")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(16);
+    // The default length grows by the preroll so a shifted schedule
+    // still fits; an explicit FRAMES is absolute.
+    let preroll: f32 = std::env::var("PREROLL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
     let frames: u32 = std::env::var("FRAMES")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(19 * 120);
+        .unwrap_or(((19.0 + preroll) * 120.0) as u32);
     let dims = fluid_core::film(frames, 4, spacing, cap, force_at, |rows| {
         raw.write_all(rows).expect("write");
     })

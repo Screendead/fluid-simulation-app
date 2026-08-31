@@ -6,8 +6,8 @@
 pub(crate) const REST_DENSITY: f32 = 998.2;
 
 /// Interior depth of the reference device, metres (iPhone 13 Pro Max,
-/// 7.65 mm). A second device would bring its own.
-pub(crate) const SLAB_DEPTH: f32 = 0.007_65;
+/// 7.65 mm), times the world scale. A second device would bring its own.
+pub(crate) const SLAB_DEPTH: f32 = crate::WORLD_SCALE * 0.007_65;
 
 /// The grid: cells of one support radius over the slab, so a particle's
 /// neighbours live in its 27 surrounding cells.
