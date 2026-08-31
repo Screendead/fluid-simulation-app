@@ -269,15 +269,11 @@ fn wall_adhesion(t: f32) -> f32 {
 
 // Acceleration toward each wall inside the support, per unit of
 // ADHESION * rho0.
-// All six walls at full strength. Dropping or weakening the two
-// face terms was tried and reverted the same evening (2026-08-31,
-// M3 record "The dancing"): the face grip turned out to be the only
-// found suppressor of the solver's rest-state restlessness — dry
-// faces dance at 225 dot-flips/frame against 13 gripped, and no
-// soft substitute (XSPH to 192/s, fractional grip, z-damping)
-// reached a third of the way back. The grip is also the flat-pose
-// jelly, so this line is a measured trade, standing until the
-// restlessness has a root fix.
+// All six walls at full strength: real water wets every face of a
+// held box. At the shipped 4x scale the side-wall-only variant
+// measures equal on every meter (2026-08-31, M3 record "The
+// geometry, settled") — the 1x trade this sum once carried is
+// dissolved, and Jack ruled full grip.
 fn wall_adh_sum(pos: vec3f) -> vec3f {
     let lo = wall_lo();
     let hi = -lo;

@@ -87,7 +87,7 @@ the device; the harness's 0.15 was a handled-launch misread), and
 the force filter's still-phase floor now sits at 0.02 instead of
 0.1, which takes the de-jelly geometry from 100-235 dance flips to
 4 at the measured noise, with ring, tilt, shake and tremor guards
-intact. Two things remain open from that night. First, Jack's
+intact. Two things remained open from that night. First, Jack's
 call: grip versus side-walls, now with honest numbers (grip +
 filter dances 0; side-walls + filter dance 4 and keep the doubled
 ring life and free tilt creep). Second, a defect found on the way:
@@ -111,9 +111,15 @@ feels right - lock it in." At 4x: slosh 1.47 Hz, ring-down 6.5 s
 locked at gpu p50 6.27 ms — and the idle gate sleeps on the desk
 (settled v 0.02, under V_SLEEP), because the 1x rest-velocity
 floor does not scale with the world. The 1x floor stays recorded
-and unexplained; its hunt is academic while 4x ships. Still open:
-the grip-versus-side-wall call, worth re-measuring at 4x before
-Jack rules.
+and unexplained; its hunt is academic while 4x ships.
+
+2026-08-31, the geometry: the grip-versus-side-wall call is settled.
+Re-measured at 4x with identical film suites (M3 record, "The
+geometry, settled"), the 1x trade has dissolved: ring, kick, tilt
+and dance are equal within scatter, and both configurations pass
+the WAKE sleep oracle — the first pass since tension landed. Jack
+ruled: keep full grip. Real water wets all six faces, and the cost
+is now zero on every meter.
 
 Test baseline: 27 Rust tests pass, 2026-08-31.
 

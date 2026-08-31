@@ -1398,3 +1398,40 @@ academic while 4x ships.
 - Rejected: Froude scaling (g x S) — it reaches the same slow-slosh
   feel by faking gravity, and the sensors stop meaning m/s^2. The
   window-into-a-larger-tank model keeps the sensors honest.
+
+## The geometry, settled (2026-08-31, night)
+
+The open call from "The noise, found": full grip or side-walls only.
+Re-measured at the shipped 4x scale before Jack ruled. Method: two
+identical 7-film suites (up x3, ring, tilt, shake, wake), the scale
+ladder's 4x settings verbatim. Grip is HEAD (7416b49). Side-walls is
+HEAD minus the two face-adhesion lines in `wall_adh_sum` — the
+4afd8ff restoration reversed, in a scratch worktree only.
+
+| Meter | grip | side-walls |
+|---|---|---|
+| dance, three runs | 0 / 0 / 0 | 0 / 0 / 0 |
+| ring life | 6.50 s (1.62 Hz) | 6.50 s (1.54 Hz) |
+| kick amplitude | 25.91 mm | 25.88 mm |
+| tilt hold drift | 10.54 mm | 9.84 mm |
+| tilt swing travel | 114.4 mm | 121.2 mm |
+| wake film: slept frames | 104 | 206 |
+| wake film: v_max at end | 0.022 | 0.012 |
+| shake compr max | 0.051 % | 0.037 % |
+
+The 1x trade has dissolved. Side-walls' 1x advantages — double ring
+life, triple tilt response — were tension effects, and Bond ∝ S^2
+removed them: at 4x, ring, kick, tilt and dance are equal within
+scatter. Both configurations sleep in the WAKE film; this is the
+first pass of the sleep oracle since tension landed. One difference
+remains: side-walls sleeps about twice the frames and ends at half
+the rest velocity. That is small, and it fits face contact-line
+circulation as the residual mover.
+
+Jack's ruling, 2026-08-31, verbatim: "Sure, let's lock in the grip."
+Full grip stands: real water wets all six faces of a held box (the
+accuracy directive), the cost is zero on every meter at the shipped
+scale, and the grip build is the one his hand approved. The
+provisional framing in the `wall_adh_sum` comment ("standing until
+the restlessness has a root fix") is stale on both counts and is
+replaced.
