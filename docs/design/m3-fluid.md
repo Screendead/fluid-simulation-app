@@ -775,3 +775,62 @@ view — concurrent adds are the only reason the buffer is atomic. Panel
 prediction: 650..2,950 us per frame at every n, since advect runs once
 per frame. Algebraically identical maths; 24/24 tests pass. Device
 measurement pending.
+
+### Round one, implemented
+
+Four changes landed 2026-08-31, all pushed, each gate-green. None has a
+device number yet; the runbook below prices them all in one session.
+
+| Change | Commit | Panel prediction (A15, cool) |
+|---|---|---|
+| advect reads the velocity grid without atomics | "Read the tracer velocity grid without atomics in advect" | 650..2,950 us/frame, every n |
+| den_warm folded into forces_apply | "Fold the density warm start into the forces dispatch" | ~76 us x n |
+| div_kappa folded into the density sweep | "Fuse the divergence predictor into the density sweep" | ~30 us x n (one sweep replaces two: ~12.6 us arithmetic + a dispatch boundary) |
+| acquire timed apart from encode; one in-flight frame | "Time the drawable acquire apart from the encode", "Hold one in-flight frame instead of two" | 0 us; 13.6 MiB and one display period of latency |
+
+The two fusions claim bit-equality with the dispatches they replace. The
+nondeterminism finding above says film hashes cannot prove that; the
+proof is the preserved operation order in the shader (mass outside the
+dot, length(x) recomputed as r) plus the 24-test suite, which caught a
+broken intermediate state of exactly this change (the warm start dropped
+from the schedule: three tests exploded).
+
+Rejected by the panel with shown arithmetic, so nobody re-litigates them
+without new evidence: a single-workgroup megakernel (loses 900..3,000 us:
+five of seven A15 cores idle), f16 solver storage (the solver is latency-
+and dispatch-bound, not bandwidth-bound, at 1,620 particles), shrinking
+the quarter-res field texture (measured optimum), present-mode changes
+(setDisplaySyncEnabled is never called on iOS), merging the field pass
+into the swapchain pass (needs framebuffer fetch wgpu cannot express).
+
+### Device runbook for the next cool-phone session
+
+Deploy the head of m3-fluid. Then, in order:
+
+1. Idle gate. Phone flat on the desk, hands off, ~6 s. Expect: `idle`
+   climbing ~120 per stats line, `frames` frozen, stats lines arriving
+   every ~4 s (30 Hz nap tick). Leave it 5 minutes; record the thermal
+   ladder (serious -> fair -> nominal) with times. This is the thermal-
+   recovery measurement the fines demand.
+2. Wake. Pick the phone up. The response must feel instant; any visible
+   freeze-then-jump is a fail (wake budget: two 30 Hz frames).
+3. Rest-awake GPU. Hold the phone upright in hand (tremor keeps the sim
+   awake), let the pool settle, read `gpu µs p50` at `n 2`. Cool
+   baseline before round one: 6,342 us (2026-08-31). The atomics fix
+   predicts 3,400..5,700 us.
+4. The split timer. At rest expect `acq` ~1,500..1,700 us (display-rate
+   back-pressure, healthy) and `cpu` collapsing to ~50..200 us. The O2
+   2 ms line now reads against `cpu` alone.
+5. Pacing with one in-flight frame. Gentle tilts: `interval p99` must
+   hold 8,334 us wherever yesterday's build held it. If it parks at
+   16,668 us, revert "Hold one in-flight frame instead of two" alone.
+6. Memory. Expect ~13.6 MB below the 86.0 MB baseline.
+7. Violent shake, ~10 s. Record `gpu p50/p99`, `n`, `interval p99`.
+   Yesterday's hot reference: gpu ~35,000 us at n 16, ~29 Hz. Cool and
+   fused, the panel's model says the n=16 solver is ~2,300 us lighter;
+   judge the feel, not just the number.
+8. Book every delta in the ledger, dated, cool-to-cool only.
+
+A two-minute A/B for the same session, not yet landed: workgroup_size
+256 -> 64 on the nine particle kernels (the launch-imbalance cure; 7
+workgroups cannot fill 5 cores). Land it only with a measured win.
