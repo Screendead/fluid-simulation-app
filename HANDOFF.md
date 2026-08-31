@@ -40,6 +40,20 @@ stays the default; 2.0 mm waits on the optimisation pass. Debug on
 the desk first: scripts/film.sh films the sim to an mp4 without the
 phone.
 
+2026-08-31, the jitter campaign closed and the efficiency push opened.
+Shipped, in order: near-pressure (pair-instability cure), the substep
+floor with the low-n refine boost (convergence cure), the sensor force
+filter (noise-pumping cure), and the idle gate — a still phone encodes
+no GPU work; the shell naps the display link at 30 Hz. Each has film
+oracles in the M3 record. Awaiting on-device judgment from Jack
+(phone on a thermal cooling break; two thermal fines stand in the
+ledger). The active-frame cost pass is next: a six-direction research
+panel has run (dispatch fusion, grid reuse, iteration economics,
+layout/precision, tracers, encode/render-pass structure); its
+proposals and the chosen implementations belong to this record when
+they land. Metrology films must set IDLE=0 or the gate freezes the
+measured window.
+
 Test baseline: 21 Rust tests pass, 2026-08-31.
 
 ## M1 measurements (reference device, 2026-08-30, Release)
