@@ -23,21 +23,6 @@ impl From<[f32; 3]> for FluidVec3 {
     }
 }
 
-/// Body force per unit mass, in metres per second squared, from CoreMotion's
-/// `gravity` and `userAcceleration` (both in g).
-#[unsafe(no_mangle)]
-pub extern "C" fn fluid_body_force(gravity: FluidVec3, user_acceleration: FluidVec3) -> FluidVec3 {
-    MotionSample {
-        gravity: gravity.into(),
-        user_acceleration: user_acceleration.into(),
-        // The body force does not read the gyro; this helper feeds the
-        // readout only.
-        rotation_rate: [0.0; 3],
-    }
-    .body_force()
-    .into()
-}
-
 use std::ffi::c_void;
 
 /// The renderer behind the C ABI: an opaque box the Swift shell drives by

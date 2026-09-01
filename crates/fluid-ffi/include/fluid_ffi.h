@@ -50,12 +50,6 @@ extern "C" {
 #endif // __cplusplus
 
 /**
- * Body force per unit mass, in metres per second squared, from CoreMotion's
- * `gravity` and `userAcceleration` (both in g).
- */
-struct FluidVec3 fluid_body_force(struct FluidVec3 gravity, struct FluidVec3 user_acceleration);
-
-/**
  * Builds the renderer on a layer: `particle_count` sprites of
  * `sprite_radius` metres, or, when `bench_sweeps` is nonzero, the M3
  * stage-0 microbench at `bench_spacing` metres. A nonzero `sim_substeps`

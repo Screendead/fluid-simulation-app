@@ -1,14 +1,10 @@
 import CoreMotion
-import Observation
 
 @MainActor
-@Observable
 final class MotionSource {
     private(set) var gravity = CMAcceleration()
     private(set) var userAcceleration = CMAcceleration()
     private(set) var rotationRate = CMRotationRate()
-    private(set) var bodyForce = FluidVec3(x: 0, y: 0, z: 0)
-    private(set) var sampleCount = 0
     private let manager = CMMotionManager()
 
     init() {
@@ -23,8 +19,6 @@ final class MotionSource {
         gravity = motion.gravity
         userAcceleration = motion.userAcceleration
         rotationRate = motion.rotationRate
-        bodyForce = fluid_body_force(FluidVec3(gravity), FluidVec3(userAcceleration))
-        sampleCount += 1
     }
 }
 

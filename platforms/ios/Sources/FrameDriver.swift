@@ -1,15 +1,12 @@
 import QuartzCore
 import UIKit
-import Observation
 
 /// Owns the render loop: a CADisplayLink at 120 Hz feeds the newest motion
 /// sample to the core each frame, and prints one stats line per second for
 /// `devicectl` console capture.
 @MainActor
-@Observable
 final class FrameDriver {
-    let motion = MotionSource()
-    private(set) var statsLine = ""
+    private let motion = MotionSource()
     var paused = false { didSet { link?.isPaused = paused } }
 
     private var renderer: OpaquePointer?
@@ -41,7 +38,7 @@ final class FrameDriver {
             Unmanaged.passUnretained(layer).toOpaque(), width, height, count, radius,
             bench, spacing, sim, tracers)
         guard renderer != nil else {
-            statsLine = "renderer failed; see the console"
+            print("fluid_renderer_create failed")
             return
         }
         let link = CADisplayLink(target: self, selector: #selector(tick))
@@ -79,7 +76,7 @@ final class FrameDriver {
         let memory = Double(physFootprint()) / 1_048_576.0
         let battery = UIDevice.current.batteryLevel * 100
         let thermal = ["nominal", "fair", "serious", "critical"][ProcessInfo.processInfo.thermalState.rawValue]
-        statsLine = String(
+        let line = String(
             format: "frames %llu | interval µs p50 %.0f p99 %.0f max %.0f | acq µs p50 %.0f p99 %.0f | cpu µs p50 %.0f p99 %.0f | gpu µs p50 %.0f p99 %.0f | compr %% avg %.3f max %.3f | rho %.0f..%.0f | p %.0f..%.0f Pa | dT µK %.1f..%.1f | v %.2f n %u clamp %u | idle %llu | mem %.1f MB | batt %.0f%% %@ | stats µs %.0f",
             stats.frames,
             stats.interval_p50_us, stats.interval_p99_us, stats.interval_max_us,
@@ -93,7 +90,7 @@ final class FrameDriver {
             (stats.temperature_max - 293.15) * 1_000_000,
             stats.v_max, stats.substeps, stats.clamp_count, stats.idle_frames,
             memory, battery, thermal, statsUs)
-        print(statsLine)
+        print(line)
     }
 
     private func physFootprint() -> UInt64 {
