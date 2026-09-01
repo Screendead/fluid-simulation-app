@@ -174,6 +174,8 @@ Do not edit these by hand.
   it in HANDOFF or the design record with the rejected options and their
   costs, and continue. Jack can overturn it; silence lets it stand.
 - Write short, imperative, jargonless commit messages.
+- Delete a topic branch, local and remote, as soon as its merge
+  lands. Jack's rule, 2026-09-01.
 - Hand-pick the model for every subagent, workflow agents included: set
   the model on every `agent()` call. Jack's directive, 2026-08-30. The
   cheapest model does mechanical checks — a quote exists, a file
