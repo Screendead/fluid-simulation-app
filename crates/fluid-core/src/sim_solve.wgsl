@@ -327,29 +327,16 @@ const LANES: u32 = 8u;
 // never silent: rest packing gives ~40 in the slab, 58 in full 3D.
 const NBR_CAP: u32 = 96u;
 
-var<workgroup> lane_sum: array<vec4f, 256>;
 var<workgroup> nbr_fill: array<atomic<u32>, 32>;
 
-// Folds each particle's LANES partial sums in lane_sum. Every thread
-// must reach it: the barriers demand uniform flow. The total lands on
-// lane 0; other lanes get zero. The trailing barrier frees lane_sum
-// for the caller's next round.
-fn lane_fold(lid: u32) -> vec4f {
-    workgroupBarrier();
-    if lid % LANES < 4u {
-        lane_sum[lid] += lane_sum[lid + 4u];
-    }
-    workgroupBarrier();
-    if lid % LANES < 2u {
-        lane_sum[lid] += lane_sum[lid + 2u];
-    }
-    workgroupBarrier();
-    var total = vec4f(0.0);
-    if lid % LANES == 0u {
-        total = lane_sum[lid] + lane_sum[lid + 1u];
-    }
-    workgroupBarrier();
-    return total;
+// Folds a particle's LANES partial sums across its lanes with subgroup
+// shuffles: the lanes are consecutive invocations, so they share a
+// SIMD group, and no barrier or workgroup memory is needed. Every lane
+// of the subgroup must reach it. Every lane receives the total.
+fn lane_fold(v: vec4f) -> vec4f {
+    var t = v + subgroupShuffleXor(v, 4u);
+    t += subgroupShuffleXor(t, 2u);
+    return t + subgroupShuffleXor(t, 1u);
 }
 
 // Density, wall fill, the DFSPH factor, the divergence predictor, and
@@ -419,10 +406,11 @@ fn density_div(
             }
         }
     }
-    lane_sum[lid.x] = vec4f(w_sum, rho_near, grad_sq, drho);
-    let round_a = lane_fold(lid.x);
-    lane_sum[lid.x] = vec4f(grad_sum, 0.0);
-    let round_b = lane_fold(lid.x);
+    let round_a = lane_fold(vec4f(w_sum, rho_near, grad_sq, drho));
+    let round_b = lane_fold(vec4f(grad_sum, 0.0));
+    // The slot counter is workgroup memory; the barrier orders every
+    // lane's last append before lane 0 reads it.
+    workgroupBarrier();
     if lane == 0u && live {
         let found = atomicLoad(&nbr_fill[lp]);
         nbr_n[p] = min(found, NBR_CAP);
@@ -472,10 +460,7 @@ fn density_div(
 // would race the neighbour reads. 0.01 h^2 in the denominators is the
 // standard singularity guard.
 @compute @workgroup_size(256)
-fn forces_eval(
-    @builtin(global_invocation_id) gid: vec3u,
-    @builtin(local_invocation_id) lid: vec3u,
-) {
+fn forces_eval(@builtin(global_invocation_id) gid: vec3u) {
     let p = gid.x / LANES;
     let lane = gid.x % LANES;
     let live = p < params.count;
@@ -521,14 +506,10 @@ fn forces_eval(
                 / max(r, 1e-9);
         }
     }
-    lane_sum[lid.x] = vec4f(visc, heat);
-    let round_a = lane_fold(lid.x);
-    lane_sum[lid.x] = vec4f(blend, 0.0);
-    let round_b = lane_fold(lid.x);
-    lane_sum[lid.x] = vec4f(near, 0.0);
-    let round_c = lane_fold(lid.x);
-    lane_sum[lid.x] = vec4f(tension, 0.0);
-    let tens = lane_fold(lid.x);
+    let round_a = lane_fold(vec4f(visc, heat));
+    let round_b = lane_fold(vec4f(blend, 0.0));
+    let round_c = lane_fold(vec4f(near, 0.0));
+    let tens = lane_fold(vec4f(tension, 0.0));
     if lane == 0u && live {
         let adh = adhesion_beta() * params.rho0 * wall_adh_sum(positions[p].xyz);
         accel[p] = vec4f(
@@ -562,15 +543,14 @@ fn kappa_partial(p: u32, lane: u32) -> vec3f {
     return dv;
 }
 
-fn apply_kappa_wide(gid: u32, lid: u32) {
+fn apply_kappa_wide(gid: u32) {
     let p = gid / LANES;
     let lane = gid % LANES;
     var dv = vec3f(0.0);
     if p < params.count {
         dv = kappa_partial(p, lane);
     }
-    lane_sum[lid] = vec4f(dv, 0.0);
-    let total = lane_fold(lid);
+    let total = lane_fold(vec4f(dv, 0.0));
     if lane == 0u && p < params.count {
         let dv_full = params.mass * total.xyz + kd[p] * wall_grad[p].xyz;
         velocities[p] = vec4f(velocities[p].xyz - step.dt * dv_full, 0.0);
@@ -585,18 +565,14 @@ fn apply_kappa_wide(gid: u32, lid: u32) {
 // the invocation's own index; the sweep reads only the list and kd,
 // neither of which this dispatch writes.
 @compute @workgroup_size(256)
-fn forces_den_apply(
-    @builtin(global_invocation_id) gid: vec3u,
-    @builtin(local_invocation_id) lid: vec3u,
-) {
+fn forces_den_apply(@builtin(global_invocation_id) gid: vec3u) {
     let p = gid.x / LANES;
     let lane = gid.x % LANES;
     var dv = vec3f(0.0);
     if p < params.count {
         dv = kappa_partial(p, lane);
     }
-    lane_sum[lid.x] = vec4f(dv, 0.0);
-    let total = lane_fold(lid.x);
+    let total = lane_fold(vec4f(dv, 0.0));
     if lane == 0u && p < params.count {
         let a = accel[p];
         // The box frame rotates with the device, so the fluid feels the
@@ -620,11 +596,8 @@ fn forces_den_apply(
 }
 
 @compute @workgroup_size(256)
-fn div_apply(
-    @builtin(global_invocation_id) gid: vec3u,
-    @builtin(local_invocation_id) lid: vec3u,
-) {
-    apply_kappa_wide(gid.x, lid.x);
+fn div_apply(@builtin(global_invocation_id) gid: vec3u) {
+    apply_kappa_wide(gid.x);
 }
 
 // One constant-density iteration, kappa half: predict rho* one dt ahead,
@@ -632,10 +605,7 @@ fn div_apply(
 // applied pressure kappa * rho accumulates for the stats and the
 // temperature's pressure work.
 @compute @workgroup_size(256)
-fn den_kappa(
-    @builtin(global_invocation_id) gid: vec3u,
-    @builtin(local_invocation_id) lid: vec3u,
-) {
+fn den_kappa(@builtin(global_invocation_id) gid: vec3u) {
     let p = gid.x / LANES;
     let lane = gid.x % LANES;
     let live = p < params.count;
@@ -649,8 +619,7 @@ fn den_kappa(
             drho += dot(vel - velocities[u32(e.w)].xyz, e.xyz);
         }
     }
-    lane_sum[lid.x] = vec4f(drho, 0.0, 0.0, 0.0);
-    let total = lane_fold(lid.x);
+    let total = lane_fold(vec4f(drho, 0.0, 0.0, 0.0));
     if lane == 0u && live {
         let rho = density[p];
         drho = params.mass * total.x + dot(velocities[p].xyz, wall_grad[p].xyz);
@@ -662,11 +631,8 @@ fn den_kappa(
 }
 
 @compute @workgroup_size(256)
-fn den_apply(
-    @builtin(global_invocation_id) gid: vec3u,
-    @builtin(local_invocation_id) lid: vec3u,
-) {
-    apply_kappa_wide(gid.x, lid.x);
+fn den_apply(@builtin(global_invocation_id) gid: vec3u) {
+    apply_kappa_wide(gid.x);
 }
 
 // Close the substep: CFL clamp (counted, never silent), position

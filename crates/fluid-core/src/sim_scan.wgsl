@@ -90,24 +90,23 @@ fn add_back(@builtin(global_invocation_id) id: vec3u, @builtin(workgroup_id) gro
 }
 
 // The solver's per-substep scan: one workgroup, each thread serial over
-// a 32-cell chunk, so the whole rebuild is one dispatch instead of
-// three. Caps the grid at 8,192 cells; the Rust side asserts it. The
+// its share of the cells, so the whole rebuild is one dispatch instead
+// of three and the serial chain is as short as the grid allows. The
 // total lands one past the last cell, so a sweep reads a cell's end as
 // the next cell's start and never touches the counts.
-const SCAN_CHUNK: u32 = 32u;
-
 @compute @workgroup_size(256)
 fn scan_single(@builtin(local_invocation_id) local: vec3u) {
     let cells = params.dims.x * params.dims.y * params.dims.z;
-    let base = local.x * SCAN_CHUNK;
+    let chunk = (cells + 255u) / 256u;
+    let base = local.x * chunk;
     var sum = 0u;
-    for (var i = 0u; i < SCAN_CHUNK; i++) {
+    for (var i = 0u; i < chunk; i++) {
         if base + i < cells {
             sum += counts[base + i];
         }
     }
     var run = workgroup_exclusive_scan(local.x, sum);
-    for (var i = 0u; i < SCAN_CHUNK; i++) {
+    for (var i = 0u; i < chunk; i++) {
         let c = base + i;
         if c < cells {
             starts[c] = run;

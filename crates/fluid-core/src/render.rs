@@ -131,7 +131,7 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     };
     let (device, queue) = ready(adapter.request_device(&wgpu::DeviceDescriptor {
         label: None,
-        required_features: wgpu::Features::IMMEDIATES,
+        required_features: wgpu::Features::IMMEDIATES | wgpu::Features::SUBGROUP,
         required_limits: wgpu::Limits {
             max_storage_buffers_per_shader_stage: 20,
             max_immediate_size: 48,
@@ -995,8 +995,6 @@ impl Sim {
         let h = 1.2 * spacing;
         let grid = sim::Grid::new(extent, 2.0 * h);
         let cells = grid.cell_count();
-        // scan_single serialises 32 cells per thread in one workgroup.
-        assert!(cells <= 8_192, "the solver scan covers 8,192 cells");
         let seeded = sim::seed_slab(spacing, extent, 0.5);
         let count = (seeded.len() / 4) as u32;
         eprintln!("sim: {count} particles, {cells} cells, cap {substeps}, spacing {spacing} m");
@@ -2054,9 +2052,11 @@ impl Renderer {
         .map_err(|e| e.to_string())?;
         let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let (device, queue) = ready(adapter.request_device(&wgpu::DeviceDescriptor {
-            // IMMEDIATES is unconditional: Metal always grants it, and
-            // the M3 record forbids a fallback branch no run reaches.
+            // IMMEDIATES and SUBGROUP are unconditional: Metal grants
+            // both on every Apple GPU, and the M3 record forbids a
+            // fallback branch no run reaches.
             required_features: wgpu::Features::IMMEDIATES
+                | wgpu::Features::SUBGROUP
                 | if timestamps {
                     wgpu::Features::TIMESTAMP_QUERY
                 } else {
