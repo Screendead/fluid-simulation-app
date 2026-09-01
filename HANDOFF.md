@@ -1,6 +1,6 @@
 # Handoff — project state
 
-*Updated 2026-08-31. Audience: the next agent, or Jack. This file is the
+*Updated 2026-09-01. Audience: the next agent, or Jack. This file is the
 state document. It holds what the next stretch of work needs. Update it in
 the same commit that closes a milestone or a task. Git holds the history.*
 
@@ -133,7 +133,20 @@ optimisation pass on the complete frame. Jack also asked to
 investigate adaptive particle resolution; the findings feed the
 optimisation-pass design.
 
-Test baseline: 27 Rust tests pass, 2026-08-31.
+2026-09-01, the rotation and the sink: Jack proved the water never
+swirled, and the cause was structural — the sim read only the
+accelerometer, and a uniform body force has zero curl. The gyro is
+now wired end to end (MotionSample.rotation_rate, the fictitious
+force triple in the solver, gate wake on spin, the SPIN film pose);
+O6 is closed. The dissipation audit that followed (M3 record, "The
+sink, measured") killed the recorded wall-restitution lever and
+vorticity confinement with direct measurement, priced XSPH 48 at a
+third of all eddy damping, and shipped XSPH_RATE 6 — retention tau
+3.5 -> 4.9 s against a measured discretization ceiling of 5.5-6 s
+at this particle count. Guards green; the recorded cost is ~2 s of
+extra sleep latency after motion.
+
+Test baseline: 30 Rust tests pass, 2026-09-01.
 
 ## M1 measurements (reference device, 2026-08-30, Release)
 
@@ -156,28 +169,28 @@ The stats call costs 102 µs once a second, off the frame path. GPU
 timestamps read real values on this device in M2; the M1 note that the
 adapter lacks `TIMESTAMP_QUERY` did not hold — trust the M2 observation.
 
-## The next task — M4, the look notes
+## The next task — the optimisation pass
 
-The liquid-glass renderer is built, reviewed, and on the phone
-(branch `m4-water`, through 5728036). Jack's first device verdict,
-2026-08-31: "this looks incredible." Settled cost is measured at
-+0.86 ms GPU, inside the frame; the M4 record's Budget and
-first-device-session sections hold the numbers and the four open
-notes. The task now:
+The M4 look notes are closed or waiting only on Jack's eye. Caustics
+and frost landed ("1+2, go for it"), the field blur ended the still
+jitter, the gyro ended the missing swirl, and the sink audit set the
+physics at its resolution ceiling (all above; records hold the
+numbers). Waiting on Jack, no code blocked behind them:
 
-1. Jack picks the water-visibility direction (options in the M4
-   record: caustics from surface curvature, scattering that frosts
-   the wall through water, a refraction-gain dial — or a mix).
-2. Design and build the advected perturbation field, so the water
-   visibly churns after motion (needs its design entry first).
-3. The still-water jitter: try the record's blur contingency, judged
-   by the flicker meter.
+1. Eyeball the XSPH-6 build on the phone (deploy pending, phone
+   asleep 2026-09-01 night) and the spin films (session scratchpad
+   bounce/; the M3 record holds the re-render recipe).
+2. The remaining visibility direction, if he wants one: making
+   retained internal motion visible to thickness-only optics (M3
+   record, "The sink, measured", last paragraph).
 
-After M4: the aggressive optimisation pass (budget O2, battery bound,
-frame-latency-1 experiment, the named M3 reclaim targets, the
-adaptive-resolution decision, and — first target — the substep-floor
-60 Hz basin captured in the M4 record's Budget section), run once on
-the complete frame.
+The task now, Jack's directive 2026-09-01 ("start work on
+optimisation"): the aggressive optimisation pass — budget O2, the
+battery bound, the frame-latency-1 experiment, the named M3 reclaim
+targets, the adaptive-resolution decision, and — first target — the
+substep-floor 60 Hz basin captured in the M4 record's Budget
+section — run once on the complete frame. Device measurements queue
+for the morning.
 
 M3 close waits on the optimisation pass: the roadmap's closure rule
 needs the oracle measured on the device, and three measurements are
@@ -199,7 +212,7 @@ to `docs/design/decisions.md`.
 | O3 | The name. "Fluid Box" is a working title; the iOS target is `FluidApp`, bundle `com.screendead.FluidApp`. | Jack |
 | O4 | Moot 2026-08-30: the web target is removed (D1 amendment). | — |
 | O5 | The license. `Cargo.toml` says `UNLICENSED` until Jack chooses. | Jack |
-| O6 | Rotation. `CMDeviceMotion.rotationRate` is not read. Coriolis and Euler forces on the fluid arrive when a milestone asks for them (M7). | M7 design record |
+| O6 | Closed 2026-09-01, ahead of M7: the gyro is wired end to end and the fictitious triple runs in the solver (M3 record, "The rotation, missing"). | `docs/design/m3-fluid.md` |
 
 ## Roadmap
 
@@ -215,7 +228,7 @@ the reference device and `HANDOFF.md` records the measurement.
 | M4 Water | The default view: the liquid-glass renderer from the M4 record — thickness from the splatted field, normals, refraction, the dazzle back wall | Looks like water; better than real time; inside budget |
 | M5 Lenses | Field lenses behind a dropdown menu: velocity, density, acceleration, pressure; temperature as an added field | Each lens switches with no frame drop |
 | M6 Headroom | Adaptive substeps, sleep when still, thermal response; power measured | Battery draw recorded against a target |
-| M7 Feel | Sensor-to-frame latency measured and tuned; haptics; rotation (O6) | Latency number recorded; Jack's hand says it feels right |
+| M7 Feel | Sensor-to-frame latency measured and tuned; haptics; rotation landed early (O6, closed 2026-09-01) | Latency number recorded; Jack's hand says it feels right |
 
 Jack's directive, 2026-08-30, binds M4 and M5. His words: "the various
 different lenses (e.g. velocity, density, acceleration, temperature,

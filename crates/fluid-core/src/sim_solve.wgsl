@@ -49,10 +49,12 @@ var<immediate> step: Step;
 // XSPH velocity blending as a per-second rate, not a per-substep
 // fraction: the substep count follows the pacing policy, so a fixed
 // fraction ties the fluid's damping to whatever the policy does
-// (2026-08-31: the 2.2 ms cap doubled it overnight). 48/s equals the
-// 0.1-per-2.2ms the verdict films were tuned at; without the filter a
-// settled deep column never stops ringing.
-const XSPH_RATE: f32 = 48.0;
+// (2026-08-31: the 2.2 ms cap doubled it overnight). 48/s equalled the
+// 0.1-per-2.2ms the verdict films were tuned at; the dissipation audit
+// (M3 record, "The sink, measured") priced 48 at a third of all eddy
+// damping and 6 keeps the settled column quiet, two seconds of extra
+// sleep latency the recorded cost.
+const XSPH_RATE: f32 = 6.0;
 
 // Near-pressure, the repulsive half of Clavet 2005: a second, sharper
 // kernel whose pressure is never negative. It removes the pair-clumping

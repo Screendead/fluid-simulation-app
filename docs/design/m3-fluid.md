@@ -1514,3 +1514,90 @@ species the force filter closed). Vorticity confinement stays on the
 shelf behind it. Turbulence proper - the cascade - is beyond any
 1,620-particle sim; the honest goal is that the scales this sim
 resolves keep their energy for as long as real water keeps it.
+
+Both shelved levers were measured the same night and fell. Two
+conclusions above are refuted by "The sink, measured": the walls
+verdict, and "XSPH_RATE stays 48" (the ladder behind it was blind to
+the phase where XSPH acts; the rate is now 6).
+
+## The sink, measured (2026-09-01, night)
+
+Jack, on the gyro build, verbatim: "did you fix the turbulence so it
+actually occurs and sustains? i don't see it if so". The full
+dissipation audit ran the same night, on a rebuilt in-worktree probe
+(positions and velocities dumped every frame; metrics: exponential
+tau fitted to box-frame net rotation and to mean speed above the
+jitter floor after the spin stop; ring = CoM-envelope tau and life
+after the kick). All numbers from the film harness on Jack's
+laptop (the gate machine), 2026-09-01; run-to-run scatter about
++/-0.15 s on the spin taus.
+
+| lever | speed tau | omega tau | verdict |
+|---|---|---|---|
+| anchor: XSPH 48, walls as shipped | 3.52 s | 4.33 s | - |
+| wall restitution E=1.0 | 3.59 | 4.41 | dead |
+| substeps x2, x4 (NMIN 8, 16) | 3.25, 3.37 | 4.01, 4.09 | dead |
+| XSPH 6 | 4.94 | 5.65 | live |
+| XSPH 6 + wall adhesion off | 4.89 | 5.55 | dead |
+| XSPH 6 + cohesion off | 4.80 | 5.63 | dead |
+| XSPH 6 + refine passes x2 | 4.49 | 5.28 | dead |
+| XSPH 6 + confinement eps 1, 4, 16 | 4.53, 4.08, 2.00 | 5.37, 5.29, 1.40 | dead |
+
+Wall restitution fell first. The probe rung reflected the violating
+velocity component at full strength (E = 1.0, with a resting-contact
+cutoff of twice the body-force speed per substep so the settled floor
+stayed inelastic), and the reflection demonstrably engaged - end
+v_max rose from 0.04 to 0.21. Every eddy-retention number sat inside
+run-to-run scatter. The waves moved second-order and both ways: ring
+life 5.9 -> 6.68 s, envelope tau 3.04 -> 2.69 s. A lever that buys
+13% of ring life and nothing on eddies is not the recorded "dominant
+sink" whose removal promised minutes. The walls are not the sink. The
+elimination
+argument above rested on the XSPH ladder's blind spot: XSPH blends
+each particle toward the kernel average of its neighbours, the kernel
+average of a locally linear field is the value itself, so XSPH is a
+mathematical no-op on the near-rigid rotation that ladder measured.
+Both measurements stand; the old metric could not see the phase where
+XSPH acts. On waves and eddies - curvature in the velocity field -
+the re-run ladder shows XSPH 48 buys about a third of all damping,
+and dropping it to 6 lifts speed tau 3.52 to 4.94 s.
+
+Everything else nulled as a lever. Adhesion and cohesion move
+nothing beyond scatter. Doubled refine passes and doubled substeps
+shorten retention slightly (up to 0.45 s) - more solve is more
+damping, the wrong sign for a sink whose removal we seek. What
+remains - the tau
+ceiling of 5.5 to 6 s - is the discretization itself at 1,620
+particles: no dial removes it. The Ekman-order spin-down of real
+water at this scale is 20 to 60 s; that stays out of reach at this
+resolution. The gap in speed tau shrinks from 6-17x to 4-12x.
+
+The ring cross-check: kick-envelope tau 3.04 s and life 5.9 s at the
+anchor; 2.69/6.68 at E=1.0; 3.26/7.27 at XSPH 6. The gravity wave's
+sink is mostly not XSPH either - the same discretization ceiling.
+
+Shipped: XSPH_RATE 48 -> 6, nothing else. Guards, all green: settled
+flicker 3,458 px/frame against the 12,000 threshold (anchor 3,221);
+shake compr 0.034% and stable; the wake film still sleeps and still
+wakes, sleeping ~2 s later (frame 1502 -> 1744) - the recorded cost
+of the livelier water. XSPH 12 was measured too: the same 2 s sleep
+cost and less retention, so 6 wins. The XSPH_RATE comment in
+sim_solve.wgsl points here.
+
+Vorticity confinement (Fedkiw 2001, SPH difference form) was built in
+the worktree and measured, never shipped: it applies the tangential
+force eps h (N x omega) around vorticity maxima, sharpening exactly
+the small scales this discretization dissipates hardest, so it
+cascades the coherent eddy
+to its death - retention falls at every strength, and eps 16 destroys
+the net rotation outright while injecting v_max 1.8 m/s of noise. The
+spin films (eps 4 and the shipped rate-6 build) live in the session
+scratchpad, bounce/, and re-render from any build with
+SPIN=1 TREMOR=0 NOISE=0.02 IDLE=0 PREROLL=2 FRAMES=1560.
+
+Still open, and a look decision rather than a physics one: a flat
+surface hides internal motion from thickness-only optics, so retained
+eddies are invisible until they deform the surface. Making resolved
+motion visible (a dye-like passive field advected through the real
+velocity grid, or any other channel) belongs to M4 and waits for
+Jack's direction.
