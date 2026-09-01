@@ -169,38 +169,26 @@ The stats call costs 102 µs once a second, off the frame path. GPU
 timestamps read real values on this device in M2; the M1 note that the
 adapter lacks `TIMESTAMP_QUERY` did not hold — trust the M2 observation.
 
-## The next task — the optimisation pass
+## The next task — the optimisation pass's remainder
 
-The M4 look notes are closed or waiting only on Jack's eye. Caustics
-and frost landed ("1+2, go for it"), the field blur ended the still
-jitter, the gyro ended the missing swirl, and the sink audit set the
-physics at its resolution ceiling (all above; records hold the
-numbers). Waiting on Jack, no code blocked behind them:
+m4-water merged to master 2026-09-01 on Jack's ruling ("yes i can
+see it swirling now - merge it"). The branch carried the whole M4
+liquid-glass renderer, the gyro rotation physics, the dissipation
+audit with XSPH 6, and the pass's first night: the per-kernel
+profile that found the solver latency-bound (not dispatch-bound),
+the eight-lane neighbour sweeps (solver 3.3x on the laptop), and
+the 4.2 ms substep cap. Device-confirmed the same morning: settled
+GPU p50 6.15 ms (old 7.557; pre-glass 6.694), the 60 Hz basin dead,
+Jack's eye on the swirl. The optimisation record holds it all.
 
-1. Eyeball the XSPH-6 build on the phone (deploy pending, phone
-   asleep 2026-09-01 night) and the spin films (session scratchpad
-   bounce/; the M3 record holds the re-render recipe).
-2. The remaining visibility direction, if he wants one: making
-   retained internal motion visible to thickness-only optics (M3
-   record, "The sink, measured", last paragraph).
+What remains of the pass (its record, "The runbook's remainder"):
+the M3 exit measurements, budget O2 firmed, the battery bound, the
+frame-latency-1 experiment. From here work branches off master with
+a topic slug (CLAUDE.md section 8).
 
-The task now, Jack's directive 2026-09-01 ("start work on
-optimisation"): the aggressive optimisation pass — budget O2, the
-battery bound, the frame-latency-1 experiment, the named M3 reclaim
-targets, the adaptive-resolution decision, and — first target — the
-substep-floor 60 Hz basin captured in the M4 record's Budget
-section — run once on the complete frame.
-
-The pass's first night (2026-09-01) landed three commits, all
-film-guarded and laptop-measured; the pass record holds every
-number. A per-kernel GPU profile refuted the dispatch-overhead
-story: the cost is latency inside the five neighbour-sweep kernels.
-The sweeps now run eight lanes per particle (solver 3.3x faster on
-the laptop). The substep-length cap rose 2.2 -> 4.2 ms (rest frames
-at two substeps; the 60 Hz basin floor halves). The refine schedule
-measured as a dead lever and stays at five. Device measurements
-queue for the morning: they price all of it on the phone, and the
-merge decision is Jack's.
+Open look direction, Jack's when he wants it: a dye-like passive
+field to make retained internal motion visible under a flat surface
+(M3 record, "The sink, measured", last paragraph).
 
 M3 close waits on the optimisation pass: the roadmap's closure rule
 needs the oracle measured on the device, and three measurements are
@@ -234,7 +222,7 @@ the reference device and `HANDOFF.md` records the measurement.
 | M0 Toolchain | Body force from Rust on the phone | The readout agrees with CoreMotion; signs verified on the phone. **Done 2026-08-30.** |
 | M1 Surface | wgpu owns a `CAMetalLayer` from `fluid-core`; clear and present at display rate; frame-time capture | 120 Hz stable, idle draw measured, budget O2 set. **Done 2026-08-30.** |
 | M2 Particles | GPU particle buffer, integration under the body force, box collision, point rendering | Tilt and push the phone; particles behave; particle count at budget recorded |
-| M3 Fluid | The method from O1: neighbour search on the GPU, incompressibility, viscosity | A convincing slosh inside budget; incompressibility measured |
+| M3 Fluid | The method from O1: neighbour search on the GPU, incompressibility, viscosity | A convincing slosh inside budget; incompressibility measured. Open pending the exit measurements (the closure-rule clause). |
 | M4 Water | The default view: the liquid-glass renderer from the M4 record — thickness from the splatted field, normals, refraction, the dazzle back wall | Looks like water; better than real time; inside budget |
 | M5 Lenses | Field lenses behind a dropdown menu: velocity, density, acceleration, pressure; temperature as an added field | Each lens switches with no frame drop |
 | M6 Headroom | Adaptive substeps, sleep when still, thermal response; power measured | Battery draw recorded against a target |

@@ -1601,3 +1601,6 @@ eddies are invisible until they deform the surface. Making resolved
 motion visible (a dye-like passive field advected through the real
 velocity grid, or any other channel) belongs to M4 and waits for
 Jack's direction.
+
+The device verdict, 2026-09-01 morning, Jack verbatim: "yes i can
+see it swirling now". The shipped retention reads on the phone.

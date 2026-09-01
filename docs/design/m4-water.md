@@ -140,6 +140,7 @@ sides of every pair, settled upright, pre-sleep awake window:
 | old renderer (7416b49 line) | 6.694 ms | re-measured, same session |
 | first glass build (426e9a8) | 8.563 ms | +1.87 ms; over the frame, drops to intermittent 60 Hz |
 | restructured (5728036) | 7.557 ms | +0.86 ms; inside the 8.33 ms frame, 120 Hz held |
+| lane-parallel solver + 4.2 ms cap (e54c456 line) | 6.15 ms | 2026-09-01 morning, thermal "fair"; below the pre-glass baseline (optimisation record) |
 
 The restructure that bought the millisecond back: lighting that is
 uniform across a frame (world up, glint half vector, folded gain)
@@ -158,7 +159,8 @@ cost more than the 16.7 ms frame: the loop feeds itself. The idle
 gate's sleep is currently the only exit — the wake after sleep
 returns at n 4, 8.3 ms, 120 Hz. This basin is the optimisation
 pass's first target; the capture lives in the session scratchpad
-(after2-m4.txt).
+(after2-m4.txt). Closed 2026-09-01: the basin is dead on the device
+(optimisation record, "The device session").
 
 ## The first device session (2026-08-31, night)
 

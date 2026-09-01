@@ -147,13 +147,32 @@ mass/h means a new storage buffer, every kernel call site, a grid
 redesign, and a tension re-derivation. Re-open trigger: particle
 count grows ~10x, or a milestone adds a genuinely 3D volume.
 
-## The device runbook (waits for the phone)
+## The device session (2026-09-01 morning, reference device, thermal "fair")
 
-1. Deploy the XSPH-6 build; Jack's eye on the swirl.
-2. The basin A/B at the chosen cap: hard shake, watch for the 60 Hz
-   lock, its exit, and GPU p50 on both sides.
-3. Settled GPU p50 at the chosen cap (expect roughly half the rest
-   solver cost at 2 substeps).
-4. The M3 exit measurements: settled upright hydrostatics, the
+Items 1-3 of the runbook closed in one session on the branch head:
+
+1. Jack's eye, verbatim: "yes i can see it swirling now - merge it".
+2. The basin is dead. First hard shake: v 2.2, n 13, GPU p50 14.8 ms,
+   the display at 60 Hz for one one-second stats window, then back
+   to 120 Hz with the water still moving - no sleep needed. Second
+   shake: n 11, and the 120 Hz median never dropped; only the p99
+   tail degraded. The old build locked at 60 Hz and ~19 ms until the
+   idle gate slept.
+3. Settled GPU p50 6.15 ms at n 2 (old build 7.557 ms; pre-glass
+   6.694 ms): the lane-parallel solver and the two rest substeps
+   paid for the whole glass renderer. Compression avg 0.007%, motion
+   max 1.35% - the normal device range. The idle gate slept on the
+   desk. Caveat: this session ran thermally "fair" against the old
+   numbers' "serious"; a few tenths of the delta may be thermal, the
+   rest is mechanistic (n 4 -> 2, sweeps 3.3x).
+
+The REVIEW.md device-measurement blocker on the branch cleared with
+these numbers; Jack ruled the merge the same morning.
+
+## The runbook's remainder (waits for a phone session)
+
+1. The M3 exit measurements: settled upright hydrostatics, the
    minute hand-test with intervals, the "inside budget" clause.
-5. Budget O2 firmed; the battery bound measured.
+2. Budget O2 firmed; the battery bound measured.
+3. The frame-latency-1 experiment and the remaining M3 reclaims,
+   if the numbers above leave anything worth reclaiming.
