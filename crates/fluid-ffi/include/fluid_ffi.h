@@ -41,6 +41,7 @@ typedef struct FluidRenderStats {
   float temperature_min;
   float temperature_max;
   uint32_t clamp_count;
+  uint32_t neighbour_overflow;
   uint32_t substeps;
   uint64_t idle_frames;
 } FluidRenderStats;

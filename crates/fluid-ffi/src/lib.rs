@@ -51,6 +51,7 @@ pub struct FluidRenderStats {
     pub temperature_min: f32,
     pub temperature_max: f32,
     pub clamp_count: u32,
+    pub neighbour_overflow: u32,
     pub substeps: u32,
     pub idle_frames: u64,
 }
@@ -166,6 +167,7 @@ pub unsafe extern "C" fn fluid_renderer_stats(renderer: *const FluidRenderer) ->
         temperature_min: stats.temperature_min,
         temperature_max: stats.temperature_max,
         clamp_count: stats.clamp_count,
+        neighbour_overflow: stats.neighbour_overflow,
         substeps: stats.substeps,
         idle_frames: stats.idle_frames,
     }

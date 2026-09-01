@@ -5,6 +5,9 @@
 // static wall joins the factor's squared-sum term and the kappa_i force
 // but never the kappa_j terms — the paper's static-boundary rule.
 
+// The tail past rho0 is this shader's alone: the kernel's constants
+// hoisted out of the pair loops. The other sim shaders declare the
+// 48-byte head and read the same buffer.
 struct SimParams {
     box_min: vec3f,
     cell: f32,
@@ -13,6 +16,10 @@ struct SimParams {
     h: f32,
     mass: f32,
     rho0: f32,
+    inv_h: f32,
+    sigma: f32,
+    sigma_h: f32,
+    support_sq: f32,
 }
 
 // One block per substep: the CPU decides dt, the CFL clamp speed,
@@ -36,14 +43,18 @@ var<immediate> step: Step;
 @group(0) @binding(5) var<storage, read> sorted: array<u32>;
 @group(0) @binding(6) var<storage, read_write> density: array<f32>;
 @group(0) @binding(7) var<storage, read_write> alpha: array<f32>;
-@group(0) @binding(8) var<storage, read_write> kappa: array<f32>;
+@group(0) @binding(8) var<storage, read_write> kd: array<f32>;
 @group(0) @binding(9) var<storage, read_write> pressure: array<f32>;
 @group(0) @binding(10) var<storage, read_write> prev_pressure: array<f32>;
 @group(0) @binding(11) var<storage, read_write> temperature: array<f32>;
-@group(0) @binding(12) var<storage, read_write> stats: array<f32, 10>;
+@group(0) @binding(12) var<storage, read_write> stats: array<f32, 11>;
 @group(0) @binding(13) var<storage, read_write> clamp_count: atomic<u32>;
 @group(0) @binding(14) var<storage, read_write> accel: array<vec4f>;
 @group(0) @binding(15) var<storage, read_write> xsph: array<vec4f>;
+@group(0) @binding(3) var<storage, read_write> nbr_over: atomic<u32>;
+@group(0) @binding(16) var<storage, read_write> nbr: array<vec4f>;
+@group(0) @binding(17) var<storage, read_write> nbr_n: array<u32>;
+@group(0) @binding(18) var<storage, read_write> wall_grad: array<vec4f>;
 
 // XSPH velocity blending as a per-second rate, not a per-substep
 // fraction: the substep count follows the pacing policy, so a fixed
@@ -100,31 +111,26 @@ fn adhesion_beta() -> f32 {
         / (LATTICE_SIGMA * params.rho0 * params.rho0 * c * c);
 }
 
-fn kernel(r: f32, h: f32) -> f32 {
-    let q = r / h;
-    let sigma = 1.0 / (3.14159265 * h * h * h);
+// The cubic spline in q = r / h; every caller has q < 2 from the
+// support test that admitted the pair.
+fn kernel_q(q: f32) -> f32 {
     if q < 1.0 {
-        return sigma * (1.0 - 1.5 * q * q * (1.0 - 0.5 * q));
+        return params.sigma * (1.0 - 1.5 * q * q * (1.0 - 0.5 * q));
     }
-    if q < 2.0 {
-        let t = 2.0 - q;
-        return sigma * 0.25 * t * t * t;
-    }
-    return 0.0;
+    let t = 2.0 - q;
+    return params.sigma * 0.25 * t * t * t;
 }
 
-fn grad_kernel(x: vec3f, r: f32, h: f32) -> vec3f {
-    if r < 1e-9 || r >= 2.0 * h {
+fn grad_q(x: vec3f, r: f32, q: f32) -> vec3f {
+    if r < 1e-9 {
         return vec3f(0.0);
     }
-    let q = r / h;
-    let sigma = 1.0 / (3.14159265 * h * h * h);
     var dw: f32;
     if q < 1.0 {
-        dw = sigma / h * (-3.0 * q + 2.25 * q * q);
+        dw = params.sigma_h * (-3.0 * q + 2.25 * q * q);
     } else {
         let t = 2.0 - q;
-        dw = sigma / h * (-0.75 * t * t);
+        dw = params.sigma_h * (-0.75 * t * t);
     }
     return dw / r * x;
 }
@@ -301,14 +307,8 @@ fn cell_base(pos: vec3f) -> vec3u {
     );
 }
 
-// Density, wall fill, the DFSPH factor, and the divergence predictor
-// in one sweep: the divergence solve's neighbour traversal is this
-// traversal, so its Drho/Dt rides along and the div_kappa dispatch
-// disappears. Safe because nothing writes positions.xyz or velocities
-// between the old two dispatches. Static walls join the squared-sum
-// term only. The denominator guard is numerics, not physics: it only
 // The neighbour sweeps, lane-parallel: LANES threads share one
-// particle, each sweeping a slice of the 27-cell stencil, reduced in
+// particle, each sweeping a slice of its neighbours, reduced in
 // workgroup memory. At this particle count the sweeps are
 // latency-bound, not work-bound (the per-kernel profile in the
 // optimisation record): eight shorter serial chains and eightfold
@@ -316,7 +316,19 @@ fn cell_base(pos: vec3f) -> vec3u {
 // float summation order, which the solver's atomics already forgo.
 const LANES: u32 = 8u;
 
+// Positions hold still between the grid rebuild and integrate, so the
+// density sweep walks the 27-cell stencil once and writes each
+// particle's true neighbours — inside the support, self excluded —
+// with their kernel gradients; the other twelve sweeps read that list.
+// The stencil block spans some six times the kernel's sphere, so the
+// list also ends the zero-valued pair evaluations. Mirrored by
+// NBR_CAP in render.rs, which sizes the buffer. A particle past the
+// cap keeps its first NBR_CAP neighbours and the overflow is counted,
+// never silent: rest packing gives ~40 in the slab, 58 in full 3D.
+const NBR_CAP: u32 = 96u;
+
 var<workgroup> lane_sum: array<vec4f, 256>;
+var<workgroup> nbr_fill: array<atomic<u32>, 32>;
 
 // Folds each particle's LANES partial sums in lane_sum. Every thread
 // must reach it: the barriers demand uniform flow. The total lands on
@@ -340,8 +352,13 @@ fn lane_fold(lid: u32) -> vec4f {
     return total;
 }
 
-// bites for a particle with no neighbours and no wall in range, whose
-// kappa is zero anyway.
+// Density, wall fill, the DFSPH factor, the divergence predictor, and
+// the neighbour list in one sweep: the divergence solve's neighbour
+// traversal is this traversal, so its Drho/Dt rides along. Static
+// walls join the squared-sum term only. The denominator guard is
+// numerics, not physics: it only bites for a particle with no
+// neighbours and no wall in range, whose kappa is zero anyway. The
+// wall gradient sum is cached for the substep's apply sweeps.
 @compute @workgroup_size(256)
 fn density_div(
     @builtin(global_invocation_id) gid: vec3u,
@@ -349,8 +366,15 @@ fn density_div(
 ) {
     let p = gid.x / LANES;
     let lane = gid.x % LANES;
+    let lp = lid.x / LANES;
     let live = p < params.count;
-    var rho = 0.0;
+    if lane == 0u {
+        atomicStore(&nbr_fill[lp], 0u);
+    }
+    workgroupBarrier();
+    // Kernel sums without the mass, applied once after the fold; lane
+    // 0 carries the self term W(0).
+    var w_sum = select(0.0, params.sigma, lane == 0u);
     var rho_near = 0.0;
     var grad_sum = vec3f(0.0);
     var grad_sq = 0.0;
@@ -359,6 +383,7 @@ fn density_div(
         let pos = positions[p].xyz;
         let vel = velocities[p].xyz;
         let base = cell_base(pos);
+        let slot_base = p * NBR_CAP;
         for (var cell = lane; cell < 27u; cell += LANES) {
             let coord = vec3i(base)
                 + vec3i(i32(cell % 3u) - 1, i32((cell / 3u) % 3u) - 1, i32(cell / 9u) - 1);
@@ -370,46 +395,60 @@ fn density_div(
             let end = starts[c + 1u];
             for (var k = starts[c]; k < end; k++) {
                 let j = sorted[k];
+                if j == p {
+                    continue;
+                }
                 let x = pos - positions[j].xyz;
-                let r = length(x);
-                rho += params.mass * kernel(r, params.h);
-                let wn = max(1.0 - r / params.h, 0.0);
-                // r > 0 excludes self, whose constant term would
-                // only offset every particle equally.
-                rho_near += select(0.0, wn * wn * wn, r > 0.0);
-                let gw = grad_kernel(x, r, params.h);
-                let mg = params.mass * gw;
-                grad_sum += mg;
-                grad_sq += dot(mg, mg);
-                drho += params.mass * dot(vel - velocities[j].xyz, gw);
+                let r2 = dot(x, x);
+                if r2 >= params.support_sq {
+                    continue;
+                }
+                let r = sqrt(r2);
+                let q = r * params.inv_h;
+                w_sum += kernel_q(q);
+                let wn = max(1.0 - q, 0.0);
+                rho_near += wn * wn * wn;
+                let gw = grad_q(x, r, q);
+                grad_sum += gw;
+                grad_sq += dot(gw, gw);
+                drho += dot(vel - velocities[j].xyz, gw);
+                let slot = atomicAdd(&nbr_fill[lp], 1u);
+                if slot < NBR_CAP {
+                    nbr[slot_base + slot] = vec4f(gw, f32(j));
+                }
             }
         }
     }
-    lane_sum[lid.x] = vec4f(rho, rho_near, grad_sq, drho);
+    lane_sum[lid.x] = vec4f(w_sum, rho_near, grad_sq, drho);
     let round_a = lane_fold(lid.x);
     lane_sum[lid.x] = vec4f(grad_sum, 0.0);
     let round_b = lane_fold(lid.x);
     if lane == 0u && live {
+        let found = atomicLoad(&nbr_fill[lp]);
+        nbr_n[p] = min(found, NBR_CAP);
+        if found > NBR_CAP {
+            atomicAdd(&nbr_over, found - NBR_CAP);
+        }
         let pos = positions[p].xyz;
         let vel = velocities[p].xyz;
-        rho = round_a.x;
+        var rho = params.mass * round_a.x;
         rho_near = round_a.y;
-        grad_sq = round_a.z;
-        drho = round_a.w;
-        grad_sum = round_b.xyz;
+        grad_sq = params.mass * params.mass * round_a.z;
+        drho = params.mass * round_a.w;
+        grad_sum = params.mass * round_b.xyz;
         let lo = wall_lo();
         let hi = -lo;
-        let inv_h = 1.0 / params.h;
-        let tl = (pos - lo) * inv_h;
-        let th = (hi - pos) * inv_h;
+        let tl = (pos - lo) * params.inv_h;
+        let th = (hi - pos) * params.inv_h;
         var fill = 0.0;
         fill += wall_density(tl.x) + wall_density(th.x);
         fill += wall_density(tl.y) + wall_density(th.y);
         fill += wall_density(tl.z) + wall_density(th.z);
         fill -= wedge_sum(tl, th);
         rho += params.rho0 * fill;
-        let wall_grad = wall_grad_sum(pos);
-        grad_sum += wall_grad;
+        let wg = wall_grad_sum(pos);
+        wall_grad[p] = vec4f(wg, 0.0);
+        grad_sum += wg;
         density[p] = rho;
         // The w lane is dead outside this window: integrate re-zeroes it
         // after forces_eval consumes it, and each invocation writes only
@@ -419,10 +458,12 @@ fn density_div(
         let a = rho / max(dot(grad_sum, grad_sum) + grad_sq, 1e-4);
         alpha[p] = a;
         // A wall is fluid that never moves: approaching it raises density.
-        drho += dot(vel, wall_grad);
+        drho += dot(vel, wg);
         // The dt guard covers the substep-free test path only; every real
-        // substep is orders of magnitude above it, bit-unchanged.
-        kappa[p] = max(drho, 0.0) * a / max(step.dt, 1e-9);
+        // substep is orders of magnitude above it, bit-unchanged. The
+        // solves carry kappa over density, the quantity every pair sum
+        // and the wall term consume.
+        kd[p] = max(drho, 0.0) * a / max(step.dt, 1e-9) / rho;
     }
 }
 
@@ -453,37 +494,31 @@ fn forces_eval(
         let vel = velocities[p].xyz;
         let temp = temperature[p];
         let rho_i = density[p];
-        let base = cell_base(pos);
-        for (var cell = lane; cell < 27u; cell += LANES) {
-            let coord = vec3i(base)
-                + vec3i(i32(cell % 3u) - 1, i32((cell / 3u) % 3u) - 1, i32(cell / 9u) - 1);
-            if any(coord < vec3i(0)) || any(coord >= vec3i(params.dims)) {
-                continue;
-            }
-            let c = (u32(coord.z) * params.dims.y + u32(coord.y)) * params.dims.x
-                + u32(coord.x);
-            let end = starts[c + 1u];
-            for (var k = starts[c]; k < end; k++) {
-                let j = sorted[k];
-                let x = pos - positions[j].xyz;
-                let r = length(x);
-                let gw = grad_kernel(x, r, params.h);
-                let f = dot(x, gw) / (r * r + 0.01 * params.h * params.h);
-                let pair = params.mass / (rho_i * density[j]) * f;
-                let dv = vel - velocities[j].xyz;
-                let wn = max(1.0 - r / params.h, 0.0);
-                near += (pos4.w + positions[j].w) * wn * wn * (x / max(r, 1e-5));
-                visc += 2.0 * DYNAMIC_VISCOSITY * pair * dv;
-                blend -= params.mass / density[j] * kernel(r, params.h) * dv;
-                // Cleary-Monaghan diffusion, then half the pair's
-                // viscous dissipation; f < 0 carries the signs.
-                heat += 2.0 * CONDUCTIVITY / HEAT_CAPACITY * pair
-                    * (temp - temperature[j]);
-                heat -= 0.5 * DYNAMIC_VISCOSITY / HEAT_CAPACITY * pair * dot(dv, dv);
-                let corr = 2.0 * params.rho0 / (rho_i + density[j]);
-                tension -= corr * params.mass * cohesion(r, coh_c, coh_k, coh_near) * x
-                    / max(r, 1e-9);
-            }
+        let base = p * NBR_CAP;
+        let n = nbr_n[p];
+        for (var k = lane; k < n; k += LANES) {
+            let e = nbr[base + k];
+            let j = u32(e.w);
+            let pj = positions[j];
+            let x = pos - pj.xyz;
+            let r2 = dot(x, x);
+            let r = sqrt(r2);
+            let rho_j = density[j];
+            let f = dot(x, e.xyz) / (r2 + 0.01 * params.h * params.h);
+            let pair = params.mass / (rho_i * rho_j) * f;
+            let dv = vel - velocities[j].xyz;
+            let wn = max(1.0 - r * params.inv_h, 0.0);
+            near += (pos4.w + pj.w) * wn * wn * (x / max(r, 1e-5));
+            visc += 2.0 * DYNAMIC_VISCOSITY * pair * dv;
+            blend -= params.mass / rho_j * kernel_q(r * params.inv_h) * dv;
+            // Cleary-Monaghan diffusion, then half the pair's
+            // viscous dissipation; f < 0 carries the signs.
+            heat += 2.0 * CONDUCTIVITY / HEAT_CAPACITY * pair
+                * (temp - temperature[j]);
+            heat -= 0.5 * DYNAMIC_VISCOSITY / HEAT_CAPACITY * pair * dot(dv, dv);
+            let corr = 2.0 * params.rho0 / (rho_i + rho_j);
+            tension -= corr * params.mass * cohesion(r, coh_c, coh_k, coh_near) * x
+                / max(r, 1e-9);
         }
     }
     lane_sum[lid.x] = vec4f(visc, heat);
@@ -507,9 +542,38 @@ fn forces_eval(
         // every substep and the settled fluid flickers. Written here,
         // one dispatch before forces_den_apply sweeps every kappa.
         let rho = density[p];
-        let k = 0.5 * prev_pressure[p] / rho;
-        kappa[p] = k;
-        pressure[p] = k * rho;
+        let half = 0.5 * prev_pressure[p];
+        kd[p] = half / (rho * rho);
+        pressure[p] = half;
+    }
+}
+
+// One lane's share of a particle's kappa correction, mass left to the
+// caller: sum over the list of (kd_i + kd_j) grad W_ij.
+fn kappa_partial(p: u32, lane: u32) -> vec3f {
+    let base = p * NBR_CAP;
+    let n = nbr_n[p];
+    let kd_i = kd[p];
+    var dv = vec3f(0.0);
+    for (var k = lane; k < n; k += LANES) {
+        let e = nbr[base + k];
+        dv += (kd_i + kd[u32(e.w)]) * e.xyz;
+    }
+    return dv;
+}
+
+fn apply_kappa_wide(gid: u32, lid: u32) {
+    let p = gid / LANES;
+    let lane = gid % LANES;
+    var dv = vec3f(0.0);
+    if p < params.count {
+        dv = kappa_partial(p, lane);
+    }
+    lane_sum[lid] = vec4f(dv, 0.0);
+    let total = lane_fold(lid);
+    if lane == 0u && p < params.count {
+        let dv_full = params.mass * total.xyz + kd[p] * wall_grad[p].xyz;
+        velocities[p] = vec4f(velocities[p].xyz - step.dt * dv_full, 0.0);
     }
 }
 
@@ -518,8 +582,8 @@ fn forces_eval(
 // the body force, the rotating frame's fictitious forces, XSPH and
 // the temperature source, and subtracts the correction, in the order
 // the two dispatches applied them. Every per-particle access is at
-// the invocation's own index; the sweep reads only kappa, density and
-// positions of neighbours, none of which this dispatch writes.
+// the invocation's own index; the sweep reads only the list and kd,
+// neither of which this dispatch writes.
 @compute @workgroup_size(256)
 fn forces_den_apply(
     @builtin(global_invocation_id) gid: vec3u,
@@ -550,50 +614,8 @@ fn forces_den_apply(
         let forced = v + step.dt * (step.force + fict + a.xyz)
             + (1.0 - exp(-XSPH_RATE * step.dt)) * xsph[p].xyz;
         temperature[p] += step.dt * a.w;
-        let k_i = kappa[p] / density[p];
-        let dv_full = total.xyz + k_i * wall_grad_sum(r);
+        let dv_full = params.mass * total.xyz + kd[p] * wall_grad[p].xyz;
         velocities[p] = vec4f(forced - step.dt * dv_full, 0.0);
-    }
-}
-
-
-fn kappa_partial(p: u32, lane: u32) -> vec3f {
-    let pos = positions[p].xyz;
-    let k_i = kappa[p] / density[p];
-    let base = cell_base(pos);
-    var dv = vec3f(0.0);
-    for (var cell = lane; cell < 27u; cell += LANES) {
-        let coord = vec3i(base)
-            + vec3i(i32(cell % 3u) - 1, i32((cell / 3u) % 3u) - 1, i32(cell / 9u) - 1);
-        if any(coord < vec3i(0)) || any(coord >= vec3i(params.dims)) {
-            continue;
-        }
-        let c = (u32(coord.z) * params.dims.y + u32(coord.y)) * params.dims.x
-            + u32(coord.x);
-        let end = starts[c + 1u];
-        for (var k = starts[c]; k < end; k++) {
-            let j = sorted[k];
-            let x = pos - positions[j].xyz;
-            dv += params.mass * (k_i + kappa[j] / density[j])
-                * grad_kernel(x, length(x), params.h);
-        }
-    }
-    return dv;
-}
-
-fn apply_kappa_wide(gid: u32, lid: u32) {
-    let p = gid / LANES;
-    let lane = gid % LANES;
-    var dv = vec3f(0.0);
-    if p < params.count {
-        dv = kappa_partial(p, lane);
-    }
-    lane_sum[lid] = vec4f(dv, 0.0);
-    let total = lane_fold(lid);
-    if lane == 0u && p < params.count {
-        let k_i = kappa[p] / density[p];
-        let dv_full = total.xyz + k_i * wall_grad_sum(positions[p].xyz);
-        velocities[p] = vec4f(velocities[p].xyz - step.dt * dv_full, 0.0);
     }
 }
 
@@ -619,35 +641,23 @@ fn den_kappa(
     let live = p < params.count;
     var drho = 0.0;
     if live {
-        let pos = positions[p].xyz;
         let vel = velocities[p].xyz;
-        let base = cell_base(pos);
-        for (var cell = lane; cell < 27u; cell += LANES) {
-            let coord = vec3i(base)
-                + vec3i(i32(cell % 3u) - 1, i32((cell / 3u) % 3u) - 1, i32(cell / 9u) - 1);
-            if any(coord < vec3i(0)) || any(coord >= vec3i(params.dims)) {
-                continue;
-            }
-            let c = (u32(coord.z) * params.dims.y + u32(coord.y)) * params.dims.x
-                + u32(coord.x);
-            let end = starts[c + 1u];
-            for (var k = starts[c]; k < end; k++) {
-                let j = sorted[k];
-                let x = pos - positions[j].xyz;
-                drho += params.mass
-                    * dot(vel - velocities[j].xyz, grad_kernel(x, length(x), params.h));
-            }
+        let base = p * NBR_CAP;
+        let n = nbr_n[p];
+        for (var k = lane; k < n; k += LANES) {
+            let e = nbr[base + k];
+            drho += dot(vel - velocities[u32(e.w)].xyz, e.xyz);
         }
     }
     lane_sum[lid.x] = vec4f(drho, 0.0, 0.0, 0.0);
     let total = lane_fold(lid.x);
     if lane == 0u && live {
-        drho = total.x;
-        drho += dot(velocities[p].xyz, wall_grad_sum(positions[p].xyz));
-        let rho_star = density[p] + step.dt * drho;
+        let rho = density[p];
+        drho = params.mass * total.x + dot(velocities[p].xyz, wall_grad[p].xyz);
+        let rho_star = rho + step.dt * drho;
         let k = max(rho_star - params.rho0, 0.0) * alpha[p] / (step.dt * step.dt);
-        kappa[p] = k;
-        pressure[p] += k * density[p];
+        kd[p] = k / rho;
+        pressure[p] += k * rho;
     }
 }
 
@@ -777,5 +787,6 @@ fn reduce_stats(@builtin(local_invocation_id) local: vec3u) {
         stats[7] = red_c[0];
         stats[8] = red_d[0];
         stats[9] = f32(atomicLoad(&clamp_count));
+        stats[10] = f32(atomicLoad(&nbr_over));
     }
 }

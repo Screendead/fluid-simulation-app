@@ -89,7 +89,7 @@ final class FrameDriver {
         lastCpuSeconds = cpuSeconds
         lastReportTime = now
         let line = String(
-            format: "frames %llu | interval µs p50 %.0f p99 %.0f max %.0f | acq µs p50 %.0f p99 %.0f | cpu µs p50 %.0f p99 %.0f | gpu µs p50 %.0f p99 %.0f | compr %% avg %.3f max %.3f | rho %.0f..%.0f | p %.0f..%.0f Pa | dT µK %.1f..%.1f | v %.2f n %u clamp %u | idle %llu | mem %.1f MB | batt %.0f%% %@ | cpu%% %.1f | stats µs %.0f",
+            format: "frames %llu | interval µs p50 %.0f p99 %.0f max %.0f | acq µs p50 %.0f p99 %.0f | cpu µs p50 %.0f p99 %.0f | gpu µs p50 %.0f p99 %.0f | compr %% avg %.3f max %.3f | rho %.0f..%.0f | p %.0f..%.0f Pa | dT µK %.1f..%.1f | v %.2f n %u clamp %u nbr %u | idle %llu | mem %.1f MB | batt %.0f%% %@ | cpu%% %.1f | stats µs %.0f",
             stats.frames,
             stats.interval_p50_us, stats.interval_p99_us, stats.interval_max_us,
             stats.acquire_p50_us, stats.acquire_p99_us,
@@ -100,7 +100,7 @@ final class FrameDriver {
             stats.pressure_min, stats.pressure_max,
             (stats.temperature_min - 293.15) * 1_000_000,
             (stats.temperature_max - 293.15) * 1_000_000,
-            stats.v_max, stats.substeps, stats.clamp_count, stats.idle_frames,
+            stats.v_max, stats.substeps, stats.clamp_count, stats.neighbour_overflow, stats.idle_frames,
             memory, battery, thermal, cpuPercent, statsUs)
         print(line)
     }

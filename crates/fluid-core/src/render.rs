@@ -37,6 +37,10 @@ const MAX_DT: f32 = 1.0 / 30.0;
 // fraction of the fluid with no validation error to say so.
 const SWEEP_LANES: u32 = 8;
 
+/// Mirrors NBR_CAP in sim_solve.wgsl: neighbour-list slots per particle.
+/// A mismatch sizes the list buffer wrong with no validation error.
+const NBR_CAP: u32 = 96;
+
 const DT_SUB_MAX: f32 = 0.0042;
 
 // The substep floor divides the measured frame — a dropped frame
@@ -129,7 +133,7 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         label: None,
         required_features: wgpu::Features::IMMEDIATES,
         required_limits: wgpu::Limits {
-            max_storage_buffers_per_shader_stage: 16,
+            max_storage_buffers_per_shader_stage: 20,
             max_immediate_size: 48,
             ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
         },
@@ -191,7 +195,7 @@ pub fn film(
     });
     let stats = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("film stats"),
-        size: 40,
+        size: 44,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -376,7 +380,7 @@ pub fn film(
             pass.set_bind_group(0, &sim.tracer_draw_bind, &[]);
             pass.draw(0..sim.tracer_count, 0..1);
         }
-        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &stats, 0, 40);
+        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &stats, 0, 44);
         let sampled = f % every == 0;
         if sampled {
             encoder.copy_texture_to_buffer(
@@ -979,7 +983,7 @@ struct Sim {
     sprite_bind: wgpu::BindGroup,
     stats_src: wgpu::Buffer,
     stats_staging: [StagingSlot; 3],
-    stats: [f32; 10],
+    stats: [f32; 11],
     spacing: f32,
     extent: [f32; 2],
     tracer_count: u32,
@@ -1046,13 +1050,17 @@ impl Sim {
         let sorted = storage("sim sorted", u64::from(count) * 4, none);
         let density = storage("sim density", u64::from(count) * 4, none);
         let alpha = storage("sim alpha", u64::from(count) * 4, none);
-        let kappa = storage("sim kappa", u64::from(count) * 4, none);
+        let kd = storage("sim kappa over density", u64::from(count) * 4, none);
         let pressure = storage("sim pressure", u64::from(count) * 4, none);
         let prev_pressure = storage("sim prev pressure", u64::from(count) * 4, none);
         let clamps = storage("sim clamps", 4, none);
         let accel = storage("sim accel", u64::from(count) * 16, none);
         let xsph = storage("sim xsph", u64::from(count) * 16, none);
-        let stats_src = storage("sim stats", 40, wgpu::BufferUsages::COPY_SRC);
+        let nbr = storage("sim neighbours", u64::from(count * NBR_CAP) * 16, none);
+        let nbr_n = storage("sim neighbour counts", u64::from(count) * 4, none);
+        let nbr_over = storage("sim neighbour overflow", 4, none);
+        let wall_grad = storage("sim wall gradients", u64::from(count) * 16, none);
+        let stats_src = storage("sim stats", 44, wgpu::BufferUsages::COPY_SRC);
         // The box starts at the lab constants' temperature, 20 C.
         let temperature = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim temperature"),
@@ -1092,7 +1100,7 @@ impl Sim {
         let stats_staging = std::array::from_fn(|_| StagingSlot {
             buffer: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("sim stats staging"),
-                size: 40,
+                size: 44,
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -1100,7 +1108,7 @@ impl Sim {
         });
         let params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim params"),
-            size: 48,
+            size: 64,
             usage: wgpu::BufferUsages::UNIFORM,
             mapped_at_creation: true,
         });
@@ -1141,13 +1149,13 @@ impl Sim {
         let grid_layout = layout("sim grid", &[uniform(0), ro(1), rw(2), ro(3), rw(4), rw(5)]);
         // scan_single never touches block_sums; the gap at 3 stays open.
         let scan_layout = layout("sim scan", &[uniform(0), ro(1), rw(2), rw(4)]);
-        // The sweeps never read the counts; binding 3 stays open.
         let solve_layout = layout(
             "sim solve",
             &[
                 uniform(0),
                 rw(1),
                 rw(2),
+                rw(3),
                 ro(4),
                 ro(5),
                 rw(6),
@@ -1160,6 +1168,9 @@ impl Sim {
                 rw(13),
                 rw(14),
                 rw(15),
+                rw(16),
+                rw(17),
+                rw(18),
             ],
         );
         let tracer_layout = layout(
@@ -1235,11 +1246,12 @@ impl Sim {
                 entry(0, &params),
                 entry(1, &positions),
                 entry(2, &velocities),
+                entry(3, &nbr_over),
                 entry(4, &starts),
                 entry(5, &sorted),
                 entry(6, &density),
                 entry(7, &alpha),
-                entry(8, &kappa),
+                entry(8, &kd),
                 entry(9, &pressure),
                 entry(10, &prev_pressure),
                 entry(11, &temperature),
@@ -1247,6 +1259,9 @@ impl Sim {
                 entry(13, &clamps),
                 entry(14, &accel),
                 entry(15, &xsph),
+                entry(16, &nbr),
+                entry(17, &nbr_n),
+                entry(18, &wall_grad),
             ],
         );
         let tracer_bind = bind(
@@ -1530,7 +1545,7 @@ impl Sim {
             sprite_bind,
             stats_src,
             stats_staging,
-            stats: [0.0; 10],
+            stats: [0.0; 11],
             spacing,
             extent,
             tracer_count,
@@ -1698,7 +1713,7 @@ impl Bench {
         let sorted = storage("sorted", u64::from(count) * 4, none);
         let params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim params"),
-            size: 48,
+            size: 64,
             usage: wgpu::BufferUsages::UNIFORM,
             mapped_at_creation: true,
         });
@@ -1948,6 +1963,9 @@ pub struct RenderStats {
     pub temperature_min: f32,
     pub temperature_max: f32,
     pub clamp_count: u32,
+    /// Neighbours dropped past the list cap, cumulative; nonzero means
+    /// the solver skipped pairs and the cap in sim_solve.wgsl is short.
+    pub neighbour_overflow: u32,
     pub substeps: u32,
     pub idle_frames: u64,
 }
@@ -2000,9 +2018,9 @@ impl Renderer {
             // WebGPU's default limits overshoot small adapters (the
             // simulator offers 15 inter-stage variables, the default
             // asks 16), so start from downlevel and raise what the code
-            // binds: the sim layouts hold five storage buffers a stage.
+            // binds: the solve layout holds eighteen storage buffers.
             required_limits: wgpu::Limits {
-                max_storage_buffers_per_shader_stage: 16,
+                max_storage_buffers_per_shader_stage: 20,
                 max_immediate_size: 48,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
@@ -2414,7 +2432,7 @@ impl Renderer {
                 .iter()
                 .position(|x| x.state.load(Ordering::Acquire) == SLOT_FREE);
             if let Some(i) = free {
-                encoder.copy_buffer_to_buffer(&s.stats_src, 0, &s.stats_staging[i].buffer, 0, 40);
+                encoder.copy_buffer_to_buffer(&s.stats_src, 0, &s.stats_staging[i].buffer, 0, 44);
             }
             free
         } else {
@@ -2522,7 +2540,7 @@ impl Renderer {
     pub fn stats(&self) -> RenderStats {
         let (f, substeps) = match &self.mode {
             Mode::Sim(s) => (s.stats, s.substeps_used),
-            _ => ([0.0; 10], 0),
+            _ => ([0.0; 11], 0),
         };
         RenderStats {
             compression_avg: f[0],
@@ -2535,6 +2553,7 @@ impl Renderer {
             temperature_min: f[7],
             temperature_max: f[8],
             clamp_count: f[9] as u32,
+            neighbour_overflow: f[10] as u32,
             substeps,
             idle_frames: self.idle_frames,
             frames: self.frames,
@@ -2680,10 +2699,10 @@ mod tests {
         substeps: u32,
         frames: u32,
         gravity: [f32; 3],
-    ) -> [f32; 10] {
+    ) -> [f32; 11] {
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stats staging"),
-            size: 40,
+            size: 44,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -2758,7 +2777,7 @@ mod tests {
             pass.set_pipeline(&sim.reduce_stats);
             pass.dispatch_workgroups(1, 1, 1);
         }
-        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &staging, 0, 40);
+        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &staging, 0, 44);
         queue.submit(std::iter::once(encoder.finish()));
         staging.map_async(wgpu::MapMode::Read, .., |_| {});
         device
@@ -2768,7 +2787,7 @@ mod tests {
             })
             .expect("poll");
         let bytes = staging.get_mapped_range(..).expect("mapped");
-        let mut out = [0.0f32; 10];
+        let mut out = [0.0f32; 11];
         for (v, chunk) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
             *v = f32::from_le_bytes(*chunk);
         }

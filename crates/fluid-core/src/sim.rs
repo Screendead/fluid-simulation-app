@@ -241,10 +241,13 @@ fn hash(x: u32) -> u32 {
     h ^ (h >> 13)
 }
 
-/// The SimParams uniform both sim shaders declare; 48 bytes, vec3 slots
-/// padded per WGSL uniform alignment.
-pub(crate) fn pack_sim_params(grid: &Grid, count: u32, h: f32, mass: f32) -> [u8; 48] {
-    let mut raw = [0u8; 48];
+/// The SimParams uniform the sim shaders declare, vec3 slots padded per
+/// WGSL uniform alignment. The 48-byte head is common; the tail past
+/// rho0 holds the solver's hoisted kernel constants (1/h, the cubic
+/// spline's 1/(pi h^3), that over h, and the squared support radius),
+/// which only sim_solve.wgsl declares.
+pub(crate) fn pack_sim_params(grid: &Grid, count: u32, h: f32, mass: f32) -> [u8; 64] {
+    let mut raw = [0u8; 64];
     let mut put_f = |off: usize, v: f32| raw[off..off + 4].copy_from_slice(&v.to_le_bytes());
     for (i, v) in grid.min.iter().enumerate() {
         put_f(i * 4, *v);
@@ -253,6 +256,11 @@ pub(crate) fn pack_sim_params(grid: &Grid, count: u32, h: f32, mass: f32) -> [u8
     put_f(32, h);
     put_f(36, mass);
     put_f(40, REST_DENSITY);
+    let sigma = 1.0 / (std::f32::consts::PI * h * h * h);
+    put_f(44, 1.0 / h);
+    put_f(48, sigma);
+    put_f(52, sigma / h);
+    put_f(56, 4.0 * h * h);
     for (i, v) in grid.dims.iter().enumerate() {
         raw[16 + i * 4..20 + i * 4].copy_from_slice(&v.to_le_bytes());
     }
@@ -436,7 +444,12 @@ mod tests {
         assert_eq!([f(0), f(4), f(8), f(12)], [1.0, 2.0, 3.0, 4.0]);
         assert_eq!([u(16), u(20), u(24), u(28)], [5, 6, 7, 8]);
         assert_eq!([f(32), f(36), f(40)], [9.0, 10.0, REST_DENSITY]);
-        assert_eq!(&raw[44..48], &[0u8; 4]);
+        let sigma = 1.0 / (std::f32::consts::PI * 729.0);
+        assert_eq!(
+            [f(44), f(48), f(52), f(56)],
+            [1.0 / 9.0, sigma, sigma / 9.0, 324.0]
+        );
+        assert_eq!(&raw[60..64], &[0u8; 4]);
     }
 
     // Copies the shader's wedge polynomials; a drifted edit to either
