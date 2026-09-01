@@ -272,6 +272,15 @@ settled and shaken, prices it before any merge; if the shaken number
 is unacceptable, the recorded fallback is a stochastic fraction of
 the tracers splatting at proportionally higher DYE_SCALE.
 
+Priced 2026-09-01, reference device, thermal nominal, 88 one-second
+stats windows of Jack's play: settled GPU p50 6.1 ms — unchanged
+from the pre-dye 6.15, the zero-charge collapse holds. Post-shake
+churn (the dye-heavy state) 6.3-7.8 ms; the single worst window
+9.8 ms p50 during a v 3.2, n 16 shake, with drops only in the p99
+tail as before the dye. Every window held the 120 Hz median — no
+60 Hz window in the whole session. The stochastic fallback is not
+needed.
+
 ## Sequencing: renderer before the aggressive optimisation pass
 
 Decision, 2026-08-31. Build the M4 renderer first. Run the aggressive
