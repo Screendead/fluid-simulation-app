@@ -6,8 +6,12 @@
 // vector and gain — arrives precomputed in the immediates; air pixels
 // take the early return and pay one stripe lookup.
 
+// The fill reads the filtered field: blurred thickness, its two raw
+// texel differences and its Laplacian, one sample a pixel. field_filter
+// writes it from the raw splat.
 @group(0) @binding(0) var field: texture_2d<f32>;
 @group(0) @binding(1) var field_sampler: sampler;
+@group(0) @binding(2) var filtered: texture_storage_2d<rgba16float, write>;
 
 struct Optics {
     up: vec3f,
@@ -86,30 +90,61 @@ fn dazzle(p: vec2f, px2w: vec2f, blur: f32) -> vec3f {
 // flicker meter demanded it, as the record said it might.
 const BLUR = array<f32, 4>(0.3125, 0.234375, 0.09375, 0.015625);
 
-@fragment
-fn blur_h_frag(in: FillVertex) -> @location(0) vec4f {
-    let texel = 1.0 / vec2f(textureDimensions(field));
-    var acc = textureSampleLevel(field, field_sampler, in.uv, 0.0).r * BLUR[0];
-    for (var i = 1; i <= 3; i++) {
-        let o = vec2f(texel.x * f32(i), 0.0);
-        acc += (textureSampleLevel(field, field_sampler, in.uv + o, 0.0).r
-            + textureSampleLevel(field, field_sampler, in.uv - o, 0.0).r)
-            * BLUR[i];
-    }
-    return vec4f(acc, 0.0, 0.0, 0.0);
-}
+// One workgroup filters a 16x16 tile: the raw field with a four-texel
+// apron lands in workgroup memory, the rows blur, the columns blur,
+// and the tile's centred differences and Laplacian come off the
+// blurred neighbours. Edges clamp like the sampler did. The fill's
+// bilinear sample of these per-texel differences equals the
+// differences of bilinear samples it took before, so the optics are
+// unchanged up to the half-float store.
+const TILE: u32 = 16u;
+const APRON: u32 = 4u;
+const SPAN: u32 = 24u;
+const INNER: u32 = 18u;
+var<workgroup> raw: array<f32, 576>;
+var<workgroup> rows: array<f32, 432>;
 
-@fragment
-fn blur_v_frag(in: FillVertex) -> @location(0) vec4f {
-    let texel = 1.0 / vec2f(textureDimensions(field));
-    var acc = textureSampleLevel(field, field_sampler, in.uv, 0.0).r * BLUR[0];
-    for (var i = 1; i <= 3; i++) {
-        let o = vec2f(0.0, texel.y * f32(i));
-        acc += (textureSampleLevel(field, field_sampler, in.uv + o, 0.0).r
-            + textureSampleLevel(field, field_sampler, in.uv - o, 0.0).r)
-            * BLUR[i];
+@compute @workgroup_size(16, 16)
+fn field_filter(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_id) l: vec3u) {
+    let dims = vec2i(textureDimensions(field));
+    let origin = vec2i(wg.xy) * i32(TILE) - i32(APRON);
+    let lin = l.y * TILE + l.x;
+    for (var i = lin; i < SPAN * SPAN; i += TILE * TILE) {
+        let c = origin + vec2i(i32(i % SPAN), i32(i / SPAN));
+        raw[i] = textureLoad(field, clamp(c, vec2i(0), dims - 1), 0).r;
     }
-    return vec4f(acc, 0.0, 0.0, 0.0);
+    workgroupBarrier();
+    for (var i = lin; i < SPAN * INNER; i += TILE * TILE) {
+        let base = (i / INNER) * SPAN + i % INNER + 3u;
+        var acc = raw[base] * BLUR[0];
+        for (var k = 1u; k <= 3u; k++) {
+            acc += (raw[base + k] + raw[base - k]) * BLUR[k];
+        }
+        rows[i] = acc;
+    }
+    workgroupBarrier();
+    for (var i = lin; i < INNER * INNER; i += TILE * TILE) {
+        let base = i + 3u * INNER;
+        var acc = rows[base] * BLUR[0];
+        for (var k = 1u; k <= 3u; k++) {
+            acc += (rows[base + k * INNER] + rows[base - k * INNER]) * BLUR[k];
+        }
+        raw[i] = acc;
+    }
+    workgroupBarrier();
+    let centre = (l.y + 1u) * INNER + l.x + 1u;
+    let d = raw[centre];
+    let xp = raw[centre + 1u];
+    let xm = raw[centre - 1u];
+    let yp = raw[centre + INNER];
+    let ym = raw[centre - INNER];
+    let texel = vec2i(wg.xy) * i32(TILE) + vec2i(l.xy);
+    if all(texel < dims) {
+        let step = 2.0 * optics.extent / vec2f(dims);
+        let lap = (xp + xm - 2.0 * d) / (step.x * step.x)
+            + (yp + ym - 2.0 * d) / (step.y * step.y);
+        textureStore(filtered, texel, vec4f(d, xp - xm, ym - yp, lap));
+    }
 }
 
 struct FillVertex {
@@ -135,7 +170,8 @@ fn decay_frag(in: FillVertex) -> @location(0) vec4f {
 
 @fragment
 fn surface_frag(in: FillVertex) -> @location(0) vec4f {
-    let d = textureSampleLevel(field, field_sampler, in.uv, 0.0).r;
+    let f = textureSampleLevel(field, field_sampler, in.uv, 0.0);
+    let d = f.r;
     let a = smoothstep(EDGE_LO, EDGE_HI, d);
 
     // This pixel on the back wall, metres, y up.
@@ -149,20 +185,14 @@ fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     // transient from throwing the refraction across the screen.
     let t = clamp(d / optics.field_settled, 0.0, 1.25) * optics.slab_depth;
 
-    // Four raw neighbour taps, one field texel out: their differences
-    // are the thickness gradient, their sum against the centre is the
-    // Laplacian the caustics need. uv.y runs against world y.
+    // The filtered texel differences, one texel apart, are the
+    // thickness gradient; the Laplacian rides in the fourth channel.
+    // field_filter already ran uv.y against world y.
     let texel = 1.0 / vec2f(textureDimensions(field));
-    let xp = textureSampleLevel(field, field_sampler, in.uv + vec2f(texel.x, 0.0), 0.0).r;
-    let xm = textureSampleLevel(field, field_sampler, in.uv - vec2f(texel.x, 0.0), 0.0).r;
-    let yp = textureSampleLevel(field, field_sampler, in.uv + vec2f(0.0, texel.y), 0.0).r;
-    let ym = textureSampleLevel(field, field_sampler, in.uv - vec2f(0.0, texel.y), 0.0).r;
     let step = 2.0 * optics.extent * texel;
     let dpf = optics.slab_depth / optics.field_settled;
-    let grad = vec2f(xp - xm, ym - yp) / (2.0 * step) * dpf;
-    let lap = ((xp + xm - 2.0 * d) / (step.x * step.x)
-        + (yp + ym - 2.0 * d) / (step.y * step.y))
-        * dpf;
+    let grad = f.gb / (2.0 * step) * dpf;
+    let lap = f.a * dpf;
     let n = normalize(vec3f(-grad, 1.0));
 
     // Snell into the water, through the thickness, onto the wall.

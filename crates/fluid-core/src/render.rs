@@ -337,26 +337,12 @@ pub fn film(
             pass.set_bind_group(0, &sim.sprite_bind, &[]);
             pass.draw(0..4, 0..sim.count);
         }
-        for (pipeline, bind, target) in [
-            (&sim.blur_h, &sim.blur_h_bind, &sim.blur_a),
-            (&sim.blur_v, &sim.blur_v_bind, &sim.blur_b),
-        ] {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, bind, &[]);
-            pass.draw(0..3, 0..1);
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&sim.filter);
+            pass.set_bind_group(0, &sim.filter_bind, &[]);
+            pass.set_immediates(0, &pack_optics(force, sim.extent));
+            pass.dispatch_workgroups(sim.filter_groups[0], sim.filter_groups[1], 1);
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -966,14 +952,13 @@ struct Sim {
     decay: wgpu::RenderPipeline,
     fill: wgpu::RenderPipeline,
     fill_layout: wgpu::BindGroupLayout,
+    filter_layout: wgpu::BindGroupLayout,
     field_sampler: wgpu::Sampler,
     field: wgpu::TextureView,
-    blur_h: wgpu::RenderPipeline,
-    blur_v: wgpu::RenderPipeline,
-    blur_a: wgpu::TextureView,
-    blur_b: wgpu::TextureView,
-    blur_h_bind: wgpu::BindGroup,
-    blur_v_bind: wgpu::BindGroup,
+    filter: wgpu::ComputePipeline,
+    filtered: wgpu::TextureView,
+    filter_bind: wgpu::BindGroup,
+    filter_groups: [u32; 2],
     fill_bind: wgpu::BindGroup,
     tracer_bind: wgpu::BindGroup,
     tracer_draw_bind: wgpu::BindGroup,
@@ -1317,43 +1302,16 @@ impl Sim {
             ..Default::default()
         });
         let field = field_view(device, "sim field", surface);
-        // The optics read the field through the separable blur:
-        // field -> blur_a -> blur_b, and the fill pass samples blur_b.
-        let blur_a = field_view(device, "sim field blur a", surface);
-        let blur_b = field_view(device, "sim field blur b", surface);
-        let fill_bind = field_bind(device, &fill_layout, &blur_b, &field_sampler);
-        let blur_h_bind = field_bind(device, &fill_layout, &field, &field_sampler);
-        let blur_v_bind = field_bind(device, &fill_layout, &blur_a, &field_sampler);
+        // The optics read the field through field_filter: the raw splat
+        // in, the blurred thickness with its differences out, and the
+        // fill pass samples that.
+        let filter_layout = layout_filter(device);
+        let filtered = filtered_view(device, surface);
+        let fill_bind = field_bind(device, &fill_layout, &filtered, &field_sampler);
+        let filter_bind = filter_bind(device, &filter_layout, &field, &filtered);
         let surface_module = module("sim_surface", include_str!("sim_surface.wgsl"));
         let fill_pl = pipe_layout("sim surface", &fill_layout, 48);
-        let blur_pl = pipe_layout("sim blur", &fill_layout, 0);
-        let blur_pipe = |label: &str, entry: &str| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&blur_pl),
-                vertex: wgpu::VertexState {
-                    module: &surface_module,
-                    entry_point: Some("fill"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &surface_module,
-                    entry_point: Some(entry),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::R16Float,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
+        let filter_pl = pipe_layout("sim field filter", &filter_layout, 48);
         let grid_pl = pipe_layout("sim grid", &grid_layout, 0);
         let scan_pl = pipe_layout("sim scan", &scan_layout, 0);
         let solve_pl = pipe_layout("sim solve", &solve_layout, 48);
@@ -1528,14 +1486,20 @@ impl Sim {
                 cache: None,
             }),
             fill_layout,
+            filter_layout,
             field_sampler,
             field,
-            blur_h: blur_pipe("sim blur h", "blur_h_frag"),
-            blur_v: blur_pipe("sim blur v", "blur_v_frag"),
-            blur_a,
-            blur_b,
-            blur_h_bind,
-            blur_v_bind,
+            filter: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("sim field filter"),
+                layout: Some(&filter_pl),
+                module: &surface_module,
+                entry_point: Some("field_filter"),
+                compilation_options: Default::default(),
+                cache: None,
+            }),
+            filtered,
+            filter_bind,
+            filter_groups: filter_groups(surface),
             fill_bind,
             tracer_bind,
             tracer_draw_bind,
@@ -1564,12 +1528,95 @@ impl Sim {
 impl Sim {
     fn resize(&mut self, device: &wgpu::Device, surface: [u32; 2]) {
         self.field = field_view(device, "sim field", surface);
-        self.blur_a = field_view(device, "sim field blur a", surface);
-        self.blur_b = field_view(device, "sim field blur b", surface);
-        self.fill_bind = field_bind(device, &self.fill_layout, &self.blur_b, &self.field_sampler);
-        self.blur_h_bind = field_bind(device, &self.fill_layout, &self.field, &self.field_sampler);
-        self.blur_v_bind = field_bind(device, &self.fill_layout, &self.blur_a, &self.field_sampler);
+        self.filtered = filtered_view(device, surface);
+        self.fill_bind = field_bind(
+            device,
+            &self.fill_layout,
+            &self.filtered,
+            &self.field_sampler,
+        );
+        self.filter_bind = filter_bind(device, &self.filter_layout, &self.field, &self.filtered);
+        self.filter_groups = filter_groups(surface);
     }
+}
+
+/// The filtered field: blurred thickness, its two texel differences,
+/// and its Laplacian, at the field's quarter resolution.
+fn filtered_view(device: &wgpu::Device, surface: [u32; 2]) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("sim field filtered"),
+            size: wgpu::Extent3d {
+                width: (surface[0] / 4).max(1),
+                height: (surface[1] / 4).max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
+}
+
+/// field_filter's 16x16 tiles over the quarter-resolution field.
+fn filter_groups(surface: [u32; 2]) -> [u32; 2] {
+    [
+        (surface[0] / 4).max(1).div_ceil(16),
+        (surface[1] / 4).max(1).div_ceil(16),
+    ]
+}
+
+fn filter_bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    field: &wgpu::TextureView,
+    filtered: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("sim field filter"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(field),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(filtered),
+            },
+        ],
+    })
+}
+
+fn layout_filter(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("sim field filter"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+        ],
+    })
 }
 
 fn field_view(device: &wgpu::Device, label: &str, surface: [u32; 2]) -> wgpu::TextureView {
@@ -2350,30 +2397,11 @@ impl Renderer {
             pass.draw(0..4, 0..s.count);
         }
         if let Mode::Sim(s) = &self.mode {
-            for (pipeline, bind, target) in [
-                (&s.blur_h, &s.blur_h_bind, &s.blur_a),
-                (&s.blur_v, &s.blur_v_bind, &s.blur_b),
-            ] {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    ..Default::default()
-                });
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, bind, &[]);
-                pass.draw(0..3, 0..1);
-            }
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&s.filter);
+            pass.set_bind_group(0, &s.filter_bind, &[]);
+            pass.set_immediates(0, &pack_optics(force, s.extent));
+            pass.dispatch_workgroups(s.filter_groups[0], s.filter_groups[1], 1);
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
