@@ -146,7 +146,7 @@ third of all eddy damping, and shipped XSPH_RATE 6 — retention tau
 at this particle count. Guards green; the recorded cost is ~2 s of
 extra sleep latency after motion.
 
-Test baseline: 30 Rust tests pass, 2026-09-01.
+Test baseline: 31 Rust tests pass, 2026-09-01.
 
 ## M1 measurements (reference device, 2026-08-30, Release)
 
@@ -200,6 +200,24 @@ overlay is deleted (git holds it), the status bar and home indicator
 hide, and the screen is only water. The stats line still prints once
 a second; `devicectl` console capture is now the only measurement
 channel.
+
+2026-09-01, night: the pass's second stretch, on branch `opt-sweeps`
+(stacked on `opt-remainder` on `no-gui`; none merged). A worktree
+profiler measured the A15 pass by pass and found the settled span is
+the governor's clock, that Metal overlaps encoders so per-pass spans
+are upper bounds, and that the solver's thirteen neighbour sweeps
+owned the substep while the surface pass owned a flat 2.3 to 3.1 ms a
+frame. Shipped on the branch, each gate-green and film-guarded: the
+clear dispatches deleted and the force step fused; a per-substep
+neighbour list with cached kernel gradients (sweeps 135 to 249 us ->
+24 to 63 us each; the frame holds 120 Hz under handling at three to
+five substeps); the blur and derivative work fused into one compute
+pass with a one-sample surface shader; subgroup lane folds and a
+grid-sized scan chunk. Cadence under 4x replication: 5.2 -> 4.1 ms a
+frame at two substeps, solver plus tracers under 2.1 ms. Jack's goal
+is 4x to 16x the particles; the measured ladder rests 4x (6,336) at
+120 Hz today. The optimisation record holds the numbers, the caveats
+(handled, hot, charging) and the next steps.
 
 M3 close waits on the optimisation pass: the roadmap's closure rule
 needs the oracle measured on the device, and three measurements are

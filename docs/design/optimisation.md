@@ -238,6 +238,148 @@ also the one reading the highest settled GPU p50 (6.46 ms — but
 six windows, plugged and charging): re-measure settled p50 clean
 next session before reading anything into either fact.
 
+## The device profile, and what the A15 actually measures (2026-09-01, night)
+
+The instrument is a worktree profiler (scratchpad `prof/profdev_patch*.py`,
+`profdev.sh`, `profmine.py`; never in the repository): per-pass timestamps
+at the production pass boundaries, a fine mode with one pass per dispatch,
+`FLUID_IDLE=0` (gate off), `FLUID_NMIN` (pinned substeps),
+`FLUID_REPLICATE` (the whole frame encoded R times), `FLUID_SKIP`
+(field, fill, points draws left out), `FLUID_SPACING` (the particle
+ladder). Three facts about the instrument bind every number below.
+
+1. The governor. The stage-0 finding stands: below saturation the GPU
+   span is the clock the governor chose, not the work. Replication
+   saturates it, and the display cadence under replication is the one
+   honest whole-frame meter: a frame that holds 8,334 us at R = 4 costs
+   at most 2.08 ms.
+2. Spans overlap. Metal starts an encoder before the previous one drains
+   when no resource hazard forbids it, and a stage-boundary timestamp
+   fires at the start; a pass that then waits on a hazard reports the
+   wait. Per-pass sums therefore exceed wall time (31 to 45 ms of spans
+   in a 16 to 20 ms frame at R = 4), light passes that follow heavy ones
+   read high, and the fine mode adds an encoder boundary to every
+   dispatch. Read per-pass numbers as an ordering and as an upper
+   bound; compare only like against like.
+3. The session. Jack handled the phone through most runs (v_max 0.3 to
+   2.3 m/s), the thermal state climbed from nominal to serious and
+   stayed there, and the phone was plugged and charging. No number here
+   is a resting, cool measurement.
+
+### The baseline, fine mode (opt-remainder head, pinned n = 2, R = 4)
+
+| Pass | us each | Note |
+|---|---|---|
+| den_apply, den_kappa, div_apply, density_div, forces_eval | 135 to 249 | thirteen sweeps a substep, ~2.1 ms of ~2.3 |
+| clear_counts, count_cells, scatter, forces_apply, integrate | 3 to 7 | a dispatch boundary is single-digit us on the A15; the old 50 to 90 us was the governor |
+| scan_single | 26 to 38 | one workgroup, serial |
+| surface (fill + points, one pass) | 2,300 to 3,100 | per frame |
+| blur_h, blur_v, field_splat | 180, 210, 145 | per frame |
+| advect, splat_vel, clear_vel, resolve_vel, reduce_stats | 185, 60, 40, 25, 30 | per frame |
+
+The solver owned ~57% of the frame and the surface pass ~28%; the
+laptop table's 94% solver was the laptop's tiny render, as the record
+warned.
+
+### The changes, each with its guard and its device number
+
+Branch `opt-sweeps`, stacked on `opt-remainder` on `no-gui`. Every
+commit is gate-green and passed the film guard suite (spin, flat
+settle, upright flicker, ring, shake, wake; same-night baseline, the
+wideguard2 recipe) within run-to-run scatter. Two guard notes: the
+upright film's first-second clamp count is bimodal at seed on every
+build (20 or ~640; measured six times on the pre-list build), and the
+flicker meter reads 9,600 to 11,000 on the head against 9,575 to 9,890
+on the baseline over four runs each — inside the recorded band, under
+the 12,000 threshold, and first seen at the list commit, so it is the
+list's changed summation order, not the filter's half floats. Watch
+it.
+
+1. The clear dispatches and the force step (98c54e0). scatter zeroes
+   the counts the scan consumed and the sweeps read a cell's end as the
+   next cell's start; resolve zeroes the tracer grid it copied; the
+   force step fused into the first constant-density apply with the warm
+   start in the forces sweep's epilogue; chargeless tracer dots parked
+   outside the clip volume. Measured cost of what left, from the
+   baseline fine table: 3.1 + 6.9 us a substep and 35 to 44 us a frame.
+   Small; kept for the simpler substep.
+2. The neighbour list (7e2164f). The density sweep walks the stencil
+   once and writes each particle's true neighbours with their kernel
+   gradients (the stencil block spans ~6x the kernel's sphere, so most
+   old pair evaluations were zeros after three dependent loads); the
+   other twelve sweeps read the list; the wall gradient sum is cached;
+   kappa is carried as kappa over density. Cap 96 with a counted
+   overflow (`nbr` in the stats line; zero in every film and every
+   device window). Fine mode, same method both sides: den_apply 173 ->
+   24 us, den_kappa 176 -> 27, div_apply 135 -> 24, forces_eval 186 to
+   249 -> 63, density_div 144 to 174 -> 175 to 183 (it builds the
+   list). Per substep, isolated sums, ~2,300 -> ~590 us. Gate off,
+   handled, n 3 to 5: interval p50 = p99 = 8,334 us with acquire p50
+   0.9 ms (baseline under handling: acquire 7 ms, p99 25 to 33 ms).
+3. The field filter (ce39dde). One compute dispatch blurs both
+   directions in workgroup memory and writes the blurred thickness with
+   its texel differences and Laplacian; the surface shader takes one
+   sample instead of five. Bilinear sampling commutes with the
+   difference stencil, so the optics are unchanged up to the half-float
+   store. Device attribution pending a resting phone: the coarse spans
+   of a handled, hot run cannot separate it from its neighbours.
+4. Subgroup folds and the scan chunk (08d2f15). The lane folds are
+   three `subgroupShuffleXor` steps with no barrier and no workgroup
+   memory (naga needs no enable directive; `Features::SUBGROUP` is
+   required unconditionally, as IMMEDIATES is); the scan's serial chunk
+   is sized to the grid, which also lifts the 8,192-cell cap. Laptop
+   guards only; device number pending.
+
+Whole frame, cadence under R = 4 at pinned n = 2, thermal serious:
+baseline 20.75 ms -> 5.2 ms a frame; head (cuts + list + filter) 16.5
+ms -> 4.1 ms; head with every render draw skipped locks 8,334 us ->
+under 2.1 ms a frame for solver plus tracers. The same skip on the
+baseline reads 9.2 ms -> ~2.3 ms, which says the baseline's isolated
+solver sums overstate it: encoder boundaries cost more on the A15
+than the laptop's 22%.
+
+### The ladder (list build, gate off, pinned n; the cadence is the meter)
+
+| Spacing | Particles | Cells | n = 2 | n = 6 |
+|---|---|---|---|---|
+| 0.010 (shipped) | 1,620 | 1,568 | 120 Hz | 120 Hz held under handling (above) |
+| 0.008 | 2,584 | 2,380 | 120 Hz | — |
+| 0.0063 | 6,336 | 4,515 | 120 Hz | 60 Hz |
+| 0.005 | 16,775 | 7,020 | 60 Hz | 30 Hz |
+
+Jack's stated goal (2026-09-01, verbatim): "the ultimate goal here,
+btw, is to greatly increase the simulation size to 4x or 8x or even
+16x the number of particles". The solver spans scale close to
+linearly with particle count (per-substep spans 0.55, 1.3, 1.8 to
+1.9, 4.6 to 4.7 ms up the ladder, overlap caveat applied equally). 4x
+particles already rest at 120 Hz on this build; in motion the substep
+count also grows with 1/spacing (CFL), so 16x at 120 Hz is out of
+reach of this GPU by physics, not code. The render side is a fixed
+cost that comes straight out of the particle budget: the surface pass
+is 2.3 to 3.1 ms a frame in every capture, and the fine split puts
+the 131,072-point tracer draw at 1.5 to 2.6 ms of it (the split's own
+tile load and store inflate the upper figure) against ~1.4 ms for the
+liquid-glass fill.
+
+### Next, in order
+
+1. A resting, cool phone: the same protocol hands off (R = 4 pinned
+   n = 2 with and without each draw; fine mode), to attribute the
+   filter and price the points draw. Ten minutes.
+2. The tracer draw: a compute splat of the dots into a full-resolution
+   intensity buffer read by the surface shader (exact for single dots
+   a pixel; overlapping dots would take the brighter, a look change
+   for Jack's eye), or fewer tracers (Jack's dial). Expected to return
+   ~1 ms a frame to the particle budget.
+3. The builder sweep, now the largest solver item: sort particle state
+   into cell order each substep so the stencil walk and the list reads
+   are contiguous; then a symmetric build (half the candidate pairs).
+4. The refine chain (ten list sweeps a substep): a convergence-gated
+   iteration count through indirect dispatch, judged by the flicker
+   meter before any device build; LANES 4/8/16 and workgroup 64/256
+   as one-constant device A/Bs now that the folds are barrier-free.
+5. The runbook items below still stand.
+
 ## The runbook's remainder (waits for a phone session)
 
 Session prep, first plug-in: enable network debugging for the
@@ -261,8 +403,5 @@ then captures unplugged sessions, which the battery bound needs.
    windows against 2; Jack's hand judges feel, the capture judges
    drops. Each latency step is one drawable (~14 MB) and one frame
    of sensor-to-photon lag.
-4. The device per-pass split, if the motion drops are worth
-   closing: Xcode GPU frame capture during handling (the sanctioned
-   tool), or the worktree profile build if the capture tool fights.
-   It picks among the laptop candidates above; nothing is built
-   until it does.
+4. The device per-pass split: done above with the worktree profiler;
+   the resting-phone rerun is item 1 of "Next, in order".
