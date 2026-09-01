@@ -169,10 +169,100 @@ Items 1-3 of the runbook closed in one session on the branch head:
 The REVIEW.md device-measurement blocker on the branch cleared with
 these numbers; Jack ruled the merge the same morning.
 
+## The cost model after the lanes (laptop, 2026-09-01)
+
+The per-kernel profile, re-run on the merged head (worktree probe:
+one timestamped pass per dispatch, 600 rest + 600 shake frames,
+first 30 discarded, Jack's laptop). A calibration run first: the
+same frames with the whole solver in one timestamped pass read the
+solver at 2,097 us per average frame, against 2,568 us summed from
+the per-dispatch run — isolating dispatches into their own passes
+inflates the total ~22%. Read the table as proportion, not truth.
+
+| Pass | us each (isolated) | Note |
+|---|---|---|
+| forces_eval | 51 | heaviest sweep |
+| density_div | 43 | |
+| div_apply | 39 | |
+| den_apply | 39 | runs 1 + refine times per substep |
+| den_kappa | 38 | refine only |
+| reduce_stats | 29 | once per frame |
+| scan_single | 26 | one workgroup, serial 32 cells/thread |
+| blur_h, blur_v, field_splat, advect | 22-26 | once per frame |
+| narrow kernels (clear, count, scatter, forces_apply, integrate) | 4-6 | |
+| surface_draw | 2 | laptop-cheap; device res is 4.0x |
+
+Whole laptop frame 2.23 ms average, solver 94% of it. The lanes
+took the sweeps from 147-196 us to 38-51 us; what remains above
+the narrow-kernel floor is the sweeps themselves, the refine
+chain's volume (a measured dead lever — flicker, Target 3), and
+scan_single, whose isolated 26 us is an upper bound the shared
+production pass may not pay. Laptop-visible candidates, none built
+— A15 proportions must pick the target first (the runbook, below):
+a parallel scan, a forces_eval split, sweep fusion.
+
+## The captures, mined (reference device, 2026-09-01)
+
+Three console captures banked this day — the morning basin session,
+the dye session, and the GUI-free deploy — mined per window
+(scratchpad o2mine.py; settled = awake, v < 0.1, n <= 2; motion =
+v >= 0.3; sleep windows excluded):
+
+| Number | Settled | In motion |
+|---|---|---|
+| GPU p50, median window | 6.11-6.46 ms | 6.23-6.75 ms (worst window 14.8 ms) |
+| Interval p50 | 8,334 us in every window | 8,334 us in 155/156 windows |
+| Interval p99, median window | 8,334 us | 16,668-33,335 us |
+| Interval p99, worst window | 17,545 us | 41,669 us |
+| CPU encode p50 / worst p99 | ~1.0 / 1.8 ms | ~1.0 / 3.2 ms |
+| Footprint | 67-110 MB | same |
+| Thermal | nominal-serious | same |
+
+The shape for O2: settled is closed — 120 Hz clean, encode under
+2 ms, footprint half the 200 MB line. In the hand the median never
+leaves 120 Hz, but p99 spikes to 3-5 dropped frames whenever
+sustained handling holds n >= 3 and GPU p50 crosses the 8.33 ms
+budget (the GUI-free capture shows acq p50 rising to 7 ms there —
+swapchain back-pressure, not basin lock-in; every window kept the
+120 Hz median). Firming O2 must either price those motion drops as
+accepted or set the next optimisation target to close them; that
+call needs the minute hand-test.
+
+Two confounds bind the next session's numbers. Every capture above
+ran plugged in and charging (battery columns read 85 -> 90% —
+useless for drain). And the GUI-free build deleted the overlay's
+~100 Hz main-thread SwiftUI re-render, so CPU-side baselines move
+for a reason no measurement isolates (review finding, 2026-09-01);
+GPU numbers should not care. The one overlay-free capture is
+also the one reading the highest settled GPU p50 (6.46 ms — but
+six windows, plugged and charging): re-measure settled p50 clean
+next session before reading anything into either fact.
+
 ## The runbook's remainder (waits for a phone session)
 
-1. The M3 exit measurements: settled upright hydrostatics, the
-   minute hand-test with intervals, the "inside budget" clause.
-2. Budget O2 firmed; the battery bound measured.
-3. The frame-latency-1 experiment and the remaining M3 reclaims,
-   if the numbers above leave anything worth reclaiming.
+Session prep, first plug-in: enable network debugging for the
+reference device (Xcode, Connect via network) — wireless devicectl
+then captures unplugged sessions, which the battery bound needs.
+
+1. The M3 exit measurements:
+   - Settled upright hydrostatics: prop the phone upright, hands
+     off >= 60 s, read the settled windows before sleep; compare
+     the pressure ceiling against rho g times the resting fill
+     height at WORLD_SCALE.
+   - The minute hand-test: 60 s of ordinary play in Jack's hand;
+     record the interval distribution, GPU, compression; read the
+     M3 "convincing slosh inside budget" clause against it.
+2. Budget O2 firmed from 1; the battery bound from an unplugged
+   10-minute play session over wireless capture (or, without
+   wireless: plugged stats line, unplug, play, replug, difference).
+3. The frame-latency-1 experiment: flip
+   `desired_maximum_frame_latency` 2 -> 1 (render.rs, one line) in
+   a worktree deploy; A/B the minute hand-test and the settled
+   windows against 2; Jack's hand judges feel, the capture judges
+   drops. Each latency step is one drawable (~14 MB) and one frame
+   of sensor-to-photon lag.
+4. The device per-pass split, if the motion drops are worth
+   closing: Xcode GPU frame capture during handling (the sanctioned
+   tool), or the worktree profile build if the capture tool fights.
+   It picks among the laptop candidates above; nothing is built
+   until it does.
