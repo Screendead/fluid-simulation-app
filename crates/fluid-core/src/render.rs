@@ -26,9 +26,13 @@ const MAX_DT: f32 = 1.0 / 30.0;
 // ladder (M3 record) halves upright boil twice over by halving the
 // substep (0.42 mm at 4.2 ms, 0.14 at 2.1) while refine depth changes
 // nothing at either length. This and refine_passes key on substep
-// length, not count. Slightly above 8.334/4 ms, so measured 120 Hz
-// interval jitter stays at four substeps.
-const DT_SUB_MAX: f32 = 0.0022;
+// length, not count. 2.2 ms was set 2026-08-31 against resting boil,
+// before the 4x scale landed; re-measured at 4x on 2026-09-01
+// (optimisation record, target 1): 4.2 ms holds every rest, ring,
+// wake, flicker and shake guard, rests 120 Hz at two substeps, and
+// halves the 60 Hz floor that fed the basin. Slightly above
+// 8.334/2 ms, so measured 120 Hz interval jitter stays at two.
+const DT_SUB_MAX: f32 = 0.0042;
 
 // The substep floor divides the measured frame — a dropped frame
 // integrated at four substeps means 4-8 ms substeps, and the device
