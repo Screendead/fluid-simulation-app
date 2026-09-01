@@ -185,8 +185,9 @@ passes its first reading. Four notes, verbatim, with dispositions:
    through the existing velocity grid (the tracer machinery already
    advects through it), injected by speed, decaying over seconds,
    perturbing the refraction normal. Water would then visibly churn
-   after motion and calm down. Needs its own design entry before
-   code. Open.
+   after motion and calm down. Superseded 2026-09-01: the dye field
+   ("The dye, designed") is that idea made honest — the memory rides
+   the tracers, and it modulates scatter, not the normal.
 3. "the water is a little hard to see, when it's the main subject
    and we've put so much work into it. i'm not sure the right
    approach is to colour it differently - suggest some options" —
@@ -202,6 +203,74 @@ passes its first reading. Four notes, verbatim, with dispositions:
    movements are not reacted to in real time" — the substep-floor
    basin measured and mechanised in the Budget section above.
    Optimisation-pass target. Open.
+
+## The dye, designed (2026-09-01)
+
+Jack's direction, verbatim: "let's do the dye field". The problem it
+solves is recorded in the M3 record ("The sink, measured"): a flat
+surface hides internal motion from thickness-only optics, so the
+retained swirl is invisible until it deforms the surface.
+
+The model. Each tracer carries a charge: the fastest box-frame speed
+it has recently felt, decaying with time constant T_DYE. The advect
+kernel updates it (charge = max(|v|, charge * exp(-dt / T_DYE))) and
+the charge rides the existing f16 speed slot — no format change. A
+quarter-res R16Float dye texture accumulates the charge through the
+field's own decay-plus-splat pattern (the motion-aware field_keep,
+the same blend-constant template), so the texture carries no shot
+noise at rest and clears itself in motion. Tracers splat as small
+soft quads (the body/weight falloff form), not points: ~2.4 tracers
+per dye texel is Poisson-noisy as single pixels. The surface shader
+reads dye and mixes `through` toward a pale scatter tint before the
+Fresnel blend — the milkiness lives inside the water, the
+reflection stays clean.
+
+Why this is honest, and not the withdrawn perturbation field: the
+charge sources on box-frame relative speed from the solved field,
+and the memory advects with the tracers through the solver's own
+velocity grid. Steady rigid co-rotation makes no dye (no relative
+motion, no aeration — correct); spin-up, the stop, eddies and slosh
+all do. Swirls stretch and fold the charged tracers into filaments;
+the structure is real advection, not synthesis.
+
+Dials, Jack's. First-build values from the film ladder, 2026-09-01:
+T_DYE 4 s, DYE_GAIN 0.18, MILK_MAX 0.35, DYE_FLOOR 0.09 m/s, DYE_R
+0.01 m, DYE_SCALE 0.4, MILK_TINT (0.75, 0.82, 0.88). Rejected: gain
+0.5, cap 0.6, floor 0.05 — the whole body fogged to a uniform grey
+wash four seconds after the spin stop, because residual swirl above
+0.05 m/s kept re-sourcing charge and the gain saturated the cap
+everywhere; the dazzle died behind it. At the shipped dials the stop
+blooms, the churn draws banded haze, and the glass is clear again
+about four seconds after the swirl dies. Flicker on the meter recipe
+(NOISE=0.08 TREMOR=0 IDLE=0, settled window): 4,459 px/frame with
+dye against 3,525 without on the same build and day — both re-runs
+of the recipe behind the recorded 3,268 — threshold unchanged at
+12,000. Jack's device eye rules the final values.
+
+Two recorded contingencies:
+- Respawn erosion. Tracers respawn with time constant TAU = 3 s
+  (calibrated against cloud collapse; not touched). At T_DYE = 4 s
+  the filament contrast decays with tau_eff ~ 1.7 s while the eddy
+  it traces lives ~5 s. If the films show filaments dying before the
+  swirl, respawn inherits the previous frame's dye texture at the
+  spawn point instead of the source particle's speed.
+- The dot draw shares the speed slot, so dots now glow for ~T_DYE
+  after motion stops. If Jack's eye reads that as the old speckle
+  species, decoupling costs a tracer widening (vec2u -> vec4u,
+  ~1 MB) and its own slot.
+
+Budget. The splat's cost is overdraw: a 1 cm quad covers ~500 dye
+texels on the device target, so 131,072 charged tracers rasterize
+~66M blended fragments — far above the first +0.3-0.6 ms estimate
+(the review caught the arithmetic). Mitigation, shipped: a quad with
+zero charge collapses to a point in the vertex stage, so a settled
+box pays nothing and the cost scales with how much water is
+churning. Worst case (every tracer charged, a hard shake) is brief
+by construction — the charge floor and T_DYE drain it — and lands
+during frames the solver already spends heavily. The device p50,
+settled and shaken, prices it before any merge; if the shaken number
+is unacceptable, the recorded fallback is a stochastic fraction of
+the tracers splatting at proportionally higher DYE_SCALE.
 
 ## Sequencing: renderer before the aggressive optimisation pass
 

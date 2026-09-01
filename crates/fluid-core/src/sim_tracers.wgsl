@@ -43,6 +43,12 @@ const TAU: f32 = 3.0;
 // A stranded tracer is visible dust, so it waits far less.
 const TAU_STRAY: f32 = 0.25;
 
+// Dye memory: the charge a tracer carries into the dye splat is the
+// fastest speed it has recently felt, decaying over T_DYE. It rides
+// the packed speed slot. The M4 record ("The dye, designed") holds
+// the model and the dials.
+const T_DYE: f32 = 4.0;
+
 fn pcg(x: u32) -> u32 {
     var h = x * 747796405u + 2891336453u;
     h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
@@ -145,7 +151,8 @@ fn advect(@builtin(global_invocation_id) id: vec3u) {
         respawn(id.x, r0);
         return;
     }
-    var pos = load_tracer(id.x).xyz;
+    let old = load_tracer(id.x);
+    var pos = old.xyz;
     // Trilinear over the eight nearest cell centres.
     let gp = (pos - params.box_min) / params.cell - vec3f(0.5);
     let base = vec3u(clamp(vec3i(floor(gp)), vec3i(0), vec3i(params.dims) - vec3i(2)));
@@ -171,5 +178,5 @@ fn advect(@builtin(global_invocation_id) id: vec3u) {
     }
     pos += v * step.dt;
     let e = box_extent();
-    store_tracer(id.x, clamp(pos, -e, e), length(v));
+    store_tracer(id.x, clamp(pos, -e, e), max(length(v), old.w * exp(-step.dt / T_DYE)));
 }

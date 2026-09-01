@@ -186,9 +186,13 @@ the M3 exit measurements, budget O2 firmed, the battery bound, the
 frame-latency-1 experiment. From here work branches off master with
 a topic slug (CLAUDE.md section 8).
 
-Open look direction, Jack's when he wants it: a dye-like passive
-field to make retained internal motion visible under a flat surface
-(M3 record, "The sink, measured", last paragraph).
+The dye field landed 2026-09-01 on Jack's direction ("let's do the
+dye field"): each tracer carries a decaying charge of the speed it
+has felt, splatted to a quarter-res texture the glass optics read as
+milkiness — internal churn is now visible under a flat surface, and
+the structure is real advection. The M4 record ("The dye, designed")
+holds the model, the dials, and the overdraw budget note; the device
+p50 settled-and-shaken prices it before any merge.
 
 M3 close waits on the optimisation pass: the roadmap's closure rule
 needs the oracle measured on the device, and three measurements are

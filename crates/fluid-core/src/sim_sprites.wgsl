@@ -76,6 +76,45 @@ fn dot_frag(in: PointVertex) -> @location(0) vec4f {
     return vec4f(in.colour, 0.0);
 }
 
+// The dye splat: each tracer stamps its charge into the quarter-res
+// dye texture as a soft quad — single pixels (~2.4 tracers per dye
+// texel on the film target, fewer on the device) are Poisson noise
+// the flicker meter would read. The floor
+// keeps rest jitter out of the texture; radius, floor and scale are
+// record dials (M4, "The dye, designed").
+const DYE_R: f32 = 0.01;
+const DYE_FLOOR: f32 = 0.09;
+const DYE_SCALE: f32 = 0.4;
+
+struct DyeVertex {
+    @builtin(position) clip: vec4f,
+    @location(0) corner: vec2f,
+    @location(1) charge: f32,
+}
+
+@vertex
+fn dye(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> DyeVertex {
+    let t = tracers[i];
+    let extent = -(params.box_min.xy + vec2f(params.cell));
+    let centre = unpack2x16unorm(t.x) * 2.0 - vec2f(1.0);
+    let corner = vec2f(f32(v & 1u), f32(v >> 1u)) * 2.0 - 1.0;
+    var out: DyeVertex;
+    out.corner = corner;
+    out.charge = max(unpack2x16float(t.y).y - DYE_FLOOR, 0.0);
+    // An uncharged quad collapses to a point and rasterizes nothing:
+    // the splat's cost scales with how much water is churning, and a
+    // settled box pays nothing for the pass.
+    let r = select(0.0, DYE_R, out.charge > 0.0);
+    out.clip = vec4f(centre + corner * r / extent, 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn dye_frag(in: DyeVertex) -> @location(0) vec4f {
+    let falloff = max(1.0 - dot(in.corner, in.corner), 0.0);
+    return vec4f(in.charge * falloff * falloff * DYE_SCALE, 0.0, 0.0, 0.0);
+}
+
 // The liquid body: each solver particle splats its kernel footprint
 // into the half-resolution field the surface pass thresholds.
 struct BodyVertex {
