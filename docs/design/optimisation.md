@@ -17,7 +17,7 @@ proves safety only; benefit is proved on the reference device.
 | # | Target | Source |
 |---|---|---|
 | 1 | The 60 Hz substep-floor basin | M4 record, Budget |
-| 2 | Dispatch overhead: ~21 dispatches per substep at 50-90 us each | M3 record |
+| 2 | The solver's per-substep cost (recorded as 50-90 us dispatch overhead; re-measured below) | M3 record |
 | 3 | The M3 reclaims: rest substeps (~+1.1 ms), refine schedule | M3 record |
 | 4 | Budget O2 firmed; battery bound; frame-latency-1 experiment | HANDOFF |
 | 5 | Adaptive resolution: no-go, recorded below | Jack's ask, 2026-08-31 |
@@ -59,33 +59,57 @@ revert it on the device (runbook, below). Rejected: a state-aware
 floor that relaxes only at rest — more machinery for a subset of the
 same win, worth revisiting only if the device refutes the flat cap.
 
-## Target 2: the dispatch inventory
+## Target 2: where the solver time actually goes
 
 Per substep, in order: clear_counts, count_cells, scan_single,
 scatter (the grid); density_div, div_apply (divergence solve);
 forces_eval, forces_apply; den_apply; then refine_passes(dt_sub)
 pairs of den_kappa + den_apply; integrate. 21 at five refine passes.
-The frame adds reduce_stats, clear_vel, splat, resolve, advect, and
-the render passes. At 1,620 particles every dispatch is 7 workgroups:
-the frame is overhead-bound, not work-bound.
 
-Fusion candidates, by dependency (unverified until tried; each saves
-one dispatch per substep unless noted):
+The per-kernel profile (2026-09-01, film harness host, one timestamped
+compute pass per dispatch, 600 rest + 600 shake frames; device numbers
+pend) refutes the recorded 50-90 us per-dispatch overhead story. The
+gap between passes is ~1 us. The cost sits inside the five
+neighbour-sweep kernels, and it is latency, not work: at 1,620
+particles the GPU runs 1,620 threads, each walking a long serial
+chain of dependent loads.
 
-- Grid reuse at rest. Positions move at most 0.4 h per substep, so a
-  once-per-frame grid serves all substeps when v_max is small; the
-  27-cell stencil keeps true neighbours only while total drift stays
-  under ~half a cell. Saves 4 dispatches per reused substep. Unsafe
-  in motion; key on v_max.
-- forces_eval + forces_apply. Apply reads only its own index; the
-  split exists because eval reads neighbour velocities. A velocity
-  ping-pong removes the race. Invasive: every velocity consumer must
-  track the live buffer.
-- integrate + the next substep's count_cells. Integrate writes only
-  its own index; count reads own position plus atomics. The last
-  substep keeps its own integrate.
-- The refine pairs resist fusion: den_kappa and den_apply both sweep
-  neighbours, and apply reads every neighbour's kappa.
+| kernel | us/dispatch, serial | us/dispatch, lane-parallel |
+|---|---|---|
+| density_div | 155 | 47 |
+| div_apply | 154 | 44 |
+| forces_eval | 196 | 57 |
+| den_kappa | 147 | 43 |
+| den_apply | 153 | 43 |
+| clear/count/scatter/forces_apply/integrate | 5-7 | unchanged |
+| scan_single | 24 | unchanged |
+
+The fix, shipped: LANES = 8 threads share one particle, each sweeps
+a slice of the 27-cell stencil, partial sums reduce through workgroup
+memory. Solver GPU total over the profile run: 10.57 s -> 3.24 s,
+3.3x. LANES = 16 measured within noise of 8 — the knee. The math is
+unchanged up to float summation order, which the solver's atomics
+already forgo. The film guard suite passed on the lane-parallel
+build (2026-09-01, film harness host). Settled flat mean speed
+0.0193 m/s, compr 0.024%. Ring life 6.72 s. Glass flicker 3,648
+against the 12,000 threshold. Shake compr 0.057%. The wake film
+sleeps at frame 1700. Spin retention tau 5.71/5.03 s against the
+serial anchors 5.41-5.47/4.69-4.78: equivalence within scatter.
+Every number here is the laptop; the device runbook prices the
+change on the phone before any merge.
+
+Dead lever, measured the same night: the refine schedule. Dropping
+the five constant-density refine passes to 3 or 2 at rest explodes
+the glass flicker meter 3,603 -> 35,002 -> 76,168 px/frame against
+the 12,000 threshold, while probe mean speed barely moves — the
+pressure-field shimmer is invisible to the speed metric. Five passes
+are load-bearing at the 4.2 ms substep; refine_passes stays.
+
+Fusion candidates (superseded in priority by the lane split; the
+dispatch gap they would remove measures ~1 us): grid reuse at rest,
+forces_eval + forces_apply via velocity ping-pong, integrate into the
+next count_cells. Revisit only if the device profile disagrees with
+the laptop shape.
 
 ## Target 5: adaptive resolution — no-go (2026-08-31, night)
 
@@ -100,8 +124,10 @@ scale. The premise fails three ways in this regime:
    wall. A merged particle's h would exceed the slab depth.
 2. Low velocity already costs nothing. The idle gate sleeps the sim
    at rest; at rest the solver is ~1.1 ms of the frame.
-3. The cost is dispatch-bound, not particle-bound (~36 ns per
-   particle per sweep against 50-90 us per dispatch). In motion the
+3. The cost does not scale with particle count. The per-kernel
+   profile above re-measures the mechanism: each sweep is
+   latency-bound, so halving the particle work leaves the sweep time
+   nearly unchanged. In motion the
    finest particle sets the global CFL substep, and the survey found
    no published DFSPH-compatible scheme that escapes this:
    asynchronous regional stepping breaks DFSPH's global solve.

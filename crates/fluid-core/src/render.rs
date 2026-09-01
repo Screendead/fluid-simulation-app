@@ -32,6 +32,11 @@ const MAX_DT: f32 = 1.0 / 30.0;
 // wake, flicker and shake guard, rests 120 Hz at two substeps, and
 // halves the 60 Hz floor that fed the basin. Slightly above
 // 8.334/2 ms, so measured 120 Hz interval jitter stays at two.
+// Mirrors LANES in sim_solve.wgsl: the lane-parallel sweeps run
+// SWEEP_LANES threads per particle, and a mismatch solves only a
+// fraction of the fluid with no validation error to say so.
+const SWEEP_LANES: u32 = 8;
+
 const DT_SUB_MAX: f32 = 0.0042;
 
 // The substep floor divides the measured frame — a dropped frame
@@ -250,6 +255,7 @@ pub fn film(
         let v_clamp = 0.4 * spacing / dt_sub;
         let step = sim::pack_step(force, omega, domega, dt_sub, v_clamp, 0);
         let particles = sim.count.div_ceil(256);
+        let wide = (sim.count * SWEEP_LANES).div_ceil(256);
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -268,20 +274,20 @@ pub fn film(
                 pass.set_bind_group(0, &sim.solve_bind, &[]);
                 pass.set_pipeline(&sim.density_div);
                 pass.set_immediates(0, &step);
-                pass.dispatch_workgroups(particles, 1, 1);
+                pass.dispatch_workgroups(wide, 1, 1);
                 pass.set_pipeline(&sim.div_apply);
-                pass.dispatch_workgroups(particles, 1, 1);
+                pass.dispatch_workgroups(wide, 1, 1);
                 pass.set_pipeline(&sim.forces_eval);
-                pass.dispatch_workgroups(particles, 1, 1);
+                pass.dispatch_workgroups(wide, 1, 1);
                 pass.set_pipeline(&sim.forces_apply);
                 pass.dispatch_workgroups(particles, 1, 1);
                 pass.set_pipeline(&sim.den_apply);
-                pass.dispatch_workgroups(particles, 1, 1);
+                pass.dispatch_workgroups(wide, 1, 1);
                 for _ in 0..refine_passes(dt_sub) {
                     pass.set_pipeline(&sim.den_kappa);
-                    pass.dispatch_workgroups(particles, 1, 1);
+                    pass.dispatch_workgroups(wide, 1, 1);
                     pass.set_pipeline(&sim.den_apply);
-                    pass.dispatch_workgroups(particles, 1, 1);
+                    pass.dispatch_workgroups(wide, 1, 1);
                 }
                 pass.set_pipeline(&sim.integrate);
                 pass.dispatch_workgroups(particles, 1, 1);
@@ -2252,6 +2258,7 @@ impl Renderer {
                     let v_clamp = 0.4 * s.spacing / dt_sub;
                     let step = sim::pack_step(force, omega, domega, dt_sub, v_clamp, 0);
                     let particles = s.count.div_ceil(256);
+                    let wide = (s.count * SWEEP_LANES).div_ceil(256);
                     for _ in 0..n {
                         pass.set_bind_group(0, &s.grid_bind, &[]);
                         pass.set_pipeline(&s.clear_counts);
@@ -2267,20 +2274,20 @@ impl Renderer {
                         pass.set_bind_group(0, &s.solve_bind, &[]);
                         pass.set_pipeline(&s.density_div);
                         pass.set_immediates(0, &step);
-                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.dispatch_workgroups(wide, 1, 1);
                         pass.set_pipeline(&s.div_apply);
-                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.dispatch_workgroups(wide, 1, 1);
                         pass.set_pipeline(&s.forces_eval);
-                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.dispatch_workgroups(wide, 1, 1);
                         pass.set_pipeline(&s.forces_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&s.den_apply);
-                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.dispatch_workgroups(wide, 1, 1);
                         for _ in 0..refine_passes(dt_sub) {
                             pass.set_pipeline(&s.den_kappa);
-                            pass.dispatch_workgroups(particles, 1, 1);
+                            pass.dispatch_workgroups(wide, 1, 1);
                             pass.set_pipeline(&s.den_apply);
-                            pass.dispatch_workgroups(particles, 1, 1);
+                            pass.dispatch_workgroups(wide, 1, 1);
                         }
                         pass.set_pipeline(&s.integrate);
                         pass.dispatch_workgroups(particles, 1, 1);
@@ -2720,6 +2727,7 @@ mod tests {
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             let particles = sim.count.div_ceil(256);
+            let wide = (sim.count * SWEEP_LANES).div_ceil(256);
             for f in 0..frames {
                 for _ in 0..substeps.max(1) {
                     pass.set_bind_group(0, &sim.grid_bind, &[]);
@@ -2736,21 +2744,21 @@ mod tests {
                     pass.set_bind_group(0, &sim.solve_bind, &[]);
                     pass.set_pipeline(&sim.density_div);
                     pass.set_immediates(0, &step);
-                    pass.dispatch_workgroups(particles, 1, 1);
+                    pass.dispatch_workgroups(wide, 1, 1);
                     if substeps > 0 {
                         pass.set_pipeline(&sim.div_apply);
-                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.dispatch_workgroups(wide, 1, 1);
                         pass.set_pipeline(&sim.forces_eval);
-                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.dispatch_workgroups(wide, 1, 1);
                         pass.set_pipeline(&sim.forces_apply);
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&sim.den_apply);
-                        pass.dispatch_workgroups(particles, 1, 1);
+                        pass.dispatch_workgroups(wide, 1, 1);
                         for _ in 0..5 {
                             pass.set_pipeline(&sim.den_kappa);
-                            pass.dispatch_workgroups(particles, 1, 1);
+                            pass.dispatch_workgroups(wide, 1, 1);
                             pass.set_pipeline(&sim.den_apply);
-                            pass.dispatch_workgroups(particles, 1, 1);
+                            pass.dispatch_workgroups(wide, 1, 1);
                         }
                         pass.set_pipeline(&sim.integrate);
                         pass.dispatch_workgroups(particles, 1, 1);
