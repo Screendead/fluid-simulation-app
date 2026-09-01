@@ -195,6 +195,12 @@ response, so gently swirling threads read where they used to be
 near-black. The M4 record ("The dye, designed") holds the model,
 the dial history, and the verdict verbatim.
 
+2026-09-01, the shell went GUI-free on Jack's directive: the debug
+overlay is deleted (git holds it), the status bar and home indicator
+hide, and the screen is only water. The stats line still prints once
+a second; `devicectl` console capture is now the only measurement
+channel.
+
 M3 close waits on the optimisation pass: the roadmap's closure rule
 needs the oracle measured on the device, and three measurements are
 still unrecorded — the settled upright hydrostatic numbers, the
