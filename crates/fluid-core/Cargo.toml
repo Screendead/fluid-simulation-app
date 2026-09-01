@@ -18,3 +18,10 @@ required-features = ["film"]
 
 [dependencies]
 wgpu = { workspace = true, features = ["std", "metal", "parking_lot", "wgsl"] }
+
+# Off Apple there is no Metal backend, and a backendless wgpu panics in
+# Instance::new before the adapterless self-skip can run. The noop
+# backend compiles to nothing, stays disabled at run time, and lets a
+# bare CI runner fail adapter discovery gracefully instead.
+[target.'cfg(not(target_vendor = "apple"))'.dependencies]
+wgpu = { workspace = true, features = ["noop"] }
