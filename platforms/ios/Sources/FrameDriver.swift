@@ -13,6 +13,8 @@ final class FrameDriver {
     private var link: CADisplayLink?
     private var ticks = 0
     private var active = true
+    private var lastCpuSeconds = 0.0
+    private var lastReportTime = CACurrentMediaTime()
 
     init() {
         UIDevice.current.isBatteryMonitoringEnabled = true
@@ -76,8 +78,18 @@ final class FrameDriver {
         let memory = Double(physFootprint()) / 1_048_576.0
         let battery = UIDevice.current.batteryLevel * 100
         let thermal = ["nominal", "fair", "serious", "critical"][ProcessInfo.processInfo.thermalState.rawValue]
+        // Process CPU time over the report interval: the one number that
+        // says how hard the phone works for the frame, GPU aside.
+        var usage = rusage()
+        getrusage(RUSAGE_SELF, &usage)
+        let cpuSeconds = Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1e6
+            + Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1e6
+        let now = CACurrentMediaTime()
+        let cpuPercent = (cpuSeconds - lastCpuSeconds) / max(now - lastReportTime, 1e-3) * 100
+        lastCpuSeconds = cpuSeconds
+        lastReportTime = now
         let line = String(
-            format: "frames %llu | interval µs p50 %.0f p99 %.0f max %.0f | acq µs p50 %.0f p99 %.0f | cpu µs p50 %.0f p99 %.0f | gpu µs p50 %.0f p99 %.0f | compr %% avg %.3f max %.3f | rho %.0f..%.0f | p %.0f..%.0f Pa | dT µK %.1f..%.1f | v %.2f n %u clamp %u | idle %llu | mem %.1f MB | batt %.0f%% %@ | stats µs %.0f",
+            format: "frames %llu | interval µs p50 %.0f p99 %.0f max %.0f | acq µs p50 %.0f p99 %.0f | cpu µs p50 %.0f p99 %.0f | gpu µs p50 %.0f p99 %.0f | compr %% avg %.3f max %.3f | rho %.0f..%.0f | p %.0f..%.0f Pa | dT µK %.1f..%.1f | v %.2f n %u clamp %u | idle %llu | mem %.1f MB | batt %.0f%% %@ | cpu%% %.1f | stats µs %.0f",
             stats.frames,
             stats.interval_p50_us, stats.interval_p99_us, stats.interval_max_us,
             stats.acquire_p50_us, stats.acquire_p99_us,
@@ -89,7 +101,7 @@ final class FrameDriver {
             (stats.temperature_min - 293.15) * 1_000_000,
             (stats.temperature_max - 293.15) * 1_000_000,
             stats.v_max, stats.substeps, stats.clamp_count, stats.idle_frames,
-            memory, battery, thermal, statsUs)
+            memory, battery, thermal, cpuPercent, statsUs)
         print(line)
     }
 

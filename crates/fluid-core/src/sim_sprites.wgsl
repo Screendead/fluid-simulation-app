@@ -61,15 +61,21 @@ struct PointVertex {
 fn point(@builtin(vertex_index) i: u32) -> PointVertex {
     let t = tracers[i];
     var out: PointVertex;
-    // The record quantises over the box this draw projects with, so the
-    // unorm pair is already clip space; the packed z goes unread.
-    out.clip = vec4f(unpack2x16unorm(t.x) * 2.0 - vec2f(1.0), 0.0, 1.0);
     // Brightness rides on the charge: a resting dot vanishes instead
     // of speckling the body, and fast water glints. The square root
     // lifts the gentle end so slow strands still read as threads
     // (Jack's dial, 2026-09-01); full speed is unchanged.
     let s = clamp((unpack2x16float(t.y).y - 0.05) / FULL_SPEED, 0.0, 1.0);
     out.colour = mix(CALM, LIVELY, s) * (sqrt(s) * 0.9);
+    // The record quantises over the box this draw projects with, so the
+    // unorm pair is already clip space; the packed z goes unread. A
+    // chargeless dot adds nothing under the additive blend, so it parks
+    // outside the clip volume and the rasteriser never sees it.
+    out.clip = select(
+        vec4f(unpack2x16unorm(t.x) * 2.0 - vec2f(1.0), 0.0, 1.0),
+        vec4f(2.0, 2.0, 0.0, 1.0),
+        s <= 0.0,
+    );
     return out;
 }
 

@@ -94,13 +94,6 @@ fn cell_count() -> u32 {
 }
 
 @compute @workgroup_size(256)
-fn clear_vel(@builtin(global_invocation_id) id: vec3u) {
-    if id.x < cell_count() * 4u {
-        atomicStore(&vel_grid[id.x], 0i);
-    }
-}
-
-@compute @workgroup_size(256)
 fn splat(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= params.count {
         return;
@@ -121,7 +114,9 @@ fn splat(@builtin(global_invocation_id) id: vec3u) {
 // Splat's atomic sums, copied once to a plain buffer: on the A15 an
 // aliased non-atomic view of the atomic grid read stale cells (the
 // 2026-08-31 block artifact), and plain loads spare advect's eight
-// taps the atomics' cache bypass.
+// taps the atomics' cache bypass. The copy also zeroes the grid for
+// the next frame's splat; buffers start zeroed, so no clear dispatch
+// exists.
 @compute @workgroup_size(256)
 fn resolve(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= cell_count() {
@@ -134,6 +129,10 @@ fn resolve(@builtin(global_invocation_id) id: vec3u) {
         atomicLoad(&vel_grid[c + 2u]),
         atomicLoad(&vel_grid[c + 3u]),
     );
+    atomicStore(&vel_grid[c], 0i);
+    atomicStore(&vel_grid[c + 1u], 0i);
+    atomicStore(&vel_grid[c + 2u], 0i);
+    atomicStore(&vel_grid[c + 3u], 0i);
 }
 
 @compute @workgroup_size(256)

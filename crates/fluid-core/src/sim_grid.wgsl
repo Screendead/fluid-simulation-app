@@ -1,4 +1,4 @@
-// Counting-sort neighbour grid, passes clear, count and scatter. The cell
+// Counting-sort neighbour grid, passes count and scatter. The cell
 // arithmetic mirrors sim.rs::Grid exactly; a divergence is a bug.
 
 struct SimParams {
@@ -27,13 +27,6 @@ fn cell_of(pos: vec3f) -> u32 {
 }
 
 @compute @workgroup_size(256)
-fn clear_counts(@builtin(global_invocation_id) id: vec3u) {
-    if id.x < arrayLength(&counts) {
-        atomicStore(&counts[id.x], 0u);
-    }
-}
-
-@compute @workgroup_size(256)
 fn count(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= params.count {
         return;
@@ -48,4 +41,12 @@ fn scatter(@builtin(global_invocation_id) id: vec3u) {
     }
     let c = cell_of(positions[id.x].xyz);
     sorted[starts[c] + atomicAdd(&cursors[c], 1u)] = id.x;
+    // The scan has consumed the counts and the sweeps read cell ends
+    // from starts, so the counts die here: zero them for the next
+    // rebuild instead of a clear dispatch of their own. Buffers start
+    // zeroed, which covers the first rebuild.
+    let cells = params.dims.x * params.dims.y * params.dims.z;
+    for (var i = id.x; i < cells; i += params.count) {
+        atomicStore(&counts[i], 0u);
+    }
 }

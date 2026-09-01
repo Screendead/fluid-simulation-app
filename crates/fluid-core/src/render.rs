@@ -261,8 +261,6 @@ pub fn film(
             let mut pass = encoder.begin_compute_pass(&Default::default());
             for _ in 0..n {
                 pass.set_bind_group(0, &sim.grid_bind, &[]);
-                pass.set_pipeline(&sim.clear_counts);
-                pass.dispatch_workgroups(sim.cell_groups, 1, 1);
                 pass.set_pipeline(&sim.count_cells);
                 pass.dispatch_workgroups(particles, 1, 1);
                 pass.set_bind_group(0, &sim.scan_bind, &[]);
@@ -279,9 +277,7 @@ pub fn film(
                 pass.dispatch_workgroups(wide, 1, 1);
                 pass.set_pipeline(&sim.forces_eval);
                 pass.dispatch_workgroups(wide, 1, 1);
-                pass.set_pipeline(&sim.forces_apply);
-                pass.dispatch_workgroups(particles, 1, 1);
-                pass.set_pipeline(&sim.den_apply);
+                pass.set_pipeline(&sim.forces_den_apply);
                 pass.dispatch_workgroups(wide, 1, 1);
                 for _ in 0..refine_passes(dt_sub) {
                     pass.set_pipeline(&sim.den_kappa);
@@ -295,10 +291,8 @@ pub fn film(
             pass.set_pipeline(&sim.reduce_stats);
             pass.dispatch_workgroups(1, 1, 1);
             pass.set_bind_group(0, &sim.tracer_bind, &[]);
-            pass.set_pipeline(&sim.clear_vel);
-            pass.set_immediates(0, &sim::pack_step(force, [0.0; 3], [0.0; 3], dt, 0.0, f));
-            pass.dispatch_workgroups(sim.vel_groups, 1, 1);
             pass.set_pipeline(&sim.splat);
+            pass.set_immediates(0, &sim::pack_step(force, [0.0; 3], [0.0; 3], dt, 0.0, f));
             pass.dispatch_workgroups(particles, 1, 1);
             pass.set_pipeline(&sim.resolve);
             pass.dispatch_workgroups(sim.cell_groups, 1, 1);
@@ -948,20 +942,18 @@ enum Mode {
 const SIM_SPACING: f32 = crate::WORLD_SCALE * 0.0025;
 
 struct Sim {
-    clear_counts: wgpu::ComputePipeline,
     count_cells: wgpu::ComputePipeline,
     scan_single: wgpu::ComputePipeline,
     scatter: wgpu::ComputePipeline,
     density_div: wgpu::ComputePipeline,
     forces_eval: wgpu::ComputePipeline,
-    forces_apply: wgpu::ComputePipeline,
+    forces_den_apply: wgpu::ComputePipeline,
     div_apply: wgpu::ComputePipeline,
     den_kappa: wgpu::ComputePipeline,
     den_apply: wgpu::ComputePipeline,
     integrate: wgpu::ComputePipeline,
     reduce_stats: wgpu::ComputePipeline,
     sprites: wgpu::RenderPipeline,
-    clear_vel: wgpu::ComputePipeline,
     splat: wgpu::ComputePipeline,
     resolve: wgpu::ComputePipeline,
     advect: wgpu::ComputePipeline,
@@ -991,7 +983,6 @@ struct Sim {
     spacing: f32,
     extent: [f32; 2],
     tracer_count: u32,
-    vel_groups: u32,
     count: u32,
     cell_groups: u32,
     max_substeps: u32,
@@ -1048,7 +1039,9 @@ impl Sim {
         // wgpu zero-initialises buffers: the fluid starts at rest.
         let velocities = storage("sim velocities", u64::from(count) * 16, none);
         let counts = storage("sim counts", u64::from(cells) * 4, none);
-        let starts = storage("sim starts", u64::from(cells) * 4, none);
+        // One slot past the last cell holds the total: a sweep reads a
+        // cell's end as the next cell's start.
+        let starts = storage("sim starts", u64::from(cells + 1) * 4, none);
         let cursors = storage("sim cursors", u64::from(cells) * 4, none);
         let sorted = storage("sim sorted", u64::from(count) * 4, none);
         let density = storage("sim density", u64::from(count) * 4, none);
@@ -1148,13 +1141,13 @@ impl Sim {
         let grid_layout = layout("sim grid", &[uniform(0), ro(1), rw(2), ro(3), rw(4), rw(5)]);
         // scan_single never touches block_sums; the gap at 3 stays open.
         let scan_layout = layout("sim scan", &[uniform(0), ro(1), rw(2), rw(4)]);
+        // The sweeps never read the counts; binding 3 stays open.
         let solve_layout = layout(
             "sim solve",
             &[
                 uniform(0),
                 rw(1),
                 rw(2),
-                ro(3),
                 ro(4),
                 ro(5),
                 rw(6),
@@ -1242,7 +1235,6 @@ impl Sim {
                 entry(0, &params),
                 entry(1, &positions),
                 entry(2, &velocities),
-                entry(3, &counts),
                 entry(4, &starts),
                 entry(5, &sorted),
                 entry(6, &density),
@@ -1366,13 +1358,12 @@ impl Sim {
             };
 
         Sim {
-            clear_counts: pipeline(&grid_pl, &grid_module, "clear_counts"),
             count_cells: pipeline(&grid_pl, &grid_module, "count"),
             scan_single: pipeline(&scan_pl, &scan_module, "scan_single"),
             scatter: pipeline(&grid_pl, &grid_module, "scatter"),
             density_div: pipeline(&solve_pl, &solve_module, "density_div"),
             forces_eval: pipeline(&solve_pl, &solve_module, "forces_eval"),
-            forces_apply: pipeline(&solve_pl, &solve_module, "forces_apply"),
+            forces_den_apply: pipeline(&solve_pl, &solve_module, "forces_den_apply"),
             div_apply: pipeline(&solve_pl, &solve_module, "div_apply"),
             den_kappa: pipeline(&solve_pl, &solve_module, "den_kappa"),
             den_apply: pipeline(&solve_pl, &solve_module, "den_apply"),
@@ -1406,7 +1397,6 @@ impl Sim {
                 multiview_mask: None,
                 cache: None,
             }),
-            clear_vel: pipeline(&tracer_pl, &tracer_module, "clear_vel"),
             splat: pipeline(&tracer_pl, &tracer_module, "splat"),
             resolve: pipeline(&tracer_pl, &tracer_module, "resolve"),
             advect: pipeline(&tracer_pl, &tracer_module, "advect"),
@@ -1544,7 +1534,6 @@ impl Sim {
             spacing,
             extent,
             tracer_count,
-            vel_groups: (cells * 4).div_ceil(256),
             count,
             cell_groups: cells.div_ceil(256),
             max_substeps: substeps,
@@ -1641,7 +1630,6 @@ struct Validation {
 }
 
 struct Bench {
-    clear_counts: wgpu::ComputePipeline,
     count: wgpu::ComputePipeline,
     scan_blocks: wgpu::ComputePipeline,
     scan_sums: wgpu::ComputePipeline,
@@ -1832,7 +1820,6 @@ impl Bench {
             };
 
         Bench {
-            clear_counts: pipeline(&grid_pl, &grid_module, "clear_counts"),
             count: pipeline(&grid_pl, &grid_module, "count"),
             scan_blocks: pipeline(&scan_pl, &scan_module, "scan_blocks"),
             scan_sums: pipeline(&scan_pl, &scan_module, "scan_sums"),
@@ -1858,8 +1845,6 @@ impl Bench {
     /// writes between dispatches in one pass.
     fn encode(&self, pass: &mut wgpu::ComputePass<'_>) {
         pass.set_bind_group(0, &self.grid_bind, &[]);
-        pass.set_pipeline(&self.clear_counts);
-        pass.dispatch_workgroups(self.cell_groups, 1, 1);
         pass.set_pipeline(&self.count);
         pass.dispatch_workgroups(self.particle_groups, 1, 1);
         pass.set_bind_group(0, &self.scan_bind, &[]);
@@ -2261,8 +2246,6 @@ impl Renderer {
                     let wide = (s.count * SWEEP_LANES).div_ceil(256);
                     for _ in 0..n {
                         pass.set_bind_group(0, &s.grid_bind, &[]);
-                        pass.set_pipeline(&s.clear_counts);
-                        pass.dispatch_workgroups(s.cell_groups, 1, 1);
                         pass.set_pipeline(&s.count_cells);
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_bind_group(0, &s.scan_bind, &[]);
@@ -2279,9 +2262,7 @@ impl Renderer {
                         pass.dispatch_workgroups(wide, 1, 1);
                         pass.set_pipeline(&s.forces_eval);
                         pass.dispatch_workgroups(wide, 1, 1);
-                        pass.set_pipeline(&s.forces_apply);
-                        pass.dispatch_workgroups(particles, 1, 1);
-                        pass.set_pipeline(&s.den_apply);
+                        pass.set_pipeline(&s.forces_den_apply);
                         pass.dispatch_workgroups(wide, 1, 1);
                         for _ in 0..refine_passes(dt_sub) {
                             pass.set_pipeline(&s.den_kappa);
@@ -2298,13 +2279,11 @@ impl Renderer {
                         // The visual layer advects once a frame on the
                         // solved end-of-frame field, with the frame dt.
                         pass.set_bind_group(0, &s.tracer_bind, &[]);
-                        pass.set_pipeline(&s.clear_vel);
+                        pass.set_pipeline(&s.splat);
                         pass.set_immediates(
                             0,
                             &sim::pack_step(force, [0.0; 3], [0.0; 3], dt, 0.0, s.frame_seed),
                         );
-                        pass.dispatch_workgroups(s.vel_groups, 1, 1);
-                        pass.set_pipeline(&s.splat);
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&s.resolve);
                         pass.dispatch_workgroups(s.cell_groups, 1, 1);
@@ -2731,8 +2710,6 @@ mod tests {
             for f in 0..frames {
                 for _ in 0..substeps.max(1) {
                     pass.set_bind_group(0, &sim.grid_bind, &[]);
-                    pass.set_pipeline(&sim.clear_counts);
-                    pass.dispatch_workgroups(sim.cell_groups, 1, 1);
                     pass.set_pipeline(&sim.count_cells);
                     pass.dispatch_workgroups(particles, 1, 1);
                     pass.set_bind_group(0, &sim.scan_bind, &[]);
@@ -2750,9 +2727,7 @@ mod tests {
                         pass.dispatch_workgroups(wide, 1, 1);
                         pass.set_pipeline(&sim.forces_eval);
                         pass.dispatch_workgroups(wide, 1, 1);
-                        pass.set_pipeline(&sim.forces_apply);
-                        pass.dispatch_workgroups(particles, 1, 1);
-                        pass.set_pipeline(&sim.den_apply);
+                        pass.set_pipeline(&sim.forces_den_apply);
                         pass.dispatch_workgroups(wide, 1, 1);
                         for _ in 0..5 {
                             pass.set_pipeline(&sim.den_kappa);
@@ -2767,13 +2742,11 @@ mod tests {
                 if sim.tracer_count > 0 {
                     let frame_dt = if substeps == 0 { 0.0 } else { 1.0 / 120.0 };
                     pass.set_bind_group(0, &sim.tracer_bind, &[]);
-                    pass.set_pipeline(&sim.clear_vel);
+                    pass.set_pipeline(&sim.splat);
                     pass.set_immediates(
                         0,
                         &sim::pack_step(gravity, [0.0; 3], [0.0; 3], frame_dt, 0.0, f),
                     );
-                    pass.dispatch_workgroups(sim.vel_groups, 1, 1);
-                    pass.set_pipeline(&sim.splat);
                     pass.dispatch_workgroups(particles, 1, 1);
                     pass.set_pipeline(&sim.resolve);
                     pass.dispatch_workgroups(sim.cell_groups, 1, 1);

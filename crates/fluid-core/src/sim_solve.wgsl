@@ -32,7 +32,6 @@ var<immediate> step: Step;
 @group(0) @binding(0) var<uniform> params: SimParams;
 @group(0) @binding(1) var<storage, read_write> positions: array<vec4f>;
 @group(0) @binding(2) var<storage, read_write> velocities: array<vec4f>;
-@group(0) @binding(3) var<storage, read> counts: array<u32>;
 @group(0) @binding(4) var<storage, read> starts: array<u32>;
 @group(0) @binding(5) var<storage, read> sorted: array<u32>;
 @group(0) @binding(6) var<storage, read_write> density: array<f32>;
@@ -368,7 +367,7 @@ fn density_div(
             }
             let c = (u32(coord.z) * params.dims.y + u32(coord.y)) * params.dims.x
                 + u32(coord.x);
-            let end = starts[c] + counts[c];
+            let end = starts[c + 1u];
             for (var k = starts[c]; k < end; k++) {
                 let j = sorted[k];
                 let x = pos - positions[j].xyz;
@@ -419,7 +418,6 @@ fn density_div(
         positions[p].w = rho_near;
         let a = rho / max(dot(grad_sum, grad_sum) + grad_sq, 1e-4);
         alpha[p] = a;
-        pressure[p] = 0.0;
         // A wall is fluid that never moves: approaching it raises density.
         drho += dot(vel, wall_grad);
         // The dt guard covers the substep-free test path only; every real
@@ -464,7 +462,7 @@ fn forces_eval(
             }
             let c = (u32(coord.z) * params.dims.y + u32(coord.y)) * params.dims.x
                 + u32(coord.x);
-            let end = starts[c] + counts[c];
+            let end = starts[c + 1u];
             for (var k = starts[c]; k < end; k++) {
                 let j = sorted[k];
                 let x = pos - positions[j].xyz;
@@ -503,41 +501,59 @@ fn forces_eval(
             round_a.w,
         );
         xsph[p] = vec4f(round_b.xyz, 0.0);
+        // The constant-density warm start: last substep's converged
+        // pressure, half-applied, is the canonical cure for hydrostatic
+        // ringing — without it the solver re-fights gravity from zero
+        // every substep and the settled fluid flickers. Written here,
+        // one dispatch before forces_den_apply sweeps every kappa.
+        let rho = density[p];
+        let k = 0.5 * prev_pressure[p] / rho;
+        kappa[p] = k;
+        pressure[p] = k * rho;
     }
 }
 
+// The force step and the first constant-density apply in one sweep:
+// the lanes gather the warm-start kappa correction, then lane 0 adds
+// the body force, the rotating frame's fictitious forces, XSPH and
+// the temperature source, and subtracts the correction, in the order
+// the two dispatches applied them. Every per-particle access is at
+// the invocation's own index; the sweep reads only kappa, density and
+// positions of neighbours, none of which this dispatch writes.
 @compute @workgroup_size(256)
-fn forces_apply(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= params.count {
-        return;
+fn forces_den_apply(
+    @builtin(global_invocation_id) gid: vec3u,
+    @builtin(local_invocation_id) lid: vec3u,
+) {
+    let p = gid.x / LANES;
+    let lane = gid.x % LANES;
+    var dv = vec3f(0.0);
+    if p < params.count {
+        dv = kappa_partial(p, lane);
     }
-    let a = accel[id.x];
-    // The box frame rotates with the device, so the fluid feels the
-    // fictitious forces of that frame: Euler from spin-up, centrifugal
-    // from steady spin, Coriolis on anything already moving. This is
-    // the only door vorticity has into the box — a uniform body force
-    // has zero curl. The rotation centre is the IMU, approximated as
-    // the box centre; the residual is a uniform Omega^2 times a few
-    // centimetres, absorbed by the accelerometer term.
-    let r = positions[id.x].xyz;
-    let v = velocities[id.x].xyz;
-    let fict = -cross(step.domega, r)
-        - cross(step.omega, cross(step.omega, r))
-        - 2.0 * cross(step.omega, v);
-    velocities[id.x] = vec4f(
-        v + step.dt * (step.force + fict + a.xyz)
-            + (1.0 - exp(-XSPH_RATE * step.dt)) * xsph[id.x].xyz,
-        0.0,
-    );
-    temperature[id.x] += step.dt * a.w;
-    // The constant-density warm start rides along: every access in both
-    // jobs is at the invocation's own index. Last substep's converged
-    // pressure, half-applied, is the canonical cure for hydrostatic
-    // ringing — without it the solver re-fights gravity from zero
-    // every substep and the settled fluid flickers.
-    let k = 0.5 * prev_pressure[id.x] / density[id.x];
-    kappa[id.x] = k;
-    pressure[id.x] = k * density[id.x];
+    lane_sum[lid.x] = vec4f(dv, 0.0);
+    let total = lane_fold(lid.x);
+    if lane == 0u && p < params.count {
+        let a = accel[p];
+        // The box frame rotates with the device, so the fluid feels the
+        // fictitious forces of that frame: Euler from spin-up, centrifugal
+        // from steady spin, Coriolis on anything already moving. This is
+        // the only door vorticity has into the box — a uniform body force
+        // has zero curl. The rotation centre is the IMU, approximated as
+        // the box centre; the residual is a uniform Omega^2 times a few
+        // centimetres, absorbed by the accelerometer term.
+        let r = positions[p].xyz;
+        let v = velocities[p].xyz;
+        let fict = -cross(step.domega, r)
+            - cross(step.omega, cross(step.omega, r))
+            - 2.0 * cross(step.omega, v);
+        let forced = v + step.dt * (step.force + fict + a.xyz)
+            + (1.0 - exp(-XSPH_RATE * step.dt)) * xsph[p].xyz;
+        temperature[p] += step.dt * a.w;
+        let k_i = kappa[p] / density[p];
+        let dv_full = total.xyz + k_i * wall_grad_sum(r);
+        velocities[p] = vec4f(forced - step.dt * dv_full, 0.0);
+    }
 }
 
 
@@ -554,7 +570,7 @@ fn kappa_partial(p: u32, lane: u32) -> vec3f {
         }
         let c = (u32(coord.z) * params.dims.y + u32(coord.y)) * params.dims.x
             + u32(coord.x);
-        let end = starts[c] + counts[c];
+        let end = starts[c + 1u];
         for (var k = starts[c]; k < end; k++) {
             let j = sorted[k];
             let x = pos - positions[j].xyz;
@@ -614,7 +630,7 @@ fn den_kappa(
             }
             let c = (u32(coord.z) * params.dims.y + u32(coord.y)) * params.dims.x
                 + u32(coord.x);
-            let end = starts[c] + counts[c];
+            let end = starts[c + 1u];
             for (var k = starts[c]; k < end; k++) {
                 let j = sorted[k];
                 let x = pos - positions[j].xyz;
