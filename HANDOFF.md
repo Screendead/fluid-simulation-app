@@ -189,8 +189,18 @@ optimisation"): the aggressive optimisation pass — budget O2, the
 battery bound, the frame-latency-1 experiment, the named M3 reclaim
 targets, the adaptive-resolution decision, and — first target — the
 substep-floor 60 Hz basin captured in the M4 record's Budget
-section — run once on the complete frame. Device measurements queue
-for the morning.
+section — run once on the complete frame.
+
+The pass's first night (2026-09-01) landed three commits, all
+film-guarded and laptop-measured; the pass record holds every
+number. A per-kernel GPU profile refuted the dispatch-overhead
+story: the cost is latency inside the five neighbour-sweep kernels.
+The sweeps now run eight lanes per particle (solver 3.3x faster on
+the laptop). The substep-length cap rose 2.2 -> 4.2 ms (rest frames
+at two substeps; the 60 Hz basin floor halves). The refine schedule
+measured as a dead lever and stays at five. Device measurements
+queue for the morning: they price all of it on the phone, and the
+merge decision is Jack's.
 
 M3 close waits on the optimisation pass: the roadmap's closure rule
 needs the oracle measured on the device, and three measurements are
