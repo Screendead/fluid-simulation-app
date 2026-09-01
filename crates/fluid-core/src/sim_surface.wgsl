@@ -6,8 +6,8 @@
 // vector and gain — arrives precomputed in the immediates; air pixels
 // take the early return and pay one stripe lookup.
 
-// The fill reads the filtered field: blurred thickness, its two raw
-// texel differences and its Laplacian, one sample a pixel. field_filter
+// The fill reads the filtered field: blurred thickness and its raw
+// first and second texel differences, one sample a pixel. field_filter
 // writes it from the raw splat.
 @group(0) @binding(0) var field: texture_2d<f32>;
 @group(0) @binding(1) var field_sampler: sampler;
@@ -92,17 +92,18 @@ const BLUR = array<f32, 4>(0.3125, 0.234375, 0.09375, 0.015625);
 
 // One workgroup filters a 16x16 tile: the raw field with a four-texel
 // apron lands in workgroup memory, the rows blur, the columns blur,
-// and the tile's centred differences and Laplacian come off the
-// blurred neighbours. Edges clamp like the sampler did. The fill's
-// bilinear sample of these per-texel differences equals the
-// differences of bilinear samples it took before, so the optics are
-// unchanged up to the half-float store.
+// and the tile's centred differences come off the blurred
+// neighbours. Loads clamp to the edge texel; the sampler clamped the
+// blurred edge instead, a difference confined to the outermost texel.
+// The fill's bilinear sample of these per-texel differences equals
+// the differences of bilinear samples it took before, so the optics
+// are unchanged up to the half-float store.
 const TILE: u32 = 16u;
 const APRON: u32 = 4u;
 const SPAN: u32 = 24u;
 const INNER: u32 = 18u;
-var<workgroup> raw: array<f32, 576>;
-var<workgroup> rows: array<f32, 432>;
+var<workgroup> raw: array<f32, SPAN * SPAN>;
+var<workgroup> rows: array<f32, SPAN * INNER>;
 
 @compute @workgroup_size(16, 16)
 fn field_filter(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_id) l: vec3u) {
@@ -140,9 +141,13 @@ fn field_filter(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_id) 
     let ym = raw[centre - INNER];
     let texel = vec2i(wg.xy) * i32(TILE) + vec2i(l.xy);
     if all(texel < dims) {
+        // Second differences stay raw like the first: over the device's
+        // 0.9 mm texel the Laplacian itself (1/step² ≈ 1.3e6) overflows
+        // the half-float store at the waterline. The fill divides by
+        // step.x²; the y term carries the texel aspect.
         let step = 2.0 * optics.extent / vec2f(dims);
-        let lap = (xp + xm - 2.0 * d) / (step.x * step.x)
-            + (yp + ym - 2.0 * d) / (step.y * step.y);
+        let aspect = (step.x * step.x) / (step.y * step.y);
+        let lap = (xp + xm - 2.0 * d) + (yp + ym - 2.0 * d) * aspect;
         textureStore(filtered, texel, vec4f(d, xp - xm, ym - yp, lap));
     }
 }
@@ -185,14 +190,14 @@ fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     // transient from throwing the refraction across the screen.
     let t = clamp(d / optics.field_settled, 0.0, 1.25) * optics.slab_depth;
 
-    // The filtered texel differences, one texel apart, are the
-    // thickness gradient; the Laplacian rides in the fourth channel.
-    // field_filter already ran uv.y against world y.
+    // The filtered texel differences over the texel are the thickness
+    // gradient and Laplacian. field_filter already ran uv.y against
+    // world y.
     let texel = 1.0 / vec2f(textureDimensions(field));
     let step = 2.0 * optics.extent * texel;
     let dpf = optics.slab_depth / optics.field_settled;
     let grad = f.gb / (2.0 * step) * dpf;
-    let lap = f.a * dpf;
+    let lap = f.a / (step.x * step.x) * dpf;
     let n = normalize(vec3f(-grad, 1.0));
 
     // Snell into the water, through the thickness, onto the wall.

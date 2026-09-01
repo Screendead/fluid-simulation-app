@@ -1685,7 +1685,10 @@ fn layout_frag(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
 struct Validation {
     seeded: Vec<f32>,
     grid: sim::Grid,
+    h: f32,
+    mass: f32,
     starts: wgpu::Buffer,
+    density: wgpu::Buffer,
     staging: wgpu::Buffer,
 }
 
@@ -1750,7 +1753,11 @@ impl Bench {
             .expect("mapped at creation")
             .copy_from_slice(&bytes);
         positions.unmap();
-        let density = storage("density", u64::from(count) * 4, none);
+        let density = storage(
+            "density",
+            u64::from(count) * 4,
+            wgpu::BufferUsages::COPY_SRC,
+        );
         let counts = storage("counts", u64::from(cells) * 4, none);
         let starts = storage("starts", u64::from(cells) * 4, wgpu::BufferUsages::COPY_SRC);
         let cursors = storage("cursors", u64::from(cells) * 4, none);
@@ -1768,8 +1775,8 @@ impl Bench {
             .copy_from_slice(&sim::pack_sim_params(&grid, count, h, mass));
         params.unmap();
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("scan staging"),
-            size: u64::from(cells) * 4,
+            label: Some("bench staging"),
+            size: u64::from(cells.max(count)) * 4,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1841,7 +1848,7 @@ impl Bench {
             &[
                 entry(0, &params),
                 entry(1, &positions),
-                entry(2, &counts),
+                entry(2, &cursors),
                 entry(3, &starts),
                 entry(4, &sorted),
                 entry(5, &density),
@@ -1895,7 +1902,10 @@ impl Bench {
             validation: Some(Validation {
                 seeded,
                 grid,
+                h,
+                mass,
                 starts,
+                density,
                 staging,
             }),
         }
@@ -1925,49 +1935,67 @@ impl Bench {
     }
 }
 
-/// Blocks once, on the bench's first frame, never on the steady path.
-fn validate_scan(device: &wgpu::Device, queue: &wgpu::Queue, v: &Validation) {
-    let cells = v.grid.cell_count() as usize;
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    encoder.copy_buffer_to_buffer(&v.starts, 0, &v.staging, 0, (cells * 4) as u64);
-    queue.submit(std::iter::once(encoder.finish()));
-    let done = Arc::new(AtomicU8::new(0));
-    let flag = done.clone();
-    v.staging.map_async(wgpu::MapMode::Read, .., move |r| {
-        flag.store(if r.is_ok() { 1 } else { 2 }, Ordering::Release);
-    });
-    let _ = device.poll(wgpu::PollType::Wait {
-        submission_index: None,
-        timeout: None,
-    });
-    if done.load(Ordering::Acquire) != 1 {
-        eprintln!("scan validation: map failed");
-        return;
-    }
-    let gpu: Vec<u32> = {
-        let bytes = v.staging.get_mapped_range(..).expect("mapped");
-        bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|c| u32::from_le_bytes(*c))
-            .collect()
+/// Blocks once, on the bench's first frame, never on the steady path:
+/// the GPU scan against a CPU scan, and every sixteenth density against
+/// a brute-force sum over all particles. Returns the two verdicts.
+fn validate_bench(device: &wgpu::Device, queue: &wgpu::Queue, v: &Validation) -> [bool; 2] {
+    let read = |buffer: &wgpu::Buffer, words: usize| -> Option<Vec<u32>> {
+        let bytes = (words * 4) as u64;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_buffer_to_buffer(buffer, 0, &v.staging, 0, bytes);
+        queue.submit(std::iter::once(encoder.finish()));
+        let done = Arc::new(AtomicU8::new(0));
+        let flag = done.clone();
+        v.staging.map_async(wgpu::MapMode::Read, ..bytes, move |r| {
+            flag.store(if r.is_ok() { 1 } else { 2 }, Ordering::Release);
+        });
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        if done.load(Ordering::Acquire) != 1 {
+            return None;
+        }
+        let words = {
+            let mapped = v.staging.get_mapped_range(..bytes).expect("mapped");
+            mapped
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| u32::from_le_bytes(*c))
+                .collect()
+        };
+        v.staging.unmap();
+        Some(words)
     };
-    v.staging.unmap();
-    let mut expect = vec![0u32; cells];
-    for p in v.seeded.as_chunks::<4>().0 {
-        expect[v.grid.cell_of([p[0], p[1], p[2]]) as usize] += 1;
-    }
-    let mut run = 0u32;
-    for e in &mut expect {
-        let c = *e;
-        *e = run;
-        run += c;
-    }
-    eprintln!(
-        "scan validation: {}",
-        if gpu == expect { "PASS" } else { "FAIL" }
-    );
+    let cells = v.grid.cell_count() as usize;
+    let particles = v.seeded.as_chunks::<4>().0;
+    let scan = read(&v.starts, cells).is_some_and(|gpu| {
+        let mut expect = vec![0u32; cells];
+        for p in particles {
+            expect[v.grid.cell_of([p[0], p[1], p[2]]) as usize] += 1;
+        }
+        let mut run = 0u32;
+        for e in &mut expect {
+            let c = *e;
+            *e = run;
+            run += c;
+        }
+        gpu == expect
+    });
+    let density = read(&v.density, particles.len()).is_some_and(|gpu| {
+        particles.iter().enumerate().step_by(16).all(|(i, p)| {
+            let rho: f32 = particles
+                .iter()
+                .map(|q| {
+                    let d = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+                    v.mass * sim::kernel((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt(), v.h)
+                })
+                .sum();
+            (f32::from_bits(gpu[i]) - rho).abs() <= 1e-3 * rho
+        })
+    });
+    [scan, density]
 }
 
 const SLOT_FREE: u8 = 0;
@@ -2052,9 +2080,10 @@ impl Renderer {
         .map_err(|e| e.to_string())?;
         let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let (device, queue) = ready(adapter.request_device(&wgpu::DeviceDescriptor {
-            // IMMEDIATES and SUBGROUP are unconditional: Metal grants
-            // both on every Apple GPU, and the M3 record forbids a
-            // fallback branch no run reaches.
+            // IMMEDIATES and SUBGROUP are unconditional: wgpu grants
+            // both on every Metal 3 GPU (A13 and later; the iOS 17 floor
+            // also admits the A12, which fails here), and the M3 record
+            // forbids a fallback branch no run reaches.
             required_features: wgpu::Features::IMMEDIATES
                 | wgpu::Features::SUBGROUP
                 | if timestamps {
@@ -2511,7 +2540,13 @@ impl Renderer {
         if let Mode::Bench(b) = &mut self.mode
             && let Some(v) = b.validation.take()
         {
-            validate_scan(&self.device, &self.queue, &v);
+            let verdict = |ok: bool| if ok { "PASS" } else { "FAIL" };
+            let [scan, density] = validate_bench(&self.device, &self.queue, &v);
+            eprintln!(
+                "bench validation: scan {}, density {}",
+                verdict(scan),
+                verdict(density)
+            );
         }
         true
     }
@@ -2881,6 +2916,36 @@ mod tests {
         assert_eq!(f[9], 0.0, "clamp count");
     }
 
+    // One bench frame against the CPU: the scan and the density sweep
+    // reproduce the reference, so the microbench times real work.
+    #[test]
+    fn one_bench_frame_matches_the_cpu_reference() {
+        let Some((device, queue)) = headless_device() else {
+            return;
+        };
+        let options = RenderOptions {
+            particle_count: 0,
+            sprite_radius: 0.0,
+            bench_sweeps: 1,
+            bench_spacing: 0.0,
+            sim_substeps: 0,
+            tracers: 0,
+        };
+        let mut bench = Bench::new(&device, TEST_EXTENT, &options);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            bench.encode(&mut pass);
+        }
+        queue.submit(std::iter::once(encoder.finish()));
+        let v = bench.validation.take().expect("the first frame validates");
+        assert_eq!(
+            validate_bench(&device, &queue, &v),
+            [true, true],
+            "scan, density"
+        );
+    }
+
     // One full 120 Hz frame of the solve under gravity: the fluid falls
     // a little, nothing explodes, pressure is non-negative pascals, and
     // the temperature stays within a millikelvin of where it started.
@@ -2928,7 +2993,9 @@ mod tests {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::R16Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let view = target.create_view(&Default::default());
@@ -2994,11 +3061,15 @@ mod tests {
             .expect("poll");
         let bytes = readback.get_mapped_range(..).expect("mapped");
         // Field values live in f16's normal range; zero rows decode to
-        // exactly zero through the e == 0 arm.
+        // exactly zero through the e == 0 arm, and an overflowed store
+        // decodes to infinity so is_finite can catch it.
         let f16 = |h: u16| -> f32 {
             let e = u32::from(h >> 10) & 0x1f;
             if e == 0 {
                 return 0.0;
+            }
+            if e == 31 {
+                return f32::INFINITY;
             }
             f32::from_bits(
                 (u32::from(h & 0x8000) << 16) | ((e + 112) << 23) | (u32::from(h & 0x3ff) << 13),
@@ -3023,6 +3094,120 @@ mod tests {
             (plateau / FIELD_SETTLED - 1.0).abs() < 0.1,
             "plateau {plateau} vs calibrated {FIELD_SETTLED}"
         );
+
+        // The filter over the same field: blurred thickness and raw
+        // texel differences in a half-float store. Recomputed from the
+        // stored thickness, the interior differences must agree within
+        // f16 rounding of their terms (near 0.016); the border texel's
+        // apron reads past the edge, so it is checked for finiteness
+        // only.
+        let filtered = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("calibration filtered"),
+            size: wgpu::Extent3d {
+                width: 32,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let filtered_view = filtered.create_view(&Default::default());
+        let bind = filter_bind(&device, &sim.filter_layout, &view, &filtered_view);
+        let filtered_readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("filtered readback"),
+            size: 256 * 64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&sim.filter);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.set_immediates(0, &pack_optics([0.0, -9.81, -0.5], sim.extent));
+            let groups = filter_groups([128, 256]);
+            pass.dispatch_workgroups(groups[0], groups[1], 1);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &filtered,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &filtered_readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: 32,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+        filtered_readback.map_async(wgpu::MapMode::Read, .., |_| {});
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let filtered_bytes = filtered_readback.get_mapped_range(..).expect("mapped");
+        let texels: Vec<[f32; 4]> = filtered_bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|q| {
+                let ch = |i: usize| f16(u16::from_le_bytes([q[2 * i], q[2 * i + 1]]));
+                [ch(0), ch(1), ch(2), ch(3)]
+            })
+            .collect();
+        let step = [2.0 * TEST_EXTENT[0] / 32.0, 2.0 * TEST_EXTENT[1] / 64.0];
+        let aspect = (step[0] / step[1]).powi(2);
+        let at = |x: i32, y: i32| texels[y as usize * 32 + x as usize][0];
+        let (mut drift, mut edge) = (0.0f32, 0.0f32);
+        for y in 0..64i32 {
+            for x in 0..32i32 {
+                let t = texels[(y * 32 + x) as usize];
+                assert!(t.iter().all(|v| v.is_finite()), "texel {x},{y}: {t:?}");
+                if x == 0 || y == 0 || x == 31 || y == 63 {
+                    continue;
+                }
+                let d = at(x, y);
+                let gx = at(x + 1, y) - at(x - 1, y);
+                let gy = at(x, y - 1) - at(x, y + 1);
+                let lap = (at(x + 1, y) + at(x - 1, y) - 2.0 * d)
+                    + (at(x, y + 1) + at(x, y - 1) - 2.0 * d) * aspect;
+                drift = drift
+                    .max((t[1] - gx).abs())
+                    .max((t[2] - gy).abs())
+                    .max((t[3] - lap).abs());
+                edge = edge.max(lap.abs());
+            }
+        }
+        let mut blurred: Vec<f32> = texels
+            .iter()
+            .map(|t| t[0])
+            .filter(|v| *v >= 0.6 * max)
+            .collect();
+        blurred.sort_unstable_by(f32::total_cmp);
+        let blurred_plateau = blurred[blurred.len() / 2];
+        eprintln!("filtered field: plateau {blurred_plateau:.3}, drift {drift:.4}, edge {edge:.3}");
+        assert!(
+            (blurred_plateau / plateau - 1.0).abs() < 0.05,
+            "blurred plateau {blurred_plateau} vs {plateau}"
+        );
+        assert!(drift < 0.03, "stored differences drift {drift}");
+        assert!(edge > 0.05, "no waterline to test: {edge}");
     }
 
     // A second of the solve, phone flat on the desk (gravity into the

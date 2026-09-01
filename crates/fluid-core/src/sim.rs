@@ -44,10 +44,9 @@ impl Grid {
 }
 
 /// Cubic-spline kernel, 3D normalisation, zero at and beyond the support
-/// radius 2h. The CPU reference the tests pin the WGSL against; the
-/// shaders carry the runtime copy.
-#[cfg(test)]
-fn kernel(r: f32, h: f32) -> f32 {
+/// radius 2h. The CPU reference the tests and the bench's first frame
+/// pin the WGSL against; the shaders carry the runtime copy.
+pub(crate) fn kernel(r: f32, h: f32) -> f32 {
     let q = r / h;
     let sigma = 1.0 / (std::f32::consts::PI * h * h * h);
     if q < 1.0 {

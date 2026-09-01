@@ -13,7 +13,9 @@ struct SimParams {
 
 @group(0) @binding(0) var<uniform> params: SimParams;
 @group(0) @binding(1) var<storage, read> positions: array<vec4f>;
-@group(0) @binding(2) var<storage, read> counts: array<u32>;
+// After scatter each cursor holds its cell's count; scatter zeroed the
+// counts for the next rebuild.
+@group(0) @binding(2) var<storage, read> cursors: array<u32>;
 @group(0) @binding(3) var<storage, read> starts: array<u32>;
 @group(0) @binding(4) var<storage, read> sorted: array<u32>;
 @group(0) @binding(5) var<storage, read_write> density: array<f32>;
@@ -51,7 +53,7 @@ fn density_sweep(@builtin(global_invocation_id) id: vec3u) {
                 }
                 let c = (u32(coord.z) * params.dims.y + u32(coord.y)) * params.dims.x
                     + u32(coord.x);
-                let end = starts[c] + counts[c];
+                let end = starts[c] + cursors[c];
                 for (var k = starts[c]; k < end; k++) {
                     let r = distance(pos, positions[sorted[k]].xyz);
                     rho += params.mass * kernel(r, params.h);

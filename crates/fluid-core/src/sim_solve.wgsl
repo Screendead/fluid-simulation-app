@@ -308,8 +308,8 @@ fn cell_base(pos: vec3f) -> vec3u {
 }
 
 // The neighbour sweeps, lane-parallel: LANES threads share one
-// particle, each sweeping a slice of its neighbours, reduced in
-// workgroup memory. At this particle count the sweeps are
+// particle, each sweeping a slice of its neighbours, folded with
+// subgroup shuffles. At this particle count the sweeps are
 // latency-bound, not work-bound (the per-kernel profile in the
 // optimisation record): eight shorter serial chains and eightfold
 // occupancy cut each sweep about 3.3x. The math is unchanged up to
@@ -327,12 +327,14 @@ const LANES: u32 = 8u;
 // never silent: rest packing gives ~40 in the slab, 58 in full 3D.
 const NBR_CAP: u32 = 96u;
 
-var<workgroup> nbr_fill: array<atomic<u32>, 32>;
+var<workgroup> nbr_fill: array<atomic<u32>, 256u / LANES>;
 
 // Folds a particle's LANES partial sums across its lanes with subgroup
-// shuffles: the lanes are consecutive invocations, so they share a
-// SIMD group, and no barrier or workgroup memory is needed. Every lane
-// of the subgroup must reach it. Every lane receives the total.
+// shuffles, no barrier or workgroup memory. The fold relies on Metal
+// laying consecutive invocations along one SIMD group in order; WGSL
+// promises no such mapping, and the density tests check the totals.
+// Every lane of the subgroup must reach it. Every lane receives the
+// total.
 fn lane_fold(v: vec4f) -> vec4f {
     var t = v + subgroupShuffleXor(v, 4u);
     t += subgroupShuffleXor(t, 2u);
