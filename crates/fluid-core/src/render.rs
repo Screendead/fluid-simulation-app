@@ -361,43 +361,6 @@ pub fn film(
             pass.draw(0..3, 0..1);
         }
         {
-            // The dye pass: the field's decay-plus-splat template on
-            // the dye texture, so the steady state is the raw charge
-            // splat at every keep and rest carries no shot noise.
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &sim.dye,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            let keep = f64::from(field_keep);
-            let splat = 1.0 - keep;
-            pass.set_pipeline(&sim.decay);
-            pass.set_blend_constant(wgpu::Color {
-                r: keep,
-                g: keep,
-                b: keep,
-                a: keep,
-            });
-            pass.draw(0..3, 0..1);
-            pass.set_pipeline(&sim.dye_splat);
-            pass.set_blend_constant(wgpu::Color {
-                r: splat,
-                g: splat,
-                b: splat,
-                a: splat,
-            });
-            pass.set_bind_group(0, &sim.tracer_draw_bind, &[]);
-            pass.draw(0..4, 0..sim.tracer_count);
-        }
-        {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1015,8 +978,6 @@ struct Sim {
     blur_b: wgpu::TextureView,
     blur_h_bind: wgpu::BindGroup,
     blur_v_bind: wgpu::BindGroup,
-    dye: wgpu::TextureView,
-    dye_splat: wgpu::RenderPipeline,
     fill_bind: wgpu::BindGroup,
     tracer_bind: wgpu::BindGroup,
     tracer_draw_bind: wgpu::BindGroup,
@@ -1353,10 +1314,9 @@ impl Sim {
         // field -> blur_a -> blur_b, and the fill pass samples blur_b.
         let blur_a = field_view(device, "sim field blur a", surface);
         let blur_b = field_view(device, "sim field blur b", surface);
-        let dye = field_view(device, "sim dye", surface);
-        let fill_bind = field_bind(device, &fill_layout, &blur_b, &dye, &field_sampler);
-        let blur_h_bind = field_bind(device, &fill_layout, &field, &dye, &field_sampler);
-        let blur_v_bind = field_bind(device, &fill_layout, &blur_a, &dye, &field_sampler);
+        let fill_bind = field_bind(device, &fill_layout, &blur_b, &field_sampler);
+        let blur_h_bind = field_bind(device, &fill_layout, &field, &field_sampler);
+        let blur_v_bind = field_bind(device, &fill_layout, &blur_a, &field_sampler);
         let surface_module = module("sim_surface", include_str!("sim_surface.wgsl"));
         let fill_pl = pipe_layout("sim surface", &fill_layout, 48);
         let blur_pl = pipe_layout("sim blur", &fill_layout, 0);
@@ -1478,34 +1438,6 @@ impl Sim {
                 multiview_mask: None,
                 cache: None,
             }),
-            dye_splat: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("sim dye"),
-                layout: Some(&tracer_draw_pl),
-                vertex: wgpu::VertexState {
-                    module: &sprite_module,
-                    entry_point: Some("dye"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &sprite_module,
-                    entry_point: Some("dye_frag"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::R16Float,
-                        blend: Some(SPLAT),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            }),
             body: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("sim body"),
                 layout: Some(&sprite_pl),
@@ -1599,7 +1531,6 @@ impl Sim {
             blur_b,
             blur_h_bind,
             blur_v_bind,
-            dye,
             fill_bind,
             tracer_bind,
             tracer_draw_bind,
@@ -1631,28 +1562,9 @@ impl Sim {
         self.field = field_view(device, "sim field", surface);
         self.blur_a = field_view(device, "sim field blur a", surface);
         self.blur_b = field_view(device, "sim field blur b", surface);
-        self.dye = field_view(device, "sim dye", surface);
-        self.fill_bind = field_bind(
-            device,
-            &self.fill_layout,
-            &self.blur_b,
-            &self.dye,
-            &self.field_sampler,
-        );
-        self.blur_h_bind = field_bind(
-            device,
-            &self.fill_layout,
-            &self.field,
-            &self.dye,
-            &self.field_sampler,
-        );
-        self.blur_v_bind = field_bind(
-            device,
-            &self.fill_layout,
-            &self.blur_a,
-            &self.dye,
-            &self.field_sampler,
-        );
+        self.fill_bind = field_bind(device, &self.fill_layout, &self.blur_b, &self.field_sampler);
+        self.blur_h_bind = field_bind(device, &self.fill_layout, &self.field, &self.field_sampler);
+        self.blur_v_bind = field_bind(device, &self.fill_layout, &self.blur_a, &self.field_sampler);
     }
 }
 
@@ -1679,7 +1591,6 @@ fn field_bind(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     field: &wgpu::TextureView,
-    dye: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1693,10 +1604,6 @@ fn field_bind(
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::Sampler(sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::TextureView(dye),
             },
         ],
     })
@@ -1720,16 +1627,6 @@ fn layout_frag(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
                 count: None,
             },
         ],
@@ -2481,47 +2378,6 @@ impl Renderer {
                 pass.draw(0..3, 0..1);
             }
         }
-        if let Mode::Sim(s) = &self.mode {
-            // The dye pass mirrors the film path: decay plus charge
-            // splat, the field's own template.
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &s.dye,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                ..Default::default()
-            });
-            let keep = f64::from(s.field_keep);
-            let splat = 1.0 - keep;
-            pass.set_pipeline(&s.decay);
-            pass.set_blend_constant(wgpu::Color {
-                r: keep,
-                g: keep,
-                b: keep,
-                a: keep,
-            });
-            pass.draw(0..3, 0..1);
-            if s.tracer_count > 0 {
-                pass.set_pipeline(&s.dye_splat);
-                pass.set_blend_constant(wgpu::Color {
-                    r: splat,
-                    g: splat,
-                    b: splat,
-                    a: splat,
-                });
-                pass.set_bind_group(0, &s.tracer_draw_bind, &[]);
-                pass.draw(0..4, 0..s.tracer_count);
-            }
-        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -3190,13 +3046,13 @@ mod tests {
         assert!(f[4] >= 0.0 && f[5] < 1.0e4, "pressure {}..{}", f[4], f[5]);
     }
     #[test]
-    fn the_dye_charge_rises_with_motion_and_decays_at_rest() {
+    fn the_charge_rises_with_motion_and_decays_at_rest() {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
         // A second of hard sideways force churns the box and charges
         // the tracers; five settled seconds must drain most of it
-        // (exp(-5/T_DYE) plus respawns at resting particles).
+        // (exp(-5/T_CHARGE) plus respawns at resting particles).
         read_stats(&device, &queue, &sim, 7, 120, [-6.0, -9.81, 0.0]);
         let mean = |ts: &[[f32; 4]]| ts.iter().map(|t| t[3]).sum::<f32>() / ts.len() as f32;
         let kicked = mean(&read_tracers(&device, &queue, &sim));

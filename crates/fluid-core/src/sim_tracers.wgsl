@@ -43,11 +43,11 @@ const TAU: f32 = 3.0;
 // A stranded tracer is visible dust, so it waits far less.
 const TAU_STRAY: f32 = 0.25;
 
-// Dye memory: the charge a tracer carries into the dye splat is the
-// fastest speed it has recently felt, decaying over T_DYE. It rides
-// the packed speed slot. The M4 record ("The dye, designed") holds
-// the model and the dials.
-const T_DYE: f32 = 4.0;
+// Charge memory: a tracer carries the fastest speed it has recently
+// felt, decaying over T_CHARGE, riding the packed speed slot. The
+// point draw brightens on it, so slow strands keep telling of the
+// churn that made them (M4 record, "The dye, designed").
+const T_CHARGE: f32 = 4.0;
 
 fn pcg(x: u32) -> u32 {
     var h = x * 747796405u + 2891336453u;
@@ -178,5 +178,5 @@ fn advect(@builtin(global_invocation_id) id: vec3u) {
     }
     pos += v * step.dt;
     let e = box_extent();
-    store_tracer(id.x, clamp(pos, -e, e), max(length(v), old.w * exp(-step.dt / T_DYE)));
+    store_tracer(id.x, clamp(pos, -e, e), max(length(v), old.w * exp(-step.dt / T_CHARGE)));
 }

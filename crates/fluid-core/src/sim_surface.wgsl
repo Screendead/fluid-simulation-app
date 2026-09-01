@@ -8,7 +8,6 @@
 
 @group(0) @binding(0) var field: texture_2d<f32>;
 @group(0) @binding(1) var field_sampler: sampler;
-@group(0) @binding(2) var dye_tex: texture_2d<f32>;
 
 struct Optics {
     up: vec3f,
@@ -134,13 +133,6 @@ fn decay_frag(in: FillVertex) -> @location(0) vec4f {
     return vec4f(0.0);
 }
 
-// Dye: charged tracers read as suspended aeration. The gain maps
-// splatted charge to milkiness; the cap keeps deep churn translucent.
-// Dials in the M4 record ("The dye, designed").
-const DYE_GAIN: f32 = 0.18;
-const MILK_MAX: f32 = 0.35;
-const MILK_TINT: vec3f = vec3f(0.75, 0.82, 0.88);
-
 @fragment
 fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     let d = textureSampleLevel(field, field_sampler, in.uv, 0.0).r;
@@ -183,17 +175,13 @@ fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     let through = dazzle(p + r.xy * path, px2w, FROST * path_rel)
         * caustic
         * exp(-ABSORB * path_rel);
-    // Scattered light replaces transmitted light before the Fresnel
-    // mix: the milk lives inside the water, the reflection stays clean.
-    let dye = textureSampleLevel(dye_tex, field_sampler, in.uv, 0.0).r;
-    let lit = mix(through, MILK_TINT, clamp(dye * DYE_GAIN, 0.0, MILK_MAX));
 
     let fres = F0 + (1.0 - F0) * pow(1.0 - n.z, 5.0);
     let rr = reflect(view, n);
     let sky = mix(HORIZON, ZENITH, 0.5 + 0.5 * dot(rr, optics.up));
     let glint = pow(max(dot(n, optics.h), 0.0), SUN_GLOSS) * optics.glint_gain;
 
-    var col = mix(lit, sky, fres) + SUN_TINT * glint;
+    var col = mix(through, sky, fres) + SUN_TINT * glint;
     if (a < 1.0) {
         col = mix(dazzle(p, px2w, 0.0), col, a);
     }

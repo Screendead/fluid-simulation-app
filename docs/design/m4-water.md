@@ -233,53 +233,34 @@ motion, no aeration — correct); spin-up, the stop, eddies and slosh
 all do. Swirls stretch and fold the charged tracers into filaments;
 the structure is real advection, not synthesis.
 
-Dials, Jack's. First-build values from the film ladder, 2026-09-01:
-T_DYE 4 s, DYE_GAIN 0.18, MILK_MAX 0.35, DYE_FLOOR 0.09 m/s, DYE_R
-0.01 m, DYE_SCALE 0.4, MILK_TINT (0.75, 0.82, 0.88). Rejected: gain
-0.5, cap 0.6, floor 0.05 — the whole body fogged to a uniform grey
-wash four seconds after the spin stop, because residual swirl above
-0.05 m/s kept re-sourcing charge and the gain saturated the cap
-everywhere; the dazzle died behind it. At the shipped dials the stop
-blooms, the churn draws banded haze, and the glass is clear again
-about four seconds after the swirl dies. Flicker on the meter recipe
-(NOISE=0.08 TREMOR=0 IDLE=0, settled window): 4,459 px/frame with
-dye against 3,525 without on the same build and day — both re-runs
-of the recipe behind the recorded 3,268 — threshold unchanged at
-12,000. Jack's device eye rules the final values.
+The verdict (2026-09-01, Jack's eye on the device). The milk is
+dead and the strands carry the feature. Jack, verbatim: "It does
+read as churn, but it could be shown at a lower threshold", then
+"strands look good, milk is too much", then "milk off is right,
+delete it". The milk splat, its texture, its passes and its dials
+were built, priced on the device (settled p50 unchanged at 6.1 ms,
+every window 120 Hz), and deleted the same day; git holds the code.
 
-Two recorded contingencies:
-- Respawn erosion. Tracers respawn with time constant TAU = 3 s
-  (calibrated against cloud collapse; not touched). At T_DYE = 4 s
-  the filament contrast decays with tau_eff ~ 1.7 s while the eddy
-  it traces lives ~5 s. If the films show filaments dying before the
-  swirl, respawn inherits the previous frame's dye texture at the
-  spawn point instead of the source particle's speed.
-- The dot draw shares the speed slot, so dots now glow for ~T_DYE
-  after motion stops. If Jack's eye reads that as the old speckle
-  species, decoupling costs a tracer widening (vec2u -> vec4u,
-  ~1 MB) and its own slot.
+What shipped instead is the charge made visible through the point
+draw. The charge memory stays (T_CHARGE = 4 s in the tracer kernel:
+each tracer remembers the fastest speed it has recently felt), and
+the strand draw brightens on it through a square-root response above
+the 0.05 m/s gate — a gently swirling thread that was near-black
+under the old linear response now reads, and full speed is
+unchanged. Rejected on the way, both same-day: DYE_FLOOR 0.05 for
+the milk (the whole body milked at gentle motion - "way too milky")
+and a 0.02 strand gate (settled flicker 13,683 against the 12,000
+threshold; the charge holds jitter peaks for seconds, so the gate
+must clear the peak, not the mean). Settled-awake flicker at the
+shipped strand response: 9,700-10,600 across two runs against the
+12,000 threshold, up from 4,459 under the linear draw — the price
+of gentle strands glowing, Jack's eye accepting.
 
-Budget. The splat's cost is overdraw: a 1 cm quad covers ~500 dye
-texels on the device target, so 131,072 charged tracers rasterize
-~66M blended fragments — far above the first +0.3-0.6 ms estimate
-(the review caught the arithmetic). Mitigation, shipped: a quad with
-zero charge collapses to a point in the vertex stage, so a settled
-box pays nothing and the cost scales with how much water is
-churning. Worst case (every tracer charged, a hard shake) is brief
-by construction — the charge floor and T_DYE drain it — and lands
-during frames the solver already spends heavily. The device p50,
-settled and shaken, prices it before any merge; if the shaken number
-is unacceptable, the recorded fallback is a stochastic fraction of
-the tracers splatting at proportionally higher DYE_SCALE.
-
-Priced 2026-09-01, reference device, thermal nominal, 88 one-second
-stats windows of Jack's play: settled GPU p50 6.1 ms — unchanged
-from the pre-dye 6.15, the zero-charge collapse holds. Post-shake
-churn (the dye-heavy state) 6.3-7.8 ms; the single worst window
-9.8 ms p50 during a v 3.2, n 16 shake, with drops only in the p99
-tail as before the dye. Every window held the 120 Hz median — no
-60 Hz window in the whole session. The stochastic fallback is not
-needed.
+The respawn-erosion contingency stands for the strands: tracers
+respawn with TAU = 3 s against T_CHARGE = 4 s, so strand contrast
+fades faster than the eddy it traces; if that reads on the device,
+respawn inherits a sampled charge instead of the source particle's
+speed.
 
 ## Sequencing: renderer before the aggressive optimisation pass
 
