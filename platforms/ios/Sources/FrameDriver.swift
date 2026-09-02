@@ -67,12 +67,12 @@ final class FrameDriver {
         return fluid_renderer_particles_at(renderer, Float(scale))
     }
 
-    /// `at` is normalised over the view, x right and y down; nil lifts
-    /// the finger. Called from the gesture, off the frame path.
-    func touch(_ at: CGPoint?) {
+    /// `at` is normalised over the view, x right and y down; `slot`
+    /// names the finger. Called from the touch handlers, off the frame
+    /// path.
+    func touch(_ slot: UInt32, _ at: CGPoint, down: Bool) {
         guard let renderer else { return }
-        fluid_renderer_touch(
-            renderer, Float(at?.x ?? 0), Float(at?.y ?? 0), at != nil)
+        fluid_renderer_touch(renderer, slot, Float(at.x), Float(at.y), down)
     }
 
     func setLook(flat: Bool, particles: Bool, colour: FluidVec3) {

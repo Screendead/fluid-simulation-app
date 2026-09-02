@@ -134,7 +134,7 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         required_features: wgpu::Features::IMMEDIATES | wgpu::Features::SUBGROUP,
         required_limits: wgpu::Limits {
             max_storage_buffers_per_shader_stage: 20,
-            max_immediate_size: 80,
+            max_immediate_size: sim::STEP_BYTES as u32,
             ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
         },
         ..Default::default()
@@ -212,7 +212,7 @@ pub fn film(
     let mut clamp_total = 0.0f32;
     let mut filter = ForceFilter::new();
     let mut rotation = RotationTracker::new();
-    let mut finger = Finger::new();
+    let mut fingers = Fingers::new();
     // IDLE=0 keeps the solver stepping for metrology films: a boil or
     // jump measurement over a settled window is meaningless if the gate
     // froze the window.
@@ -225,9 +225,9 @@ pub fn film(
         let (raw_force, raw_omega, at) = input_at(f);
         let (force, dev) = filter.apply(raw_force);
         let (omega, domega) = rotation.apply(raw_omega, dt);
-        finger.at = at;
-        let touch = finger.step(sim.extent, dt);
-        if gate_on && gate.asleep(finger.down(), force, dev, omega, v_max) {
+        fingers.at[0] = at;
+        let touches = fingers.step(sim.extent, dt);
+        if gate_on && gate.asleep(fingers.any_down(), force, dev, omega, v_max) {
             if !was_asleep {
                 eprintln!("film: sleep at frame {f}");
                 was_asleep = true;
@@ -262,7 +262,7 @@ pub fn film(
         };
         let dt_sub = dt / n as f32;
         let v_clamp = 0.4 * spacing / dt_sub;
-        let step = sim::pack_step(force, omega, domega, dt_sub, v_clamp, 0, touch);
+        let step = sim::pack_step(force, omega, domega, dt_sub, v_clamp, 0, touches);
         let particles = sim.count.div_ceil(256);
         let wide = (sim.count * SWEEP_LANES).div_ceil(256);
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -303,7 +303,15 @@ pub fn film(
             pass.set_pipeline(&sim.splat);
             pass.set_immediates(
                 0,
-                &sim::pack_step(force, [0.0; 3], [0.0; 3], dt, 0.0, f, sim::Touch::default()),
+                &sim::pack_step(
+                    force,
+                    [0.0; 3],
+                    [0.0; 3],
+                    dt,
+                    0.0,
+                    f,
+                    sim::Touches::default(),
+                ),
             );
             pass.dispatch_workgroups(particles, 1, 1);
             pass.set_pipeline(&sim.resolve);
@@ -650,18 +658,19 @@ impl ForceFilter {
 /// gyro is far cleaner than the accelerometer, so the smoothing is
 /// light; the derivative is clamped against flick spikes and zeroed
 /// across pauses, where the frame gap is not a rotation interval.
-/// The finger on the glass, turned into the drag the solver reads.
-/// The shell reports where it presses in normalised drawable
-/// coordinates — the one fact only the shell holds — and every metre
-/// and metre per second below is computed here (D6).
-struct Finger {
-    at: Option<[f32; 2]>,
-    world: [f32; 2],
-    velocity: [f32; 2],
-    tracked: bool,
+/// The fingers on the glass, turned into the drag the solver reads.
+/// The shell reports where each presses in normalised drawable
+/// coordinates and which slot it holds — the facts only the shell has,
+/// since only it can tell one finger from another. Every metre and
+/// metre per second below is computed here (D6).
+struct Fingers {
+    at: [Option<[f32; 2]>; sim::MAX_TOUCHES],
+    world: [[f32; 2]; sim::MAX_TOUCHES],
+    velocity: [[f32; 2]; sim::MAX_TOUCHES],
+    tracked: [bool; sim::MAX_TOUCHES],
 }
 
-impl Finger {
+impl Fingers {
     /// How far into the water a finger drags, world metres. The world
     /// is WORLD_SCALE times the device, so this is 25 mm of glass: a
     /// fingertip and the wider net Jack asked for around it
@@ -676,43 +685,53 @@ impl Finger {
 
     fn new() -> Self {
         Self {
-            at: None,
-            world: [0.0; 2],
-            velocity: [0.0; 2],
-            tracked: false,
+            at: [None; sim::MAX_TOUCHES],
+            world: [[0.0; 2]; sim::MAX_TOUCHES],
+            velocity: [[0.0; 2]; sim::MAX_TOUCHES],
+            tracked: [false; sim::MAX_TOUCHES],
         }
     }
 
-    fn down(&self) -> bool {
-        self.at.is_some()
+    fn any_down(&self) -> bool {
+        self.at.iter().any(Option::is_some)
     }
 
-    /// This frame's drag. Velocity comes from the frame's own step, so
-    /// a finger held still brakes the water it sits in and a finger
-    /// lifted stops dragging entirely.
-    fn step(&mut self, extent: [f32; 2], dt: f32) -> sim::Touch {
-        let Some([x, y]) = self.at else {
-            self.tracked = false;
-            return sim::Touch::default();
-        };
-        // Normalised drawable to the box plane: x runs right in both,
-        // y runs down the drawable and up the box.
-        let world = [(2.0 * x - 1.0) * extent[0], (1.0 - 2.0 * y) * extent[1]];
-        if self.tracked && dt > 0.0 {
-            let alpha = 1.0 - (-dt / Self::SMOOTH_TAU).exp();
-            for ((smooth, now), was) in self.velocity.iter_mut().zip(world).zip(self.world) {
-                *smooth += ((now - was) / dt - *smooth) * alpha;
-            }
-        } else {
-            self.velocity = [0.0; 2];
-        }
-        self.world = world;
-        self.tracked = true;
-        sim::Touch {
-            at: world,
-            velocity: self.velocity,
+    /// This frame's drag. Each finger's velocity comes from the
+    /// frame's own step, so one held still brakes the water it sits in
+    /// and one lifted stops dragging entirely. The solver reads the
+    /// live fingers packed from the front, so a lifted finger costs
+    /// its loop nothing.
+    fn step(&mut self, extent: [f32; 2], dt: f32) -> sim::Touches {
+        let mut touches = sim::Touches {
             radius: Self::RADIUS,
+            ..Default::default()
+        };
+        for slot in 0..sim::MAX_TOUCHES {
+            let Some([x, y]) = self.at[slot] else {
+                self.tracked[slot] = false;
+                continue;
+            };
+            // Normalised drawable to the box plane: x runs right in
+            // both, y runs down the drawable and up the box.
+            let world = [(2.0 * x - 1.0) * extent[0], (1.0 - 2.0 * y) * extent[1]];
+            if self.tracked[slot] && dt > 0.0 {
+                let alpha = 1.0 - (-dt / Self::SMOOTH_TAU).exp();
+                let was = self.world[slot];
+                for ((smooth, now), then) in self.velocity[slot].iter_mut().zip(world).zip(was) {
+                    *smooth += ((now - then) / dt - *smooth) * alpha;
+                }
+            } else {
+                self.velocity[slot] = [0.0; 2];
+            }
+            self.world[slot] = world;
+            self.tracked[slot] = true;
+            touches.each[touches.count as usize] = sim::Touch {
+                at: world,
+                velocity: self.velocity[slot],
+            };
+            touches.count += 1;
         }
+        touches
     }
 }
 
@@ -1520,9 +1539,9 @@ impl Sim {
         let filter_pl = pipe_layout("sim field filter", &filter_layout, 64);
         let grid_pl = pipe_layout("sim grid", &grid_layout, 0);
         let scan_pl = pipe_layout("sim scan", &scan_layout, 0);
-        let solve_pl = pipe_layout("sim solve", &solve_layout, 80);
+        let solve_pl = pipe_layout("sim solve", &solve_layout, sim::STEP_BYTES as u32);
         let sprite_pl = pipe_layout("sim sprites", &sprite_layout, 0);
-        let tracer_pl = pipe_layout("sim tracers", &tracer_layout, 80);
+        let tracer_pl = pipe_layout("sim tracers", &tracer_layout, sim::STEP_BYTES as u32);
         let tracer_draw_pl = pipe_layout("sim tracer draw", &tracer_draw_layout, 0);
         let disc_pl = pipe_layout("sim discs", &sprite_layout, 32);
         let pipeline =
@@ -2304,7 +2323,7 @@ pub struct Renderer {
     gpu_timing: Option<GpuTiming>,
     force_filter: ForceFilter,
     rotation: RotationTracker,
-    finger: Finger,
+    fingers: Fingers,
     idle: IdleGate,
     idle_frames: u64,
     mode: Mode,
@@ -2349,7 +2368,7 @@ impl Renderer {
             // binds: the solve layout holds eighteen storage buffers.
             required_limits: wgpu::Limits {
                 max_storage_buffers_per_shader_stage: 20,
-                max_immediate_size: 80,
+                max_immediate_size: sim::STEP_BYTES as u32,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
             ..Default::default()
@@ -2444,7 +2463,7 @@ impl Renderer {
             gpu_timing,
             force_filter: ForceFilter::new(),
             rotation: RotationTracker::new(),
-            finger: Finger::new(),
+            fingers: Fingers::new(),
             idle: IdleGate::new(),
             idle_frames: 0,
             mode,
@@ -2495,13 +2514,17 @@ impl Renderer {
         }
     }
 
-    /// Where the finger presses, in normalised drawable coordinates: x
+    /// Where one finger presses, in normalised drawable coordinates: x
     /// runs 0 to 1 left to right, y 0 to 1 top to bottom, the shell's
-    /// own convention. `down` false lifts it. A finger drags the water
-    /// it moves through, and holds the idle gate awake while it is on
-    /// the glass.
-    pub fn touch(&mut self, x: f32, y: f32, down: bool) {
-        self.finger.at = down.then_some([x, y]);
+    /// own convention. `down` false lifts it. `slot` is the shell's
+    /// name for that finger, held for as long as it stays on the
+    /// glass, and ignored past `touch_slots`. Every finger down drags
+    /// the water it moves through, and any finger down holds the idle
+    /// gate awake.
+    pub fn touch(&mut self, slot: u32, x: f32, y: f32, down: bool) {
+        if let Some(at) = self.fingers.at.get_mut(slot as usize) {
+            *at = down.then_some([x, y]);
+        }
     }
 
     /// The idle gate restarts: a sleeping sim presents nothing, so a
@@ -2558,7 +2581,7 @@ impl Renderer {
         if let Mode::Sim(s) = &self.mode
             && self
                 .idle
-                .asleep(self.finger.down(), force, dev, omega, s.stats[6])
+                .asleep(self.fingers.any_down(), force, dev, omega, s.stats[6])
         {
             // The clock still advances, so the wake frame steps one
             // tick, not the whole nap.
@@ -2577,12 +2600,12 @@ impl Renderer {
         } else {
             (interval_us / 1_000_000.0).clamp(0.0, MAX_DT)
         };
-        let touch = match &self.mode {
+        let touches = match &self.mode {
             Mode::Sim(s) => {
                 let extent = s.extent;
-                self.finger.step(extent, dt)
+                self.fingers.step(extent, dt)
             }
-            _ => sim::Touch::default(),
+            _ => sim::Touches::default(),
         };
         if let Mode::Sim(s) = &mut self.mode {
             // CFL: dt <= 0.4 d / v_max, from the one-frame-stale v_max
@@ -2672,7 +2695,7 @@ impl Renderer {
                     let n = s.substeps_used;
                     let dt_sub = dt / n as f32;
                     let v_clamp = 0.4 * s.spacing / dt_sub;
-                    let step = sim::pack_step(force, omega, domega, dt_sub, v_clamp, 0, touch);
+                    let step = sim::pack_step(force, omega, domega, dt_sub, v_clamp, 0, touches);
                     let particles = s.count.div_ceil(256);
                     let wide = (s.count * SWEEP_LANES).div_ceil(256);
                     for _ in 0..n {
@@ -2720,7 +2743,7 @@ impl Renderer {
                                 dt,
                                 0.0,
                                 s.frame_seed,
-                                sim::Touch::default(),
+                                sim::Touches::default(),
                             ),
                         );
                         pass.dispatch_workgroups(particles, 1, 1);
@@ -3063,36 +3086,59 @@ mod tests {
     // The shell reports a point on its own drawable and nothing else;
     // every metre below is the core's (D6).
     #[test]
-    fn the_finger_maps_a_drawable_point_into_the_box() {
+    fn the_fingers_map_drawable_points_into_the_box() {
         let extent = [0.1, 0.2];
-        let mut finger = Finger::new();
-        finger.at = Some([1.0, 0.0]);
-        let touch = finger.step(extent, 0.0);
+        let mut fingers = Fingers::new();
+        fingers.at[0] = Some([1.0, 0.0]);
+        let touches = fingers.step(extent, 0.0);
+        assert_eq!(touches.count, 1);
         assert_eq!(
-            touch.at,
+            touches.each[0].at,
             [0.1, 0.2],
             "the drawable's top right is the box's"
         );
-        assert_eq!(touch.velocity, [0.0; 2], "one sample cannot make a speed");
-        assert!(touch.radius > 0.0);
-        finger.at = None;
-        assert_eq!(finger.step(extent, 1.0 / 120.0).radius, 0.0, "lifted");
+        assert_eq!(
+            touches.each[0].velocity, [0.0; 2],
+            "one sample makes no speed"
+        );
+        assert!(touches.radius > 0.0);
+        fingers.at[0] = None;
+        assert_eq!(fingers.step(extent, 1.0 / 120.0).count, 0, "lifted");
     }
 
+    // The slot is the shell's name for one finger. A finger that lifts
+    // must not hand its speed to whichever finger the solver reads in
+    // its place: the live fingers pack forward for the shader, the
+    // state behind them does not move.
     #[test]
-    fn a_finger_at_a_steady_speed_settles_on_that_speed() {
+    fn a_lifted_finger_leaves_the_others_where_they_were() {
         let extent = [0.1, 0.2];
         let dt = 1.0 / 120.0;
-        let mut finger = Finger::new();
+        let mut fingers = Fingers::new();
         let mut velocity = [0.0; 2];
         for f in 0..60 {
-            // A hundredth of the drawable's width a frame: a fifth of a
-            // millimetre of box in 1/120 s, so 0.24 m/s to the right.
-            finger.at = Some([0.2 + 0.01 * f as f32, 0.5]);
-            velocity = finger.step(extent, dt).velocity;
+            // Slot 2 walks a hundredth of the drawable's width a frame:
+            // a fifth of a millimetre of box in 1/120 s, 0.24 m/s right.
+            fingers.at[0] = Some([0.9, 0.9]);
+            fingers.at[2] = Some([0.2 + 0.01 * f as f32, 0.5]);
+            let touches = fingers.step(extent, dt);
+            assert_eq!(touches.count, 2);
+            velocity = touches.each[1].velocity;
         }
         assert!((velocity[0] - 0.24).abs() < 0.005, "vx {}", velocity[0]);
         assert_eq!(velocity[1], 0.0);
+        // Lift the still finger; the walking one keeps walking. It now
+        // reads from slot 0 of the packed array instead of slot 1, and
+        // must still be the same finger at the same speed.
+        fingers.at[0] = None;
+        fingers.at[2] = Some([0.2 + 0.01 * 60.0, 0.5]);
+        let touches = fingers.step(extent, dt);
+        assert_eq!(touches.count, 1);
+        assert!(
+            (touches.each[0].velocity[0] - 0.24).abs() < 0.005,
+            "the walking finger changed when the still one lifted: {:?}",
+            touches.each[0].velocity
+        );
     }
 
     #[test]
@@ -3234,7 +3280,7 @@ mod tests {
         substeps: u32,
         frames: u32,
         gravity: [f32; 3],
-        touch: sim::Touch,
+        touches: sim::Touches,
     ) -> [f32; 11] {
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stats staging"),
@@ -3256,7 +3302,7 @@ mod tests {
             if substeps == 0 { 0.0 } else { dt },
             v_clamp,
             0,
-            touch,
+            touches,
         );
         let mut encoder = device.create_command_encoder(&Default::default());
         {
@@ -3308,7 +3354,7 @@ mod tests {
                             frame_dt,
                             0.0,
                             f,
-                            sim::Touch::default(),
+                            sim::Touches::default(),
                         ),
                     );
                     pass.dispatch_workgroups(particles, 1, 1);
@@ -3380,7 +3426,7 @@ mod tests {
             7,
             120,
             [0.0, -9.81, -0.5],
-            sim::Touch::default(),
+            sim::Touches::default(),
         );
         let side = 64u32;
         let target = device.create_texture(&wgpu::TextureDescriptor {
@@ -3487,7 +3533,7 @@ mod tests {
             7,
             600,
             [0.0, -9.81, -0.5],
-            sim::Touch::default(),
+            sim::Touches::default(),
         );
         let size = u64::from(sim.count) * 4;
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
@@ -3586,17 +3632,21 @@ mod tests {
             7,
             600,
             [0.0, -9.81, -0.5],
-            sim::Touch::default(),
+            sim::Touches::default(),
         );
         // In the settled pool, a fifth of the box up from the floor,
         // moving right at a metre a second for an eighth of a second.
         let at = [0.0, -0.8 * TEST_EXTENT[1]];
-        let touch = sim::Touch {
+        let mut touches = sim::Touches {
+            count: 1,
+            radius: Fingers::RADIUS,
+            ..Default::default()
+        };
+        touches.each[0] = sim::Touch {
             at,
             velocity: [1.0, 0.0],
-            radius: Finger::RADIUS,
         };
-        read_stats(&device, &queue, &sim, 7, 15, [0.0, -9.81, -0.5], touch);
+        read_stats(&device, &queue, &sim, 7, 15, [0.0, -9.81, -0.5], touches);
         let positions = read_vec4(&device, &queue, &sim.positions, sim.count);
         let velocities = read_vec4(&device, &queue, &sim.velocities, sim.count);
         let mean = |pick: &dyn Fn(&[f32; 4]) -> bool| {
@@ -3612,7 +3662,7 @@ mod tests {
             )
         };
         let reach = |p: &[f32; 4]| (p[0] - at[0]).hypot(p[1] - at[1]);
-        let under = |p: &[f32; 4]| reach(p) < Finger::RADIUS;
+        let under = |p: &[f32; 4]| reach(p) < Fingers::RADIUS;
         let (left, n_left) = mean(&|p| under(p) && p[0] < at[0]);
         let (right, n_right) = mean(&|p| under(p) && p[0] > at[0]);
         let (inside, n_in) = mean(&under);
@@ -3639,6 +3689,78 @@ mod tests {
         );
     }
 
+    // Jack, 2026-09-02: "Multi-touch should behave the same way for
+    // each simultaneous finger." Two fingers pulling opposite ways is
+    // the case a single shared drag cannot fake: each neighbourhood
+    // must follow its own finger.
+    #[test]
+    fn two_fingers_drag_their_own_water_their_own_way() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        // Far enough apart that neither disc reaches the other's water.
+        let y = -0.8 * TEST_EXTENT[1];
+        let split = 1.2 * Fingers::RADIUS;
+        let mut touches = sim::Touches {
+            count: 2,
+            radius: Fingers::RADIUS,
+            ..Default::default()
+        };
+        touches.each[0] = sim::Touch {
+            at: [-split, y],
+            velocity: [-1.0, 0.0],
+        };
+        touches.each[1] = sim::Touch {
+            at: [split, y],
+            velocity: [1.0, 0.0],
+        };
+        read_stats(&device, &queue, &sim, 7, 15, [0.0, -9.81, -0.5], touches);
+        let positions = read_vec4(&device, &queue, &sim.positions, sim.count);
+        let velocities = read_vec4(&device, &queue, &sim.velocities, sim.count);
+        let under =
+            |p: &[f32; 4], at: [f32; 2]| (p[0] - at[0]).hypot(p[1] - at[1]) < Fingers::RADIUS;
+        let mean = |at: [f32; 2]| {
+            let picked: Vec<f32> = positions
+                .iter()
+                .zip(&velocities)
+                .filter(|(p, _)| under(p, at))
+                .map(|(_, v)| v[0])
+                .collect();
+            (
+                picked.iter().sum::<f32>() / picked.len().max(1) as f32,
+                picked.len(),
+            )
+        };
+        let (left, n_left) = mean(touches.each[0].at);
+        let (right, n_right) = mean(touches.each[1].at);
+        eprintln!(
+            "vx under the left finger {left:.3} ({n_left}), the right {right:.3} ({n_right})"
+        );
+        assert!(n_left > 0 && n_right > 0, "the split found nothing");
+        // Each side reads about a third of what one finger alone
+        // manages: two fingers pulling apart are trying to open a gap
+        // in an incompressible fluid, and the pressure solve is what
+        // stops them. The signs and the gap between them are the claim.
+        assert!(left < -0.05, "the left finger did not pull left: {left:.3}");
+        assert!(
+            right > 0.05,
+            "the right finger did not pull right: {right:.3}"
+        );
+        assert!(
+            right - left > 0.15,
+            "the fingers dragged as one: {left:.3} and {right:.3}"
+        );
+    }
+
     // Seeds the real lattice, runs one rebuild and density sweep, and
     // reads the stats back: the whole solver chain, not just its
     // compilation.
@@ -3647,7 +3769,15 @@ mod tests {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        let f = read_stats(&device, &queue, &sim, 0, 1, [0.0; 3], sim::Touch::default());
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            0,
+            1,
+            [0.0; 3],
+            sim::Touches::default(),
+        );
         eprintln!(
             "seeded slab: compr avg {:.4} max {:.4}, rho {:.1}..{:.1}",
             f[0], f[1], f[2], f[3]
@@ -3719,7 +3849,7 @@ mod tests {
             7,
             1,
             [0.0, -9.81, 0.0],
-            sim::Touch::default(),
+            sim::Touches::default(),
         );
         eprintln!(
             "one frame: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
@@ -3873,7 +4003,7 @@ mod tests {
             7,
             600,
             [0.0, -9.81, -0.5],
-            sim::Touch::default(),
+            sim::Touches::default(),
         );
         assert!(f[6] < 0.2, "not settled: v_max {}", f[6]);
         let (view, vals) = raw_splat(&device, &queue, &sim);
@@ -4027,7 +4157,7 @@ mod tests {
             7,
             600,
             [0.0, -9.81, -0.5],
-            sim::Touch::default(),
+            sim::Touches::default(),
         );
         assert!(f[6] < 0.2, "not settled: v_max {}", f[6]);
         let (_, vals) = raw_splat(&device, &queue, &sim);
@@ -4058,7 +4188,7 @@ mod tests {
             7,
             120,
             [0.0, 0.0, -9.81],
-            sim::Touch::default(),
+            sim::Touches::default(),
         );
         eprintln!(
             "one second flat: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
@@ -4089,7 +4219,7 @@ mod tests {
             7,
             1800,
             [0.0, -9.81, 0.0],
-            sim::Touch::default(),
+            sim::Touches::default(),
         );
         eprintln!(
             "fifteen seconds upright: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
@@ -4114,7 +4244,7 @@ mod tests {
             7,
             120,
             [-6.0, -9.81, 0.0],
-            sim::Touch::default(),
+            sim::Touches::default(),
         );
         let mean = |ts: &[[f32; 4]]| ts.iter().map(|t| t[3]).sum::<f32>() / ts.len() as f32;
         let kicked = mean(&read_tracers(&device, &queue, &sim));
@@ -4125,7 +4255,7 @@ mod tests {
             7,
             600,
             [0.0, -9.81, 0.0],
-            sim::Touch::default(),
+            sim::Touches::default(),
         );
         let rested = mean(&read_tracers(&device, &queue, &sim));
         eprintln!("charge kicked {kicked:.3}, rested {rested:.3}");
@@ -4181,7 +4311,7 @@ mod tests {
             7,
             1800,
             [-6.94, -6.94, 0.0],
-            sim::Touch::default(),
+            sim::Touches::default(),
         );
         eprintln!(
             "corner: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
@@ -4209,7 +4339,7 @@ mod tests {
             7,
             600,
             [-9.81, 0.0, 0.0],
-            sim::Touch::default(),
+            sim::Touches::default(),
         );
         let mut encoder = device.create_command_encoder(&Default::default());
         {
@@ -4225,7 +4355,7 @@ mod tests {
                     6.0,
                     0.0,
                     601,
-                    sim::Touch::default(),
+                    sim::Touches::default(),
                 ),
             );
             pass.dispatch_workgroups(sim.tracer_count.div_ceil(256), 1, 1);

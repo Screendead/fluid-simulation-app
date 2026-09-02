@@ -158,10 +158,16 @@ pub unsafe extern "C" fn fluid_renderer_particles_at(
     unsafe { &*renderer }.0.particles_at(scale)
 }
 
-/// Where the finger presses, normalised over the drawable: `x` runs 0
-/// to 1 left to right, `y` 0 to 1 top to bottom. A finger drags the
-/// water it moves through and keeps the sim awake; `down` false lifts
-/// it. Call it from the gesture, not the frame.
+/// How many fingers the sim drags with at once. A shell must give each
+/// finger a slot below this and hold it for as long as that finger
+/// stays on the glass.
+#[unsafe(no_mangle)]
+pub static FLUID_TOUCH_SLOTS: u32 = fluid_core::TOUCH_SLOTS;
+
+/// Where one finger presses, normalised over the drawable: `x` runs 0
+/// to 1 left to right, `y` 0 to 1 top to bottom. Every finger down
+/// drags the water it moves through and keeps the sim awake; `down`
+/// false lifts one. Call it from the gesture, not the frame.
 ///
 /// # Safety
 ///
@@ -169,11 +175,12 @@ pub unsafe extern "C" fn fluid_renderer_particles_at(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fluid_renderer_touch(
     renderer: *mut FluidRenderer,
+    slot: u32,
     x: f32,
     y: f32,
     down: bool,
 ) {
-    unsafe { &mut *renderer }.0.touch(x, y, down);
+    unsafe { &mut *renderer }.0.touch(slot, x, y, down);
 }
 
 /// Liquid glass when `flat` is false. Otherwise `colour` on black:

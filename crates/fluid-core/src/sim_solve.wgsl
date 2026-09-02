@@ -23,7 +23,7 @@ struct SimParams {
 }
 
 // One block per substep: the CPU decides dt, the CFL clamp speed,
-// the box's rotation from the gyroscope, and the finger on the glass.
+// the box's rotation from the gyroscope, and the fingers on the glass.
 // sim_tracers.wgsl declares the head of the same layout; pack_step in
 // sim.rs is the packer.
 struct Step {
@@ -33,9 +33,11 @@ struct Step {
     v_clamp: f32,
     domega: vec3f,
     seed: u32,
-    touch: vec2f,
-    touch_v: vec2f,
     touch_r: f32,
+    touch_n: u32,
+    // Each finger's position and velocity in the box plane, packed
+    // from the front. MAX_TOUCHES in sim.rs is the same five.
+    touches: array<vec4f, 5>,
 }
 
 var<immediate> step: Step;
@@ -75,22 +77,36 @@ const XSPH_RATE: f32 = 6.0;
 // the flow is pulled towards the finger's own velocity, and never
 // away from the finger. Jack, 2026-09-02: "It shouldn't repel; it
 // should drag the water as if I were putting my finger through it."
+// Every finger down drags the same way, at once (Jack, the same day).
 // A rate, like XSPH above, so the pacing policy cannot change how
 // hard it pulls. Only the screen plane is entrained: the finger has
 // no depth, and pulling z to zero would flatten the flow it stirs.
 const TOUCH_RATE: f32 = 40.0;
 
-fn finger(pos: vec3f, v: vec3f) -> vec3f {
-    if step.touch_r <= 0.0 {
+fn fingers(pos: vec3f, v: vec3f) -> vec3f {
+    var pull = vec2f(0.0);
+    var weight = 0.0;
+    for (var i = 0u; i < step.touch_n; i++) {
+        let t = step.touches[i];
+        let d = pos.xy - t.xy;
+        let q2 = dot(d, d) / (step.touch_r * step.touch_r);
+        if q2 < 1.0 {
+            let w = (1.0 - q2) * (1.0 - q2);
+            pull += w * t.zw;
+            weight += w;
+        }
+    }
+    if weight <= 0.0 {
         return v;
     }
-    let q2 = dot(pos.xy - step.touch, pos.xy - step.touch)
-        / (step.touch_r * step.touch_r);
-    if q2 >= 1.0 {
-        return v;
-    }
-    let w = 1.0 - q2;
-    return vec3f(mix(v.xy, step.touch_v, 1.0 - exp(-TOUCH_RATE * w * w * step.dt)), v.z);
+    // Water two fingers share goes towards their weighted average, and
+    // goes there faster: the sum of the weights is the rate. Summing
+    // before the blend is what makes two fingers on one spot behave
+    // the same whichever order the loop found them in.
+    return vec3f(
+        mix(v.xy, pull / weight, 1.0 - exp(-TOUCH_RATE * weight * step.dt)),
+        v.z,
+    );
 }
 
 // Near-pressure, the repulsive half of Clavet 2005: a second, sharper
@@ -616,7 +632,7 @@ fn forces_den_apply(@builtin(global_invocation_id) gid: vec3u) {
         let fict = -cross(step.domega, r)
             - cross(step.omega, cross(step.omega, r))
             - 2.0 * cross(step.omega, v);
-        let forced = finger(
+        let forced = fingers(
             r,
             v + step.dt * (step.force + fict + a.xyz)
                 + (1.0 - exp(-XSPH_RATE * step.dt)) * xsph[p].xyz,

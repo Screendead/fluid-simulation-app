@@ -174,26 +174,44 @@ fn half_value(bits: u16) -> f32 {
     f32::from_bits(o.to_bits() | ((raw & 0x8000) << 16))
 }
 
-/// The finger on the glass, as the solver sees it: where it presses in
-/// the box plane and how fast it travels there, world metres, and the
-/// radius it drags water within. A radius of zero is no finger, which
-/// is not the same as a finger held still — a still finger brakes the
-/// water it sits in.
+/// Fingers the solver drags with at once. Five is what the phone
+/// reports; a sixth finger on the glass is not a pose the app has to
+/// serve.
+pub(crate) const MAX_TOUCHES: usize = 5;
+
+/// One finger on the glass, as the solver sees it: where it presses in
+/// the box plane and how fast it travels there, both world metres.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Touch {
     pub at: [f32; 2],
     pub velocity: [f32; 2],
+}
+
+/// Every finger down, packed from the front, with the radius they all
+/// drag within. A count of zero is no finger, which is not the same as
+/// a finger held still — a still finger brakes the water it sits in.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Touches {
+    pub each: [Touch; MAX_TOUCHES],
+    pub count: u32,
     pub radius: f32,
 }
 
-/// The Step immediates block, one layout shared by sim_solve.wgsl and
-/// sim_tracers.wgsl: two vec3s on 16-byte alignment — the body force
-/// and the box's angular velocity — with dt and the CFL clamp speed in
-/// their tail slots, then the angular acceleration with the tracer
-/// seed in its tail, then the finger. Real rotation reaches this from
-/// exactly two places, the device frame path and the film harness;
-/// every other caller passes zeros. The block runs to 80 bytes because
-/// WGSL rounds the struct up to its vec3 alignment.
+/// The bytes pack_step writes, which is the size sim_solve.wgsl's Step
+/// block reads.
+pub(crate) const STEP_BYTES: usize = 64 + MAX_TOUCHES * 16;
+
+/// The Step immediates block, whose head sim_solve.wgsl and
+/// sim_tracers.wgsl share: two vec3s on 16-byte alignment — the body
+/// force and the box's angular velocity — with dt and the CFL clamp
+/// speed in their tail slots, then the angular acceleration with the
+/// tracer seed in its tail. Real rotation reaches this from exactly
+/// two places, the device frame path and the film harness; every other
+/// caller passes zeros.
+///
+/// The tail is the fingers: their shared radius and their count, then
+/// the array they must be 16-byte aligned for, each finger a position
+/// and a velocity in one vec4.
 pub(crate) fn pack_step(
     force: [f32; 3],
     omega: [f32; 3],
@@ -201,9 +219,9 @@ pub(crate) fn pack_step(
     dt: f32,
     v_clamp: f32,
     seed: u32,
-    touch: Touch,
-) -> [u8; 80] {
-    let mut raw = [0u8; 80];
+    touches: Touches,
+) -> [u8; STEP_BYTES] {
+    let mut raw = [0u8; STEP_BYTES];
     for (slot, v) in [
         force[0], force[1], force[2], dt, omega[0], omega[1], omega[2], v_clamp, domega[0],
         domega[1], domega[2],
@@ -214,17 +232,21 @@ pub(crate) fn pack_step(
         raw[slot * 4..slot * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
     raw[44..48].copy_from_slice(&seed.to_le_bytes());
-    for (slot, v) in [
-        touch.at[0],
-        touch.at[1],
-        touch.velocity[0],
-        touch.velocity[1],
-        touch.radius,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        raw[48 + slot * 4..52 + slot * 4].copy_from_slice(&v.to_le_bytes());
+    raw[48..52].copy_from_slice(&touches.radius.to_le_bytes());
+    raw[52..56].copy_from_slice(&touches.count.to_le_bytes());
+    for (i, touch) in touches.each.iter().enumerate() {
+        let at = 64 + i * 16;
+        for (slot, v) in [
+            touch.at[0],
+            touch.at[1],
+            touch.velocity[0],
+            touch.velocity[1],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            raw[at + slot * 4..at + slot * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
     }
     raw
 }
@@ -453,9 +475,21 @@ mod tests {
             4.0,
             5.0,
             6,
-            Touch {
-                at: [13.0, 14.0],
-                velocity: [15.0, 16.0],
+            Touches {
+                each: [
+                    Touch {
+                        at: [13.0, 14.0],
+                        velocity: [15.0, 16.0],
+                    },
+                    Touch {
+                        at: [18.0, 19.0],
+                        velocity: [20.0, 21.0],
+                    },
+                    Touch::default(),
+                    Touch::default(),
+                    Touch::default(),
+                ],
+                count: 2,
                 radius: 17.0,
             },
         );
@@ -466,9 +500,22 @@ mod tests {
         assert_eq!(f(28), 5.0, "v_clamp");
         assert_eq!([f(32), f(36), f(40)], [10.0, 11.0, 12.0], "domega");
         assert_eq!(u32::from_le_bytes(raw[44..48].try_into().unwrap()), 6);
-        assert_eq!([f(48), f(52)], [13.0, 14.0], "touch");
-        assert_eq!([f(56), f(60)], [15.0, 16.0], "touch_v");
-        assert_eq!(f(64), 17.0, "touch_r");
+        assert_eq!(f(48), 17.0, "touch_r");
+        assert_eq!(
+            u32::from_le_bytes(raw[52..56].try_into().unwrap()),
+            2,
+            "touch_n"
+        );
+        assert_eq!(
+            [f(64), f(68), f(72), f(76)],
+            [13.0, 14.0, 15.0, 16.0],
+            "finger 0"
+        );
+        assert_eq!(
+            [f(80), f(84), f(88), f(92)],
+            [18.0, 19.0, 20.0, 21.0],
+            "finger 1"
+        );
     }
 
     #[test]

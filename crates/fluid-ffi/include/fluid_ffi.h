@@ -51,6 +51,13 @@ extern "C" {
 #endif // __cplusplus
 
 /**
+ * How many fingers the sim drags with at once. A shell must give each
+ * finger a slot below this and hold it for as long as that finger
+ * stays on the glass.
+ */
+extern const uint32_t FLUID_TOUCH_SLOTS;
+
+/**
  * Builds the renderer on a layer: `particle_count` sprites of
  * `sprite_radius` metres, or, when `bench_sweeps` is nonzero, the M3
  * stage-0 microbench at `bench_spacing` metres. A nonzero `sim_substeps`
@@ -113,16 +120,20 @@ void fluid_renderer_set_particles(struct FluidRenderer *renderer, float scale);
 uint32_t fluid_renderer_particles_at(const struct FluidRenderer *renderer, float scale);
 
 /**
- * Where the finger presses, normalised over the drawable: `x` runs 0
- * to 1 left to right, `y` 0 to 1 top to bottom. A finger drags the
- * water it moves through and keeps the sim awake; `down` false lifts
- * it. Call it from the gesture, not the frame.
+ * Where one finger presses, normalised over the drawable: `x` runs 0
+ * to 1 left to right, `y` 0 to 1 top to bottom. Every finger down
+ * drags the water it moves through and keeps the sim awake; `down`
+ * false lifts one. Call it from the gesture, not the frame.
  *
  * # Safety
  *
  * `renderer` must be a live pointer from `fluid_renderer_create`.
  */
-void fluid_renderer_touch(struct FluidRenderer *renderer, float x, float y, bool down);
+void fluid_renderer_touch(struct FluidRenderer *renderer,
+                          uint32_t slot,
+                          float x,
+                          float y,
+                          bool down);
 
 /**
  * Liquid glass when `flat` is false. Otherwise `colour` on black:

@@ -22,31 +22,12 @@ struct ContentView: View {
     @State private var buttonShown = false
     @State private var menuShown = false
 
-    /// A touch is a drag through the water first. It counts as the tap
-    /// that shows the button only if the finger barely moved, so a
-    /// stroke never opens the menu on you.
-    private static let tapSlop: CGFloat = 10
-
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            GeometryReader { geo in
-                FluidSurface(driver: driver)
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { v in
-                                driver.touch(CGPoint(
-                                    x: v.location.x / geo.size.width,
-                                    y: v.location.y / geo.size.height))
-                            }
-                            .onEnded { v in
-                                driver.touch(nil)
-                                let moved = hypot(v.translation.width, v.translation.height)
-                                if moved < Self.tapSlop {
-                                    reveal += 1
-                                    buttonShown = true
-                                }
-                            })
-            }
+            FluidSurface(driver: driver, onTap: {
+                reveal += 1
+                buttonShown = true
+            })
             .ignoresSafeArea()
             if buttonShown {
                 Button { menuShown = true } label: {

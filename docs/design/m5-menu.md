@@ -286,6 +286,7 @@ for:
 | Property | Why the form gives it |
 |---|---|
 | It drags, never repels | The target is the finger's velocity, not a direction away from it. Water on both sides of the stroke moves the same way. |
+| Every finger drags | Jack, the same day: "Multi-touch should behave the same way for each simultaneous finger." Five fingers, each with its own position and velocity. |
 | A wider net | The radius is 25 mm of glass, which is 0.1 m of the modeled tank at `WORLD_SCALE` 4 — about a third of the screen's width. |
 | A still finger brakes | With a zero finger velocity the blend damps. A real finger held in water does the same. No finger at all is a zero radius, which is a different state. |
 | Pacing cannot move it | `TOUCH_RATE` is a rate per second, exponentiated over the substep, the same idiom `XSPH_RATE` uses. |
@@ -293,14 +294,47 @@ for:
 Only the screen plane is entrained. The finger has no depth, and
 pulling z to zero would flatten the flow it stirs.
 
+### Many fingers at once
+
+Water inside more than one finger's disc goes towards the weighted
+average of their velocities, and goes there faster: the weights sum
+into the rate.
+
+```
+pull   = sum over fingers of w_i * v_i
+weight = sum over fingers of w_i
+v.xy  <- mix(v.xy, pull / weight, 1 - exp(-TOUCH_RATE * weight * dt))
+```
+
+Summing before the blend, rather than blending once per finger, is
+what makes two fingers on one spot behave the same whichever order the
+loop found them in. The blend factor is `1 - exp(-x)`, which is under
+one for every `x`, so no weight can overshoot and the sum needs no cap.
+
+Five slots, the number of fingers the phone reports. The shell owns
+the identity — only it can tell one finger from another — and holds a
+slot for each finger until it leaves the glass. The core keeps one
+tracker per slot and packs the live ones to the front of the block, so
+the solver's loop costs nothing for fingers that are not down.
+
+Rejected: a storage buffer of fingers, which needs a binding and a
+write a frame to carry at most eighty bytes; and re-packing the
+trackers when a finger lifts, which would hand a lifted finger's
+speed to whichever finger took its place.
+
 ### Where each part lives
 
 | Part | Where |
 |---|---|
-| The gesture, and the point on the drawable | `platforms/ios/Sources/FluidApp.swift`, one `DragGesture(minimumDistance: 0)` |
-| Normalised point across the ABI | `fluid_renderer_touch(renderer, x, y, down)` |
-| Point to metres, and the finger's speed | `Finger` in `render.rs` |
-| The entrainment | `finger()` in `sim_solve.wgsl`, inside `forces_den_apply` |
+| The fingers, their slots, and their points on the drawable | `MetalLayerView` in `platforms/ios/Sources/FluidSurface.swift` |
+| Normalised point across the ABI | `fluid_renderer_touch(renderer, slot, x, y, down)`, with `FLUID_TOUCH_SLOTS` for the slot count |
+| Point to metres, and each finger's speed | `Fingers` in `render.rs` |
+| The entrainment | `fingers()` in `sim_solve.wgsl`, inside `forces_den_apply` |
+
+SwiftUI's `DragGesture` reports one finger, so the touch handling sits
+in the `UIView` that already owns the Metal layer: `touchesBegan`,
+`touchesMoved`, `touchesEnded` and `touchesCancelled`, with
+`isMultipleTouchEnabled`.
 
 The shell reports a point on its own drawable and nothing else, which
 is D6's split. The core flips y, scales by the box extent, and
@@ -315,9 +349,9 @@ through the water can never open the menu.
 
 | Dial | Value | Why that value |
 |---|---|---|
-| `Finger::RADIUS` | `WORLD_SCALE * 0.025` | 25 mm of glass, a fingertip and the halo around it |
+| `Fingers::RADIUS` | `WORLD_SCALE * 0.025` | 25 mm of glass, a fingertip and the halo around it |
 | `TOUCH_RATE` | 40 per second | Water under the middle of the finger reaches its speed in about 25 ms |
-| `Finger::SMOOTH_TAU` | 20 ms | Touches and frames run at the same rate out of phase, so the raw per-frame difference alternates between a doubled step and none |
+| `Fingers::SMOOTH_TAU` | 20 ms | Touches and frames run at the same rate out of phase, so the raw per-frame difference alternates between a doubled step and none |
 
 All three are Jack's to move once he has felt it. None is derived
 from physics: a finger is not a physical model here, it is a control.
@@ -352,15 +386,26 @@ frame returns before any solver work is encoded.
   2026-09-02: left 0.32 m/s, right 0.38 m/s, under the finger 0.35,
   beyond it -0.01. The last number is the return flow around the
   finger, and it pins the net's edge.
-- `the_finger_maps_a_drawable_point_into_the_box` and
-  `a_finger_at_a_steady_speed_settles_on_that_speed`: the corner
-  mapping with its y flip, a lifted finger's zero radius, and the
-  smoothed speed against a known stroke.
-- `step_immediates_land_at_the_shader_offsets`: the finger lands at
-  bytes 48 to 68 of the Step block.
-- `DRAG=1` in the film harness: three settled seconds, a swipe across
-  the pool, half a second held still, the swipe back, a lift. Filmed
-  2026-09-02: the water heaps ahead of the finger, a trough opens
-  behind it, and the churn carries on after the lift.
+- `two_fingers_drag_their_own_water_their_own_way`: two fingers a
+  radius and a fifth apart, pulling opposite ways. Measured this
+  machine, 2026-09-02: the left neighbourhood -0.12 m/s, the right
+  +0.11. A third of what one finger alone manages, because two fingers
+  pulling apart are opening a gap in an incompressible fluid and the
+  pressure solve stops them. The signs and the gap between them are
+  the claim.
+- `the_fingers_map_drawable_points_into_the_box` and
+  `a_lifted_finger_leaves_the_others_where_they_were`: the corner
+  mapping with its y flip, a lifted finger dropping out of the count,
+  the smoothed speed against a known stroke, and a walking finger
+  keeping its speed when the finger ahead of it in the packed block
+  lifts.
+- `step_immediates_land_at_the_shader_offsets`: the radius and the
+  count at bytes 48 and 52, and two fingers at bytes 64 and 80.
+- `DRAG=1` in the film harness: one finger, three settled seconds, a
+  swipe across the pool, half a second held still, the swipe back, a
+  lift. Filmed 2026-09-02: the water heaps ahead of the finger, a
+  trough opens behind it, and the churn carries on after the lift.
+  The harness drives slot 0 only; the two-finger case is the GPU
+  test's.
 - Every shell path is exercised by the menu; the shell has no test
   target.
