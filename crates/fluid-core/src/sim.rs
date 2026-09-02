@@ -174,13 +174,26 @@ fn half_value(bits: u16) -> f32 {
     f32::from_bits(o.to_bits() | ((raw & 0x8000) << 16))
 }
 
+/// The finger on the glass, as the solver sees it: where it presses in
+/// the box plane and how fast it travels there, world metres, and the
+/// radius it drags water within. A radius of zero is no finger, which
+/// is not the same as a finger held still — a still finger brakes the
+/// water it sits in.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Touch {
+    pub at: [f32; 2],
+    pub velocity: [f32; 2],
+    pub radius: f32,
+}
+
 /// The Step immediates block, one layout shared by sim_solve.wgsl and
 /// sim_tracers.wgsl: two vec3s on 16-byte alignment — the body force
 /// and the box's angular velocity — with dt and the CFL clamp speed in
 /// their tail slots, then the angular acceleration with the tracer
-/// seed in its tail. Real rotation reaches this from exactly two
-/// places, the device frame path and the film harness; every other
-/// caller passes zeros.
+/// seed in its tail, then the finger. Real rotation reaches this from
+/// exactly two places, the device frame path and the film harness;
+/// every other caller passes zeros. The block runs to 80 bytes because
+/// WGSL rounds the struct up to its vec3 alignment.
 pub(crate) fn pack_step(
     force: [f32; 3],
     omega: [f32; 3],
@@ -188,8 +201,9 @@ pub(crate) fn pack_step(
     dt: f32,
     v_clamp: f32,
     seed: u32,
-) -> [u8; 48] {
-    let mut raw = [0u8; 48];
+    touch: Touch,
+) -> [u8; 80] {
+    let mut raw = [0u8; 80];
     for (slot, v) in [
         force[0], force[1], force[2], dt, omega[0], omega[1], omega[2], v_clamp, domega[0],
         domega[1], domega[2],
@@ -200,6 +214,18 @@ pub(crate) fn pack_step(
         raw[slot * 4..slot * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
     raw[44..48].copy_from_slice(&seed.to_le_bytes());
+    for (slot, v) in [
+        touch.at[0],
+        touch.at[1],
+        touch.velocity[0],
+        touch.velocity[1],
+        touch.radius,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        raw[48 + slot * 4..52 + slot * 4].copy_from_slice(&v.to_le_bytes());
+    }
     raw
 }
 
@@ -427,6 +453,11 @@ mod tests {
             4.0,
             5.0,
             6,
+            Touch {
+                at: [13.0, 14.0],
+                velocity: [15.0, 16.0],
+                radius: 17.0,
+            },
         );
         let f = |i: usize| f32::from_le_bytes(raw[i..i + 4].try_into().unwrap());
         assert_eq!([f(0), f(4), f(8)], [1.0, 2.0, 3.0], "force");
@@ -435,6 +466,9 @@ mod tests {
         assert_eq!(f(28), 5.0, "v_clamp");
         assert_eq!([f(32), f(36), f(40)], [10.0, 11.0, 12.0], "domega");
         assert_eq!(u32::from_le_bytes(raw[44..48].try_into().unwrap()), 6);
+        assert_eq!([f(48), f(52)], [13.0, 14.0], "touch");
+        assert_eq!([f(56), f(60)], [15.0, 16.0], "touch_v");
+        assert_eq!(f(64), 17.0, "touch_r");
     }
 
     #[test]

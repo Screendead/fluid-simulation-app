@@ -1,6 +1,7 @@
 //! Films a scripted 13-second trajectory to raw RGBA on stdout-adjacent
 //! disk; scripts/film.sh turns it into an mp4. The poses mirror the ones
-//! Jack's recordings cover: upright, the 45-degree corner, flat.
+//! Jack's recordings cover: upright, the 45-degree corner, flat. DRAG=1
+//! holds the phone upright and strokes a finger across it instead.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -35,6 +36,31 @@ fn omega_at(frame: u32) -> [f32; 3] {
         _ => 0.0,
     };
     [0.0, 0.0, w]
+}
+
+// Where the finger presses, normalised over the drawable, x right and
+// y down. Only the DRAG pose touches: three settled seconds, a swipe
+// across the pool at a hand's speed, half a second held still, the
+// swipe back, then a lift. The entrainment oracle — the water must
+// follow the finger and not flee it, brake under a still finger, and
+// keep moving after the lift.
+fn touch_at(frame: u32) -> Option<[f32; 2]> {
+    if std::env::var("DRAG").as_deref() != Ok("1") {
+        return None;
+    }
+    let preroll: f32 = std::env::var("PREROLL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    let t = frame as f32 / 120.0 - preroll;
+    let x = match t {
+        t if t < 3.0 => return None,
+        t if t < 3.5 => 0.15 + 1.4 * (t - 3.0),
+        t if t < 4.0 => 0.85,
+        t if t < 4.5 => 0.85 - 1.4 * (t - 4.0),
+        _ => return None,
+    };
+    Some([x, 0.9])
 }
 
 fn force_at(frame: u32) -> [f32; 3] {
@@ -113,6 +139,11 @@ fn force_at(frame: u32) -> [f32; 3] {
         }
         return f;
     }
+    // DRAG: held upright and still, so the finger in touch_at is the
+    // only thing that moves the water.
+    if std::env::var("DRAG").as_deref() == Ok("1") {
+        return [jitter[0], -G + jitter[1], -0.5 + jitter[2]];
+    }
     // WAKE=1: six flat seconds — long enough to sleep — then a slow
     // eased tilt to recline. The idle-gate wake oracle: the gate must
     // sleep once, wake within the tilt's first two degrees, and never
@@ -182,7 +213,7 @@ fn main() {
         4,
         spacing,
         cap,
-        |f| (force_at(f), omega_at(f)),
+        |f| (force_at(f), omega_at(f), touch_at(f)),
         |rows| {
             raw.write_all(rows).expect("write");
         },

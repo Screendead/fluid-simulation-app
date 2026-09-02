@@ -192,3 +192,12 @@ picker. Settings in the core: the core has no storage and should not
 gain one. A rating computed live from the running frame: it can only
 rate the scale that is running; the table rates the four before you
 pick.
+
+*Amended 2026-09-02, from Jack's request to drag the sim.* The split
+gains a fourth call, `touch(x, y, down)`. The shell owns the gesture
+and reports where the finger presses on its own drawable, normalised
+0 to 1, x right and y down. The core does everything else: the y
+flip, the scale to box metres, the finger's velocity from its own
+frame clock, the radius it drags within, and the entrainment itself.
+The shell computes no metre and no metre per second, which is the
+rule above unchanged.

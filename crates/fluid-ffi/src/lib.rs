@@ -158,6 +158,24 @@ pub unsafe extern "C" fn fluid_renderer_particles_at(
     unsafe { &*renderer }.0.particles_at(scale)
 }
 
+/// Where the finger presses, normalised over the drawable: `x` runs 0
+/// to 1 left to right, `y` 0 to 1 top to bottom. A finger drags the
+/// water it moves through and keeps the sim awake; `down` false lifts
+/// it. Call it from the gesture, not the frame.
+///
+/// # Safety
+///
+/// `renderer` must be a live pointer from `fluid_renderer_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fluid_renderer_touch(
+    renderer: *mut FluidRenderer,
+    x: f32,
+    y: f32,
+    down: bool,
+) {
+    unsafe { &mut *renderer }.0.touch(x, y, down);
+}
+
 /// Liquid glass when `flat` is false. Otherwise `colour` on black:
 /// the flat surface, or, when `particles` is also true, the
 /// particles alone as discs. `particles` alone does nothing.

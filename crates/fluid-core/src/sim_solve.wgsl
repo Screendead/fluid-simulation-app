@@ -23,8 +23,9 @@ struct SimParams {
 }
 
 // One block per substep: the CPU decides dt, the CFL clamp speed,
-// and the box's rotation from the gyroscope. The layout is shared
-// with sim_tracers.wgsl; pack_step in sim.rs is the packer.
+// the box's rotation from the gyroscope, and the finger on the glass.
+// sim_tracers.wgsl declares the head of the same layout; pack_step in
+// sim.rs is the packer.
 struct Step {
     force: vec3f,
     dt: f32,
@@ -32,6 +33,9 @@ struct Step {
     v_clamp: f32,
     domega: vec3f,
     seed: u32,
+    touch: vec2f,
+    touch_v: vec2f,
+    touch_r: f32,
 }
 
 var<immediate> step: Step;
@@ -65,6 +69,29 @@ var<immediate> step: Step;
 // damping and 6 keeps the settled column quiet, two seconds of extra
 // sleep latency the recorded cost.
 const XSPH_RATE: f32 = 6.0;
+
+// A finger drawn over the glass drags water with it, as a finger
+// through real water does: inside a soft disc through the whole slab
+// the flow is pulled towards the finger's own velocity, and never
+// away from the finger. Jack, 2026-09-02: "It shouldn't repel; it
+// should drag the water as if I were putting my finger through it."
+// A rate, like XSPH above, so the pacing policy cannot change how
+// hard it pulls. Only the screen plane is entrained: the finger has
+// no depth, and pulling z to zero would flatten the flow it stirs.
+const TOUCH_RATE: f32 = 40.0;
+
+fn finger(pos: vec3f, v: vec3f) -> vec3f {
+    if step.touch_r <= 0.0 {
+        return v;
+    }
+    let q2 = dot(pos.xy - step.touch, pos.xy - step.touch)
+        / (step.touch_r * step.touch_r);
+    if q2 >= 1.0 {
+        return v;
+    }
+    let w = 1.0 - q2;
+    return vec3f(mix(v.xy, step.touch_v, 1.0 - exp(-TOUCH_RATE * w * w * step.dt)), v.z);
+}
 
 // Near-pressure, the repulsive half of Clavet 2005: a second, sharper
 // kernel whose pressure is never negative. It removes the pair-clumping
@@ -589,8 +616,11 @@ fn forces_den_apply(@builtin(global_invocation_id) gid: vec3u) {
         let fict = -cross(step.domega, r)
             - cross(step.omega, cross(step.omega, r))
             - 2.0 * cross(step.omega, v);
-        let forced = v + step.dt * (step.force + fict + a.xyz)
-            + (1.0 - exp(-XSPH_RATE * step.dt)) * xsph[p].xyz;
+        let forced = finger(
+            r,
+            v + step.dt * (step.force + fict + a.xyz)
+                + (1.0 - exp(-XSPH_RATE * step.dt)) * xsph[p].xyz,
+        );
         temperature[p] += step.dt * a.w;
         let dv_full = params.mass * total.xyz + kd[p] * wall_grad[p].xyz;
         velocities[p] = vec4f(forced - step.dt * dv_full, 0.0);

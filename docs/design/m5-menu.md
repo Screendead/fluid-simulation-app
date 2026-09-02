@@ -264,6 +264,70 @@ look, and the readout, wait on Jack's eye.
   count of neighbours, which is the same buffer traffic and a coarser
   signal; a screen-space measure, which needs a pass of its own.
 
+## The touch
+
+Jack, 2026-09-02: "make it possible to drag to peturb the sim, and if
+possible, make it so that the force of my touch peturbs it with a
+wider net. It shouldn't repel; it should drag the water as if I were
+putting my finger through it."
+
+A finger on the glass entrains the water it crosses. Inside a disc of
+`Finger::RADIUS` through the whole slab, the in-plane velocity is
+pulled towards the finger's own velocity:
+
+```
+v.xy <- mix(v.xy, finger_v, 1 - exp(-TOUCH_RATE * w * w * dt))
+w = 1 - (distance / radius)^2
+```
+
+Four properties follow from that form, and each is what Jack asked
+for:
+
+| Property | Why the form gives it |
+|---|---|
+| It drags, never repels | The target is the finger's velocity, not a direction away from it. Water on both sides of the stroke moves the same way. |
+| A wider net | The radius is 25 mm of glass, which is 0.1 m of the modeled tank at `WORLD_SCALE` 4 — about a third of the screen's width. |
+| A still finger brakes | With a zero finger velocity the blend damps. A real finger held in water does the same. No finger at all is a zero radius, which is a different state. |
+| Pacing cannot move it | `TOUCH_RATE` is a rate per second, exponentiated over the substep, the same idiom `XSPH_RATE` uses. |
+
+Only the screen plane is entrained. The finger has no depth, and
+pulling z to zero would flatten the flow it stirs.
+
+### Where each part lives
+
+| Part | Where |
+|---|---|
+| The gesture, and the point on the drawable | `platforms/ios/Sources/FluidApp.swift`, one `DragGesture(minimumDistance: 0)` |
+| Normalised point across the ABI | `fluid_renderer_touch(renderer, x, y, down)` |
+| Point to metres, and the finger's speed | `Finger` in `render.rs` |
+| The entrainment | `finger()` in `sim_solve.wgsl`, inside `forces_den_apply` |
+
+The shell reports a point on its own drawable and nothing else, which
+is D6's split. The core flips y, scales by the box extent, and
+differences the point across its own frames: the shell never computes
+a velocity.
+
+The tap that reveals the menu button is now the end of a drag that
+went nowhere — under 10 points of travel. One gesture, so a stroke
+through the water can never open the menu.
+
+### Dials
+
+| Dial | Value | Why that value |
+|---|---|---|
+| `Finger::RADIUS` | `WORLD_SCALE * 0.025` | 25 mm of glass, a fingertip and the halo around it |
+| `TOUCH_RATE` | 40 per second | Water under the middle of the finger reaches its speed in about 25 ms |
+| `Finger::SMOOTH_TAU` | 20 ms | Touches and frames run at the same rate out of phase, so the raw per-frame difference alternates between a doubled step and none |
+
+All three are Jack's to move once he has felt it. None is derived
+from physics: a finger is not a physical model here, it is a control.
+
+### The idle gate
+
+A finger down clears the gate and holds it clear. Without that, a
+still phone asleep on a desk would ignore the touch entirely: the
+frame returns before any solver work is encoded.
+
 ## Tested and exercised
 
 - `the_ladder_seeds_near_its_scales`: each scale seeds within 5% of
@@ -281,5 +345,22 @@ look, and the readout, wait on Jack's eye.
   percentile density sits in the law's full-size plateau, and a lone
   particle's density sits under its floor. The two ends of the disc
   law, measured rather than assumed.
+- `a_finger_drags_both_sides_of_the_water_it_crosses`: a settled pool,
+  a finger through the middle at 1 m/s for an eighth of a second.
+  Both sides of the stroke read positive x velocity — a repelling
+  finger would throw its left side left. Measured this machine,
+  2026-09-02: left 0.32 m/s, right 0.38 m/s, under the finger 0.35,
+  beyond it -0.01. The last number is the return flow around the
+  finger, and it pins the net's edge.
+- `the_finger_maps_a_drawable_point_into_the_box` and
+  `a_finger_at_a_steady_speed_settles_on_that_speed`: the corner
+  mapping with its y flip, a lifted finger's zero radius, and the
+  smoothed speed against a known stroke.
+- `step_immediates_land_at_the_shader_offsets`: the finger lands at
+  bytes 48 to 68 of the Step block.
+- `DRAG=1` in the film harness: three settled seconds, a swipe across
+  the pool, half a second held still, the swipe back, a lift. Filmed
+  2026-09-02: the water heaps ahead of the finger, a trough opens
+  behind it, and the churn carries on after the lift.
 - Every shell path is exercised by the menu; the shell has no test
   target.

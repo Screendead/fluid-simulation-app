@@ -113,6 +113,18 @@ void fluid_renderer_set_particles(struct FluidRenderer *renderer, float scale);
 uint32_t fluid_renderer_particles_at(const struct FluidRenderer *renderer, float scale);
 
 /**
+ * Where the finger presses, normalised over the drawable: `x` runs 0
+ * to 1 left to right, `y` 0 to 1 top to bottom. A finger drags the
+ * water it moves through and keeps the sim awake; `down` false lifts
+ * it. Call it from the gesture, not the frame.
+ *
+ * # Safety
+ *
+ * `renderer` must be a live pointer from `fluid_renderer_create`.
+ */
+void fluid_renderer_touch(struct FluidRenderer *renderer, float x, float y, bool down);
+
+/**
  * Liquid glass when `flat` is false. Otherwise `colour` on black:
  * the flat surface, or, when `particles` is also true, the
  * particles alone as discs. `particles` alone does nothing.
