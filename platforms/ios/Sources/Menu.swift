@@ -5,6 +5,7 @@ import SwiftUI
 enum Settings {
     static let particleScaleKey = "particleScale"
     static let flatKey = "flat"
+    static let particleViewKey = "particleView"
     static let flatColourKey = "flatColour"
     static let showRateKey = "showRate"
     static let showThermalKey = "showThermal"
@@ -17,6 +18,10 @@ enum Settings {
     }
 
     @MainActor static var flat: Bool { UserDefaults.standard.bool(forKey: flatKey) }
+
+    @MainActor static var particleView: Bool {
+        UserDefaults.standard.bool(forKey: particleViewKey)
+    }
 
     @MainActor static var flatColour: FluidVec3 {
         FluidVec3(hex: UserDefaults.standard.string(forKey: flatColourKey) ?? hotPink)
@@ -62,6 +67,7 @@ struct Level: Identifiable {
 struct MenuSheet: View {
     @Binding var particleScale: Double
     @Binding var flat: Bool
+    @Binding var particleView: Bool
     @Binding var flatColour: String
     @Binding var showRate: Bool
     @Binding var showThermal: Bool
@@ -97,6 +103,8 @@ struct MenuSheet: View {
                     Toggle("Flat colour", isOn: $flat)
                     ColorPicker("Colour", selection: colour, supportsOpacity: false)
                         .disabled(!flat)
+                    Toggle("Particle view", isOn: $particleView)
+                        .disabled(!flat)
                 }
                 Section("Readout") {
                     Toggle("Frame rate", isOn: $showRate)
@@ -111,8 +119,8 @@ struct MenuSheet: View {
 }
 
 extension FluidVec3 {
-    /// "RRGGBB" to components 0 to 1; the colour is display bytes, so no
-    /// transfer function applies.
+    /// "RRGGBB" to components 0 to 1, the picker's own sRGB bytes; the
+    /// core linearises them for the surface.
     init(hex: String) {
         let v = UInt32(hex, radix: 16) ?? 0
         self.init(

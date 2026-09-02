@@ -158,9 +158,11 @@ pub unsafe extern "C" fn fluid_renderer_particles_at(
     unsafe { &*renderer }.0.particles_at(scale)
 }
 
-/// Liquid glass when `flat` is false; otherwise the flat look in
-/// `colour`, components 0 to 1 as the picker shows them; the core
-/// linearises them for the surface.
+/// Liquid glass when `flat` is false. Otherwise `colour` on black:
+/// the flat surface, or, when `particles` is also true, the
+/// particles alone as discs. `particles` alone does nothing.
+/// `colour`'s components are 0 to 1 as the picker shows them; the
+/// core linearises them for the surface.
 ///
 /// # Safety
 ///
@@ -169,12 +171,13 @@ pub unsafe extern "C" fn fluid_renderer_particles_at(
 pub unsafe extern "C" fn fluid_renderer_set_look(
     renderer: *mut FluidRenderer,
     flat: bool,
+    particles: bool,
     colour: FluidVec3,
 ) {
-    let look = if flat {
-        Look::Flat(colour.into())
-    } else {
-        Look::Glass
+    let look = match (flat, particles) {
+        (false, _) => Look::Glass,
+        (true, false) => Look::Flat(colour.into()),
+        (true, true) => Look::Particles(colour.into()),
     };
     unsafe { &mut *renderer }.0.set_look(look);
 }

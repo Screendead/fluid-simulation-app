@@ -469,8 +469,8 @@ const FIELD_KEEP: f32 = 0.8;
 /// SLAB_DEPTH over the spacing, and each Sim carries its own
 /// FIELD_SETTLED * SIM_SPACING / spacing. The surface shader divides
 /// by it to turn field into water thickness (M4 record, "Thickness");
-/// the_settled_field_matches_the_calibration measures it at two
-/// spacings and pins the constant and the scaling.
+/// the_settled_field_matches_the_calibration pins the constant, and
+/// the_settled_field_scales_with_the_spacing pins the scaling.
 const FIELD_SETTLED: f32 = 5.3;
 
 /// Peak glint output; two percent of it — the Fresnel floor — is what
@@ -539,14 +539,16 @@ fn pack_optics(force: [f32; 3], extent: [f32; 2], field_settled: f32, flat: [f32
     raw
 }
 
-/// How the water is drawn: liquid glass over the dazzle wall (the M4
-/// look), or flat: the colour or black and nothing between, the
-/// charged strands as flecks of the colour (M5 record). The colour is
-/// the picker's, components 0 to 1 as the panel shows them.
+/// How the water is drawn (M5 record): liquid glass over the dazzle
+/// wall (the M4 look), the flat surface in the colour on black and
+/// nothing between, or the particles alone, each a disc of the colour
+/// on black. The colour is the picker's, components 0 to 1 as the
+/// panel shows them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Look {
     Glass,
     Flat([f32; 3]),
+    Particles([f32; 3]),
 }
 
 /// sRGB's transfer function inverted. The surface is Bgra8UnormSrgb
@@ -561,12 +563,12 @@ fn linear(c: f32) -> f32 {
     }
 }
 
-/// The flat look's immediates: the colour in linear light with a one
-/// in w, or zeros for the glass.
+/// Either flat look's immediates: the colour in linear light with a
+/// one in w, or zeros for the glass.
 fn flat_of(look: Look) -> [f32; 4] {
     match look {
         Look::Glass => [0.0; 4],
-        Look::Flat(c) => [linear(c[0]), linear(c[1]), linear(c[2]), 1.0],
+        Look::Flat(c) | Look::Particles(c) => [linear(c[0]), linear(c[1]), linear(c[2]), 1.0],
     }
 }
 
@@ -1024,7 +1026,7 @@ struct Sim {
     resolve: wgpu::ComputePipeline,
     advect: wgpu::ComputePipeline,
     points: wgpu::RenderPipeline,
-    flecks: wgpu::RenderPipeline,
+    discs: wgpu::RenderPipeline,
     body: wgpu::RenderPipeline,
     decay: wgpu::RenderPipeline,
     fill: wgpu::RenderPipeline,
@@ -1394,7 +1396,7 @@ impl Sim {
         let sprite_pl = pipe_layout("sim sprites", &sprite_layout, 0);
         let tracer_pl = pipe_layout("sim tracers", &tracer_layout, 48);
         let tracer_draw_pl = pipe_layout("sim tracer draw", &tracer_draw_layout, 0);
-        let fleck_pl = pipe_layout("sim flecks", &tracer_draw_layout, 16);
+        let disc_pl = pipe_layout("sim discs", &sprite_layout, 16);
         let pipeline =
             |layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, entry_point: &str| {
                 device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1478,27 +1480,27 @@ impl Sim {
                 multiview_mask: None,
                 cache: None,
             }),
-            // Written opaque, colour only: a fleck over the body is the
-            // body's colour and a fleck in the air is the fleck, so the
+            // Written opaque, colour only: a disc over the body is the
+            // body's colour and a disc in the air is a droplet, so the
             // screen stays two colours.
-            flecks: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("sim flecks"),
-                layout: Some(&fleck_pl),
+            discs: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim discs"),
+                layout: Some(&disc_pl),
                 vertex: wgpu::VertexState {
                     module: &sprite_module,
-                    entry_point: Some("fleck"),
+                    entry_point: Some("disc"),
                     compilation_options: Default::default(),
                     buffers: &[],
                 },
                 primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::PointList,
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
                     ..Default::default()
                 },
                 depth_stencil: None,
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &sprite_module,
-                    entry_point: Some("dot_frag"),
+                    entry_point: Some("disc_frag"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
@@ -2170,6 +2172,10 @@ pub struct Renderer {
     idle_frames: u64,
     mode: Mode,
     flat: [f32; 4],
+    particle_view: bool,
+    // The thickness field accumulates across frames, so a frame that
+    // skipped it left a stale one behind.
+    field_live: bool,
     frames: u64,
     last_frame_ms: f64,
 }
@@ -2308,6 +2314,8 @@ impl Renderer {
             idle_frames: 0,
             mode,
             flat: [0.0; 4],
+            particle_view: false,
+            field_live: false,
             frames: 0,
             last_frame_ms: 0.0,
         })
@@ -2353,8 +2361,12 @@ impl Renderer {
         }
     }
 
+    /// The idle gate restarts: a sleeping sim presents nothing, so a
+    /// look changed on a still phone would not reach the screen.
     pub fn set_look(&mut self, look: Look) {
         self.flat = flat_of(look);
+        self.particle_view = matches!(look, Look::Particles(_));
+        self.idle = IdleGate::new();
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -2392,6 +2404,14 @@ impl Renderer {
             Mode::Sim(s) => pack_optics(force, s.extent, s.field_settled, self.flat),
             _ => [0; 64],
         };
+        let flat = self.flat[3] > 0.0;
+        // The particle view draws the solver's own particles, so it
+        // needs no thickness field: the splat, the blur and the
+        // surface pass go unencoded.
+        let field = !self.particle_view;
+        // The strands are the glass look's dye; neither flat look
+        // shows them.
+        let strands = !flat && matches!(&self.mode, Mode::Sim(s) if s.tracer_count > 0);
         if let Mode::Sim(s) = &self.mode
             && self.idle.asleep(force, dev, omega, s.stats[6])
         {
@@ -2534,7 +2554,7 @@ impl Renderer {
                     }
                     pass.set_pipeline(&s.reduce_stats);
                     pass.dispatch_workgroups(1, 1, 1);
-                    if s.tracer_count > 0 {
+                    if strands {
                         // The visual layer advects once a frame on the
                         // solved end-of-frame field, with the frame dt.
                         pass.set_bind_group(0, &s.tracer_bind, &[]);
@@ -2553,7 +2573,9 @@ impl Renderer {
                 Mode::Sim(_) => {}
             }
         }
-        if let Mode::Sim(s) = &self.mode {
+        if let Mode::Sim(s) = &self.mode
+            && field
+        {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2570,7 +2592,14 @@ impl Renderer {
                 occlusion_query_set: None,
                 ..Default::default()
             });
-            let keep = f64::from(s.field_keep);
+            // After a frame that skipped the field, the first field
+            // frame decays the stale one to nothing and splats the
+            // whole weight: the same steady state, no ghost.
+            let keep = if self.field_live {
+                f64::from(s.field_keep)
+            } else {
+                0.0
+            };
             let splat = 1.0 - keep;
             pass.set_pipeline(&s.decay);
             pass.set_blend_constant(wgpu::Color {
@@ -2590,7 +2619,9 @@ impl Renderer {
             pass.set_bind_group(0, &s.sprite_bind, &[]);
             pass.draw(0..4, 0..s.count);
         }
-        if let Mode::Sim(s) = &self.mode {
+        if let Mode::Sim(s) = &self.mode
+            && field
+        {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&s.filter);
             pass.set_bind_group(0, &s.filter_bind, &[]);
@@ -2605,7 +2636,11 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(BACKDROP),
+                        load: wgpu::LoadOp::Clear(if field {
+                            BACKDROP
+                        } else {
+                            wgpu::Color::BLACK
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -2626,23 +2661,24 @@ impl Renderer {
                     pass.set_bind_group(0, &p.sprite_bind, &[]);
                     pass.draw(0..4, 0..p.count);
                 }
+                Mode::Sim(s) if !field => {
+                    pass.set_pipeline(&s.discs);
+                    pass.set_immediates(0, &optics[48..64]);
+                    pass.set_bind_group(0, &s.sprite_bind, &[]);
+                    pass.draw(0..4, 0..s.count);
+                }
                 Mode::Sim(s) => {
                     pass.set_pipeline(&s.fill);
                     pass.set_immediates(0, &optics);
                     pass.set_bind_group(0, &s.fill_bind, &[]);
                     pass.draw(0..3, 0..1);
-                    if self.flat[3] > 0.0 {
-                        if s.tracer_count > 0 {
-                            pass.set_pipeline(&s.flecks);
-                            pass.set_immediates(0, &optics[48..64]);
-                            pass.set_bind_group(0, &s.tracer_draw_bind, &[]);
-                            pass.draw(0..s.tracer_count, 0..1);
-                        }
-                    } else if s.tracer_count > 0 {
+                    // The flat surface is the whole picture: two
+                    // colours, and nothing drawn over them.
+                    if strands {
                         pass.set_pipeline(&s.points);
                         pass.set_bind_group(0, &s.tracer_draw_bind, &[]);
                         pass.draw(0..s.tracer_count, 0..1);
-                    } else {
+                    } else if !flat {
                         pass.set_pipeline(&s.sprites);
                         pass.set_bind_group(0, &s.sprite_bind, &[]);
                         pass.draw(0..4, 0..s.count);
@@ -2667,6 +2703,7 @@ impl Renderer {
         } else {
             None
         };
+        self.field_live = field;
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.present(texture);
         if let (Some(t), Some(slot)) = (self.gpu_timing.as_ref(), slot) {
@@ -2923,8 +2960,11 @@ mod tests {
     // the middle darkens, and the glass is all zeros.
     #[test]
     fn the_flat_colour_is_linearised() {
-        let [r, g, b, w] = flat_of(Look::Flat([1.0, 105.0 / 255.0, 180.0 / 255.0]));
+        let hot_pink = [1.0, 105.0 / 255.0, 180.0 / 255.0];
+        let [r, g, b, w] = flat_of(Look::Flat(hot_pink));
         assert_eq!((r, w), (1.0, 1.0));
+        // The discs take their colour from the same word.
+        assert_eq!(flat_of(Look::Particles(hot_pink)), [r, g, b, w]);
         assert!((g - 0.1413).abs() < 1e-3, "g {g}");
         assert!((b - 0.4564).abs() < 1e-3, "b {b}");
         assert_eq!(linear(0.0), 0.0);

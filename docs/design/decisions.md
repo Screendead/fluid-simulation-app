@@ -157,7 +157,7 @@ the readout, and the choices' persistence in `UserDefaults`. The core
 exposes three calls for them — `set_particles(scale)`,
 `particles_at(scale)`, `set_look(look)` — and computes everything
 about the fluid from them: the spacing behind a scale, the count it
-seeds, the flat colour's shading. The shell computes nothing about
+seeds, the shading of each of the three looks. The shell computes nothing about
 the fluid; the performance rating beside each scale is a table of
 device measurements, not a computation.
 

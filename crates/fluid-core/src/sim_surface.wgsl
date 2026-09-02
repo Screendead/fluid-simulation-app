@@ -186,7 +186,7 @@ fn surface_frag(in: FillVertex) -> @location(0) vec4f {
 
     // The flat look: two colours and nothing between (Jack,
     // 2026-09-02), the water where the thickness crosses the band's
-    // midpoint. The flecks of the flat look draw after this pass.
+    // midpoint. The particle view skips this pass entirely.
     if (optics.flat.w > 0.0) {
         let water = rel >= 0.5 * (EDGE_LO + EDGE_HI);
         return vec4f(select(vec3f(0.0), optics.flat.rgb, water), 1.0);

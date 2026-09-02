@@ -113,14 +113,20 @@ void fluid_renderer_set_particles(struct FluidRenderer *renderer, float scale);
 uint32_t fluid_renderer_particles_at(const struct FluidRenderer *renderer, float scale);
 
 /**
- * Liquid glass when `flat` is false; otherwise one flat `colour` on
- * black, components 0 to 1 in the surface's own space.
+ * Liquid glass when `flat` is false. Otherwise `colour` on black:
+ * the flat surface, or, when `particles` is also true, the
+ * particles alone as discs. `particles` alone does nothing.
+ * `colour`'s components are 0 to 1 as the picker shows them; the
+ * core linearises them for the surface.
  *
  * # Safety
  *
  * `renderer` must be a live pointer from `fluid_renderer_create`.
  */
-void fluid_renderer_set_look(struct FluidRenderer *renderer, bool flat, struct FluidVec3 colour);
+void fluid_renderer_set_look(struct FluidRenderer *renderer,
+                             bool flat,
+                             bool particles,
+                             struct FluidVec3 colour);
 
 /**
  * # Safety

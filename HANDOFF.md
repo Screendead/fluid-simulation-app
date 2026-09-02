@@ -180,12 +180,14 @@ The same day, M5 opened with the menu Jack asked for. The M5 record
 split: a tap shows a button, the button opens a half-sheet menu with
 the four particle scales (0.25x, 1x, 4x, 16x, rated good, good,
 borderline, bad from the measured ladder), the flat look (two
-colours only, black and the chosen colour, hot pink by default) and
-three readout toggles (frame rate, thermal state, GPU time against
-the 8.33 ms budget). Every choice persists. The core rebuilds the sim
-at a new scale in 25 ms and carries the look in the optics
-immediates' spare word; the settled-field calibration now scales
-with the spacing, pinned by a second plateau test. Measured the same
+colours only, black and the chosen colour, hot pink by default, with
+a particle view that draws the particles alone as discs and builds
+no field at all) and three readout toggles (frame rate, thermal
+state, GPU time against the 8.33 ms budget). Every choice persists.
+The core rebuilds the sim at a new scale in 25 ms and carries the
+look as a vec4 at byte 48 of the optics immediates; the
+settled-field calibration now scales with the spacing, pinned by a
+second plateau test. Measured the same
 day: the shader edit is neutral at 1x, 4x holds 120 Hz in the hand
 and dips to 40 to 60 Hz under a hard shake, 16x sits in the substep
 basin at 120 ms a frame. The lenses of the roadmap's M5 row are

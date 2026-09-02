@@ -30,7 +30,7 @@ everything about the fluid.
 | The menu | `Menu.swift` | Three sections: particles, look, readout. Every choice persists in `UserDefaults` and comes back at the next launch. |
 | The readout | `Readout.swift` | Frame rate, thermal state, and GPU time against the 8.33 ms budget, one line each, updated once a second from the stats call the console line already makes. |
 | The particle scale | `render.rs`, `set_particles` | The spacing that seeds nearest the scale times the shipped count, then a rebuild of the sim. |
-| The look | `render.rs`, `sim_surface.wgsl`, `sim_sprites.wgsl` | Glass (M4) or flat: the colour or black, nothing between, and the charged strands as flecks of the colour. |
+| The look | `render.rs`, `sim_surface.wgsl`, `sim_sprites.wgsl` | Glass (M4), or flat on black in two views: the surface, two colours and nothing between; or the particles alone, each a disc of the colour. |
 
 Defaults: the button hidden, the readout off, glass, 1x. The GUI-free
 screen of 2026-09-01 is the default state.
@@ -63,21 +63,17 @@ settled field is the particle layers per screen area: the fluid
 fills the slab depth at rest density, so the field scales with
 `SLAB_DEPTH / spacing`, and the sim carries
 `FIELD_SETTLED * SIM_SPACING / spacing`. The thickness, the
-absorption, and the edge band (now 0.8 and 1.6 settled units, the
-same water at every scale) follow it. The calibration test measures
-the plateau at the shipped spacing and at 0.0063 m, and pins the
-constant and the scaling to 10%.
+absorption, and the edge band follow it. The band is now 0.15 and
+0.30 of the settled field, which is 0.8 and 1.6 of the raw field at
+the shipped spacing: the same water at every scale. Two tests
+measure the plateau, one at the shipped spacing to pin the constant
+and one at 0.0063 m to pin the scaling, each to 10%.
 
-## The flat look
+## The flat looks
 
 Jack, 2026-09-02, verbatim: "When I said "flat colour", I meant
 "flat" - literally only two available colours for the screen: black,
 and the chosen water colour. No blur, no fade, 0 or 1."
-
-Jack, later the same day, verbatim: "So the binary colour scheme
-means that tiny flecks end up disappearing. While remaining in
-keeping with the binary colour scheme, can we still show the tiny
-flecks of fast-moving water?"
 
 The optics immediates grew from 48 to 64 bytes; the last vec4 is the
 look: the water colour in linear light with a one in w, or zeros for
@@ -89,21 +85,56 @@ the blurred field's, the same waterline the glass reads; the blur is
 the M4 wavelength filter against particle-footprint ripple, not an
 edge softening.
 
-The flecks are the glass look's strands drawn the binary way: a
-tracer charged past the 0.05 m/s gate is one dot of the water
-colour, written opaque and colour-only, so a dot over the body is the
-body's colour and a dot in the air is a fleck of water in flight. A
-still droplet too small for the threshold stays invisible, as it does
-in the glass look; a moving one shows through its tracers. The tracer
-compute runs in both looks. Rejected: a lower threshold in the flat
-look, which fattens the whole outline to show pairs and still loses a
-lone particle; per-particle discs, which would show every stranded
-particle for ever.
-
 The surface is `Bgra8UnormSrgb` on the reference device (logged
 2026-09-02): the shaders work in linear light and the hardware
 encodes on write. The core linearises the picker's components once,
-at `set_look`, so the panel shows the bytes that were picked.
+at `set_look`, so the panel shows the bytes that were picked. The
+format is `caps.formats[0]`, which wgpu sorts sRGB first; the log
+line prints it every launch.
+
+### The particle view
+
+The flat surface cannot show a lone drop: one particle does not
+cross the threshold, so it is black. Jack asked for the fast flecks
+back, and two builds put them on top of the surface, first the
+charged tracers as single dots, then every particle as a small disc.
+His eye on the first, verbatim: "no there are way too many, the
+problems: - too much flecking, it sometimes looks consistently dense
+even quite far away from the bulk of the water and even when it's
+not moving much - there are always little stragglers even when the
+fluid is at rest - ultimately it looks like two different things are
+being rendered, rather than one single "water" pass with the flecks
+included - the flecks are too small, too". His ruling, verbatim:
+"actually just make the single-particle view toggleable when in the
+flat view mode, don't combine them. leave the fluid view as it was
+before."
+
+So flat holds two views and a toggle chooses; glass is untouched.
+The particle view is the particles alone: each one a disc of the
+water colour on black, radius half of h, written opaque and
+colour-only. Nothing massless is drawn, so nothing strays at rest.
+At half of h the discs of a resting body overlap and read solid,
+while a lone drop keeps its own size, about 12 mm in the modelled
+tank at 1x and scaling with the spacing.
+
+The view builds no thickness field at all: the decay, the
+per-particle splat, the blur and the surface pass go unencoded, and
+the pass clears to black instead of the dazzle backdrop. The field
+is stale while the view runs, so the first field frame after it
+decays the old field to nothing and splats the whole weight, which
+is the same steady state and no ghost of the shape a minute ago.
+
+Neither flat view advects or draws the tracers. Returning to glass,
+the strands regather over the 3 s respawn constant.
+
+A look change restarts the idle gate. A sleeping sim presents no
+frame, so a toggle or a picker drag on a still phone would otherwise
+not reach the screen (found in review, 2026-09-02).
+
+Rejected: the two views layered, by Jack's ruling above; a lower
+threshold on the surface, which fattens the whole outline to show
+pairs and still loses a lone particle; the charged tracers as dots,
+which draw the massless cloud rather than the water.
 
 ## The readout
 
@@ -131,7 +162,7 @@ heated the phone. Battery 100%, plugged.
 | m5, 4x, pinned, handled | 8,334 / 8,334 us | 6.4 to 6.6 ms | 120 Hz through 20 s of gentle handling; a hard shake dropped it to 40 to 60 Hz (GPU 10 to 25 ms) for 3 s, then it recovered; 88 to 105 MB |
 | m5, 16x, from the menu, thermal fair | 9.3 to 16.7 ms p50 | 11 to 16 ms | the fresh lattice's first seconds; 144 MB at the rebuild, 112 MB after |
 | m5, 16x, pinned, thermal serious | 120 to 163 ms p50 | 118 to 165 ms | six to eight frames a second: the substep basin; 125 MB |
-| m5, 0.25x flat with flecks, handled then at rest (11:23) | 8,334 / 8,334 us | 6.3 to 6.7 ms in the hand, 2.7 ms at rest | slept 20 s in; 82 MB awake, 65 MB asleep |
+| m5, 0.25x flat with the flecks layered, handled then at rest (11:23) | 8,334 / 8,334 us | 6.3 to 6.7 ms in the hand, 2.7 ms at rest | the rejected layered build; slept 20 s in; 82 MB awake, 65 MB asleep |
 
 The rebuild: 24 to 28 ms at every scale, from the menu (the
 console's "sim: rebuilt in" line), pipelines included; Metal's
@@ -153,9 +184,9 @@ rated bad.
 
 
 The tap, the button, the menu, the scale switch and its 25 ms
-rebuild, and the two-colour look were exercised by Jack's hand
-during the captures (the fleck request came from his eye on the
-first flat build); the flecks and the readout wait on his eye.
+rebuild, and the two-colour surface were exercised by Jack's hand
+during the captures; both fleck builds came from his eye on the one
+before. The particle view and the readout wait on his eye.
 
 ## Decisions
 
@@ -166,6 +197,12 @@ first flat build); the flecks and the readout wait on his eye.
   measured, so no pipeline/state split.
 - The ratings are static, from the measured ladder. A live rating
   can only rate the scale that is running.
+- The particle view is a view of the flat look, not a third top-level
+  choice: it shares the colour, and glass keeps the M4 pipeline
+  untouched.
+- The particle view skips the field passes rather than drawing over
+  them. Two colours are two colours either way, and the skipped
+  passes are the frame's cheapest way to draw the water it shows.
 
 ## Tested and exercised
 
@@ -174,8 +211,9 @@ first flat build); the flecks and the readout wait on his eye.
   shipped spacing itself.
 - `optics_immediates_land_at_the_shader_offsets`: the flat look lands
   at byte 48; `the_flat_colour_is_linearised`: hot pink through the
-  sRGB curve, the glass all zeros.
-- `the_settled_field_matches_the_calibration`: the plateau at two
-  spacings.
+  sRGB curve, the same word for both flat views, the glass all zeros.
+- `the_settled_field_matches_the_calibration`: the plateau at the
+  shipped spacing; `the_settled_field_scales_with_the_spacing`: the
+  plateau at 0.63 of it, against the prediction.
 - Every shell path is exercised by the menu; the shell has no test
   target.

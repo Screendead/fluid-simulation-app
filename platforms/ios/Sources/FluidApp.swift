@@ -12,6 +12,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(Settings.particleScaleKey) private var particleScale = Settings.defaultScale
     @AppStorage(Settings.flatKey) private var flat = false
+    @AppStorage(Settings.particleViewKey) private var particleView = false
     @AppStorage(Settings.flatColourKey) private var flatColour = Settings.hotPink
     @AppStorage(Settings.showRateKey) private var showRate = false
     @AppStorage(Settings.showThermalKey) private var showThermal = false
@@ -54,7 +55,8 @@ struct ContentView: View {
         }
         .sheet(isPresented: $menuShown, onDismiss: { buttonShown = false }) {
             MenuSheet(
-                particleScale: $particleScale, flat: $flat, flatColour: $flatColour,
+                particleScale: $particleScale, flat: $flat, particleView: $particleView,
+                flatColour: $flatColour,
                 showRate: $showRate, showThermal: $showThermal, showCost: $showCost,
                 particles: driver.particles(at:))
             .presentationDetents([.medium, .large])
@@ -63,7 +65,12 @@ struct ContentView: View {
         .persistentSystemOverlays(.hidden)
         .onChange(of: scenePhase) { _, phase in driver.paused = phase != .active }
         .onChange(of: particleScale) { _, scale in driver.setParticles(scale) }
-        .onChange(of: flat) { driver.setLook(flat: flat, colour: FluidVec3(hex: flatColour)) }
-        .onChange(of: flatColour) { driver.setLook(flat: flat, colour: FluidVec3(hex: flatColour)) }
+        .onChange(of: flat) { setLook() }
+        .onChange(of: particleView) { setLook() }
+        .onChange(of: flatColour) { setLook() }
+    }
+
+    private func setLook() {
+        driver.setLook(flat: flat, particles: particleView, colour: FluidVec3(hex: flatColour))
     }
 }

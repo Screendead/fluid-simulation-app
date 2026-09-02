@@ -87,22 +87,31 @@ fn dot_frag(in: PointVertex) -> @location(0) vec4f {
     return vec4f(in.colour, 0.0);
 }
 
-// The flat look's flecks (M5 record): a charged tracer is one dot of
-// the water colour, so fast water in the air still shows while the
-// screen stays two colours. The colour arrives in linear light.
+// The particle view (M5 record): the water is its own particles, each
+// a disc of the colour on black, and no thickness field is built at
+// all. The radius is in h, so a disc holds the same fraction of the
+// particle spacing at every scale of the ladder: at 0.5 h neighbours
+// overlap and a resting body reads solid, while a lone drop keeps its
+// size. The colour arrives in linear light.
+const DISC_RADIUS: f32 = 0.5;
 var<immediate> water: vec4f;
 
 @vertex
-fn fleck(@builtin(vertex_index) i: u32) -> PointVertex {
-    let t = tracers[i];
-    var out: PointVertex;
-    out.colour = water.rgb;
-    out.clip = select(
-        vec4f(2.0, 2.0, 0.0, 1.0),
-        vec4f(unpack2x16unorm(t.x) * 2.0 - vec2f(1.0), 0.0, 1.0),
-        unpack2x16float(t.y).y > CHARGE_GATE,
-    );
+fn disc(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyVertex {
+    let extent = -(params.box_min.xy + vec2f(params.cell));
+    let corner = vec2f(f32(v & 1u), f32(v >> 1u)) * 2.0 - 1.0;
+    var out: BodyVertex;
+    out.clip = vec4f((positions[i].xy + corner * params.h * DISC_RADIUS) / extent, 0.0, 1.0);
+    out.corner = corner;
     return out;
+}
+
+@fragment
+fn disc_frag(in: BodyVertex) -> @location(0) vec4f {
+    if dot(in.corner, in.corner) > 1.0 {
+        discard;
+    }
+    return vec4f(water.rgb, 1.0);
 }
 
 // The liquid body: each solver particle splats its kernel footprint
