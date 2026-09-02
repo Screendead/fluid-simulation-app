@@ -3256,6 +3256,103 @@ mod tests {
 
     // The interior plateau of a field: the median of the texels at
     // 60% of the peak or more, with the peak.
+    // Jack's rule for the flat look, 2026-09-02: two colours on the
+    // screen and nothing between. The discs are opaque and write no
+    // alpha, so every pixel is the colour or the black behind it.
+    #[test]
+    fn the_particle_view_draws_two_colours() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let side = 64u32;
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("particle view"),
+            size: wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("particle view readback"),
+            size: u64::from(side * side * 4),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&sim.discs);
+            // Magenta: each component lands on a byte exactly, so a
+            // blend or a stray write shows as a third colour.
+            let colour: Vec<u8> = [1.0f32, 0.0, 1.0, 1.0]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            pass.set_immediates(0, &colour);
+            pass.set_bind_group(0, &sim.sprite_bind, &[]);
+            pass.draw(0..4, 0..sim.count);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(side * 4),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+        readback.map_async(wgpu::MapMode::Read, .., |_| {});
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let bytes = readback.get_mapped_range(..).expect("mapped");
+        let mut water = 0;
+        for px in bytes.as_chunks::<4>().0 {
+            match px[..3] {
+                [0, 0, 0] => {}
+                [255, 0, 255] => water += 1,
+                _ => panic!("a third colour: {px:?}"),
+            }
+        }
+        assert!(water > side * side / 20, "the discs drew {water} pixels");
+    }
+
     fn plateau(vals: &[f32]) -> (f32, f32) {
         let max = vals.iter().copied().fold(0.0, f32::max);
         let mut interior: Vec<f32> = vals.iter().copied().filter(|v| *v >= 0.6 * max).collect();

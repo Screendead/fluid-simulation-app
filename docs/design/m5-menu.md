@@ -166,6 +166,20 @@ heated the phone. Battery 100%, plugged.
 | m5, 16x, from the menu, thermal fair | 9.3 to 16.7 ms p50 | 11 to 16 ms | the fresh lattice's first seconds; 144 MB at the rebuild, 112 MB after |
 | m5, 16x, pinned, thermal serious | 120 to 163 ms p50 | 118 to 165 ms | six to eight frames a second: the substep basin; 125 MB |
 | m5, 0.25x flat with the flecks layered, handled then at rest (11:23) | 8,334 / 8,334 us | 6.3 to 6.7 ms in the hand, 2.7 ms at rest | the rejected layered build; slept 20 s in; 82 MB awake, 65 MB asleep |
+| m5, 1x glass, still on the desk (16:32) | 8,334 / 8,334 us | 6.34 to 6.50 ms | the three-look run; 19 windows, then it slept; 85 MB |
+| m5, 1x flat surface, same (16:33) | 8,334 / 8,334 us | 3.15 to 3.28 ms | 73 to 78 MB |
+| m5, 1x particle view, same (16:34) | 8,334 / 8,334 us | 2.22 to 2.39 ms | 64 to 67 MB; CPU encode 0.96 ms against the glass run's 1.34 ms |
+
+The three-look run: the same build launched three times with the
+spacing pinned to 0.01 m and the look set from the launch arguments,
+the phone still on the desk each time. Every run fell, settled and
+slept, and all three held 120 Hz throughout. The order is the pass
+count. Glass builds the field, blurs it, fills the screen and advects
+and draws the strands; the flat surface builds the field, blurs it
+and fills; the particle view draws the particles and nothing else.
+The governor caveat above still applies to the absolute numbers, but
+the three ran back to back on a nominal-thermal phone at the same
+scale.
 
 The rebuild: 24 to 28 ms at every scale, from the menu (the
 console's "sim: rebuilt in" line), pipelines included; Metal's
@@ -189,7 +203,8 @@ rated bad.
 The tap, the button, the menu, the scale switch and its 25 ms
 rebuild, and the two-colour surface were exercised by Jack's hand
 during the captures; both fleck builds came from his eye on the one
-before. The particle view and the readout wait on his eye.
+before. The particle view ran on the phone in the three-look run; its
+look, and the readout, wait on Jack's eye.
 
 ## Decisions
 
@@ -218,5 +233,7 @@ before. The particle view and the readout wait on his eye.
 - `the_settled_field_matches_the_calibration`: the plateau at the
   shipped spacing; `the_settled_field_scales_with_the_spacing`: the
   plateau at 0.63 of it, against the prediction.
+- `the_particle_view_draws_two_colours`: the disc pass over a black
+  clear reads back magenta or black and nothing else.
 - Every shell path is exercised by the menu; the shell has no test
   target.
