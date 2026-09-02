@@ -213,16 +213,17 @@ neighbour list with cached kernel gradients (sweeps 135 to 249 us ->
 24 to 63 us each; the frame holds 120 Hz under handling at three to
 five substeps); the blur and derivative work fused into one compute
 pass with a one-sample surface shader; subgroup lane folds and a
-grid-sized scan chunk. Cadence under 4x replication: 5.2 -> 4.1 ms a
-frame at two substeps, solver plus tracers under 2.1 ms. A
-fresh-context review found the microbench emptied by the scatter
-change and the stored Laplacian overflowing its half floats; both
-are fixed with tests. The resting-phone protocol then measured
-the filter as neutral and the subgroup folds as 5 to 7% of a moving
-frame; a still frame locks 120 Hz at four times replication. Jack's
-goal is 4x to 16x the particles; the measured ladder rests 4x
-(6,336) at 120 Hz today. The optimisation record holds the numbers,
-the caveats and the next steps.
+grid-sized scan chunk. A fresh-context review found the microbench
+emptied by the scatter change and the stored Laplacian overflowing
+its half floats; both are fixed with tests. The resting-phone
+protocol (cadence under 4x replication at two pinned substeps, phone
+on the desk) measured the pass: a moving production frame 4.5 -> 2.8
+ms, and at rest the head locks 120 Hz (under 2.1 ms a frame) where
+the baseline never stills; the filter is neutral and the subgroup
+folds are 5 to 7% of a moving frame. Jack's goal is 4x to 16x the
+particles; the measured ladder rests 4x (6,336) at 120 Hz today. The
+optimisation record holds the numbers, the caveats and the next
+steps.
 
 M3 close waits on the optimisation pass: the roadmap's closure rule
 needs the oracle measured on the device, and three measurements are
