@@ -517,11 +517,20 @@ row, each launched cold.
 Both features are free. The 2,240 against 2,439 is a small unexplained
 win in the drag commit, reproduced twice; it is not claimed as one.
 
-Every row above is the particle view, which is what the phone was
-left in. The glass look runs the field splat, the filter and the fill,
-and the lens commit changed all three — the field texture is `Rg16Float`
-now, the fill binds a third texture, and the optics block is 80 bytes.
-Its own before and after is still to take.
+Every row above is the particle view. The glass look runs the field
+splat, the filter and the fill, and the lens commit changed all three
+— the field texture is `Rg16Float` now, the fill binds a third texture,
+and the optics block is 80 bytes. Same protocol, same evening:
+
+| Build | GPU p50 settled, glass |
+|---|---|
+| Before the drag (`4c4436d`) | 6,428 µs |
+| Drag, multi-touch and lenses (`31349e4`) | 6,504 µs |
+
+76 microseconds, 1.2%, which is the second channel of a quarter-
+resolution field written once and read once a frame. The glass look
+never reads it: a ramp needs a flat look, and the body vertex branches
+on the high colour before it touches a lens buffer.
 
 The two-span split above came from a throwaway build that printed the
 compute and render timestamps apart instead of summing them. That is

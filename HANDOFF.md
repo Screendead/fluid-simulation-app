@@ -214,7 +214,8 @@ throwaway build that split the compute and render timestamps apart
 named the render pass in one run. The cause was one flat `vec3`
 varying on the disc draw — 490 µs a frame at 1,620 discs. Both quad
 passes now carry the ramp in clip z, which has no depth attachment
-to want it. The glass look's own before and after is still to take.
+to want it. The glass look, measured the same way, pays 76 µs of its
+6,428: the field texture's second channel, written once and read once.
 
 What remains, in the order the records list it: the optimisation
 record's next steps (the tracer draw, the builder sweep, the refine
