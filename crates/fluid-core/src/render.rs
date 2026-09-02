@@ -2768,7 +2768,12 @@ impl Renderer {
         // readback is a second stale, which no eye can see in a field
         // that drifts over minutes.
         let warmth = match &self.mode {
-            Mode::Sim(s) => [s.stats[7], s.stats[8]],
+            // The stats buffer starts zeroed and its first readback is
+            // a frame or two out. No real temperature is zero kelvin,
+            // so that is the test: until one arrives the ramp spans
+            // the ambient band and the box paints its low colour,
+            // rather than clamping every particle to the high one.
+            Mode::Sim(s) if s.stats[8] > 0.0 => [s.stats[7], s.stats[8]],
             _ => [sim::AMBIENT_TEMPERATURE; 2],
         };
         let paint = Painted::new(self.look, extent, warmth);

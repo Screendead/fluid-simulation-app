@@ -517,6 +517,12 @@ row, each launched cold.
 Both features are free. The 2,240 against 2,439 is a small unexplained
 win in the drag commit, reproduced twice; it is not claimed as one.
 
+Every row above is the particle view, which is what the phone was
+left in. The glass look runs the field splat, the filter and the fill,
+and the lens commit changed all three — the field texture is `Rg16Float`
+now, the fill binds a third texture, and the optics block is 80 bytes.
+Its own before and after is still to take.
+
 The two-span split above came from a throwaway build that printed the
 compute and render timestamps apart instead of summing them. That is
 the tool to reach for again: the summed number said only that a frame

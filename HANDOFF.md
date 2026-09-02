@@ -193,11 +193,35 @@ and dips to 40 to 60 Hz under a hard shake, 16x sits in the substep
 basin at 120 ms a frame. The lenses of the roadmap's M5 row are
 still to come, behind the same menu.
 
-What remains, in the order the records list it: the M5 lenses; the
-optimisation record's next steps (the tracer draw, the builder
-sweep, the refine chain); the runbook's remainder (the M3 exit
-measurements, budget O2, the battery bound, the frame-latency-1
-experiment). The next one is Jack's pick.
+Later the same day, two more of Jack's asks landed on the same
+branch. First, the drag: a finger on the glass entrains the water it
+crosses — towards the finger's own velocity, never away from it —
+inside a disc of 25 mm of glass through the whole slab, with all five
+of the phone's fingers dragging at once. The shell reports a slot and
+a point on its own drawable; the core does every metre. Second, the
+lenses: the flat looks take one colour or two, and two make a ramp
+across velocity, acceleration, pressure, proximity or temperature.
+Every field but acceleration was already in a buffer; acceleration
+is the substep's whole velocity change, measured in `integrate` and
+carried in the free w of the velocity record. The M5 record holds
+the models, the dials and the derivations.
+
+Measured the same evening (particle view, 1x, still desk, per-launch):
+GPU p50 settled 2,439 µs before the drag, 2,240 with it, 2,248 with
+the lenses on top. Both features are free. Getting there cost a hunt:
+the lenses first read 2,723, and four hypotheses died before a
+throwaway build that split the compute and render timestamps apart
+named the render pass in one run. The cause was one flat `vec3`
+varying on the disc draw — 490 µs a frame at 1,620 discs. Both quad
+passes now carry the ramp in clip z, which has no depth attachment
+to want it. The glass look's own before and after is still to take.
+
+What remains, in the order the records list it: the optimisation
+record's next steps (the tracer draw, the builder sweep, the refine
+chain); the runbook's remainder (the M3 exit measurements, budget O2,
+the battery bound, the frame-latency-1 experiment); and Jack's dials
+on the drag and his eye on the five lenses. The next one is Jack's
+pick.
 
 The history of the pass, for the record:
 
