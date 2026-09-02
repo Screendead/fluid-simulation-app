@@ -123,6 +123,9 @@ the pass clears to black instead of the dazzle backdrop. The field
 is stale while the view runs, so the first field frame after it
 decays the old field to nothing and splats the whole weight, which
 is the same steady state and no ghost of the shape a minute ago.
+The launch frame takes the same path, the field texture being
+zeroed, so the glass look now reaches its first frame without the
+old ramp-in; the two are the same picture after one frame.
 
 Neither flat view advects or draws the tracers. Returning to glass,
 the strands regather over the 3 s respawn constant.
