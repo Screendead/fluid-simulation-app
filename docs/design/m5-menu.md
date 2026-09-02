@@ -111,11 +111,40 @@ before."
 
 So flat holds two views and a toggle chooses; glass is untouched.
 The particle view is the particles alone: each one a disc of the
-water colour on black, radius half of h, written opaque and
-colour-only. Nothing massless is drawn, so nothing strays at rest.
-At half of h the discs of a resting body overlap and read solid,
-while a lone drop keeps its own size, about 12 mm in the modelled
-tank at 1x and scaling with the spacing.
+water colour on black, written opaque and colour-only. Nothing
+massless is drawn, so nothing strays at rest.
+
+### The size of a disc
+
+Jack, 2026-09-02, verbatim: "Make the discs the same size they
+currently are *when they're within a body of water*, and make them
+smaller in proportion to how far away they are from other discs,
+especially when they're on their own. They should never be 1px but
+still they should go smaller in the "balls" view".
+
+The measure of a neighbourhood is density, and the solver already
+carries it per particle. Measured on a settled slab (this machine,
+2026-09-02, 600 frames upright, the test below):
+
+| Where a particle is | Density, of rest density |
+|---|---|
+| Body and free surface, the 95% | 0.996 to 1.004 |
+| The outermost fringe | 0.69 |
+| A touching pair | 0.26 |
+| Alone | 0.184, its own kernel weight |
+
+So the disc holds its full half of h at and above 0.65 of rest
+density, which covers a resting body to its last particle, and falls
+linearly to the floor at 0.25, which every detached drop is already
+below. Between them sit the splashes, and they shrink with how
+detached they are. The floor is three device pixels of the drawable,
+passed in metres in the pass's immediates: a dot, never a pixel. The
+first frame after a launch or a resume draws every disc at the floor,
+the solver not having run yet.
+
+At full size the discs of a resting body overlap and read solid, and
+a lone drop is a dot; full size is about 12 mm in the modelled tank
+at 1x and scales with the spacing.
 
 The view builds no thickness field at all: the decay, the
 per-particle splat, the blur and the surface pass go unencoded, and
@@ -176,6 +205,7 @@ heated the phone. Battery 100%, plugged.
 | m5, 1x flat surface, same (16:33) | 8,334 / 8,334 us | 3.15 to 3.28 ms | 73 to 78 MB |
 | m5, 1x particle view, same (16:34) | 8,334 / 8,334 us | 2.22 to 2.39 ms | 64 to 67 MB; CPU encode 0.96 ms against the glass run's 1.34 ms |
 | m5, 1x glass, all three readout lines on, same (16:39) | 8,334 / 8,334 us | 6.33 to 6.50 ms | the same span as the glass run without them; CPU encode 1.33 ms against 1.34 ms; 90 MB against 85 MB |
+| m5, 1x particle view, discs sized by density, at rest then handled (17:41) | 8,334 us p50 throughout | 2.20 to 2.45 ms at rest, 3.3 to 6.0 ms handled | the density read costs nothing: the resting span matches the fixed-size run; the handled span is the solver's substeps, which every look pays; 72 to 75 MB |
 
 The three-look run: the same build launched three times with the
 spacing pinned to 0.01 m and the look set from the launch arguments,
@@ -228,6 +258,11 @@ look, and the readout, wait on Jack's eye.
 - The particle view skips the field passes rather than drawing over
   them. Two colours are two colours either way, and the skipped
   passes are the frame's cheapest way to draw the water it shows.
+- A disc's size reads the solver's density, not a neighbour count or
+  a distance search: the number is already computed every substep, so
+  the law costs one buffer read in the vertex shader. Rejected: a
+  count of neighbours, which is the same buffer traffic and a coarser
+  signal; a screen-space measure, which needs a pass of its own.
 
 ## Tested and exercised
 
@@ -242,5 +277,9 @@ look, and the readout, wait on Jack's eye.
   plateau at 0.63 of it, against the prediction.
 - `the_particle_view_draws_two_colours`: the disc pass over a black
   clear reads back magenta or black and nothing else.
+- `the_settled_body_keeps_its_discs`: a settled slab's fifth
+  percentile density sits in the law's full-size plateau, and a lone
+  particle's density sits under its floor. The two ends of the disc
+  law, measured rather than assumed.
 - Every shell path is exercised by the menu; the shell has no test
   target.

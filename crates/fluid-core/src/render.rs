@@ -563,6 +563,22 @@ fn linear(c: f32) -> f32 {
     }
 }
 
+/// The smallest a disc of the particle view may draw, in pixels of
+/// the drawable. Jack, 2026-09-02: "They should never be 1px".
+const MIN_DISC_PX: f32 = 3.0;
+
+/// The disc pass's immediates: the colour in linear light, then the
+/// floor on a disc's radius in metres, which the shader mixes towards
+/// as a particle's neighbourhood thins.
+fn pack_disc(flat: [f32; 4], r_min: f32) -> [u8; 32] {
+    let mut raw = [0u8; 32];
+    for (i, v) in flat.into_iter().enumerate() {
+        raw[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    raw[16..20].copy_from_slice(&r_min.to_le_bytes());
+    raw
+}
+
 /// Either flat look's immediates: the colour in linear light with a
 /// one in w, or zeros for the glass.
 fn flat_of(look: Look) -> [f32; 4] {
@@ -1057,9 +1073,14 @@ struct Sim {
     max_substeps: u32,
     substeps_used: u32,
     field_keep: f32,
+    // The thickness field accumulates across frames, so a frame that
+    // skipped it, and a texture just built, leave nothing to keep.
+    field_live: bool,
     frame_seed: u32,
     #[cfg(test)]
     tracers: wgpu::Buffer,
+    #[cfg(test)]
+    density: wgpu::Buffer,
 }
 
 impl Sim {
@@ -1111,7 +1132,11 @@ impl Sim {
         let starts = storage("sim starts", u64::from(cells + 1) * 4, none);
         let cursors = storage("sim cursors", u64::from(cells) * 4, none);
         let sorted = storage("sim sorted", u64::from(count) * 4, none);
-        let density = storage("sim density", u64::from(count) * 4, none);
+        let density = storage(
+            "sim density",
+            u64::from(count) * 4,
+            wgpu::BufferUsages::COPY_SRC,
+        );
         let alpha = storage("sim alpha", u64::from(count) * 4, none);
         let kd = storage("sim kappa over density", u64::from(count) * 4, none);
         let pressure = storage("sim pressure", u64::from(count) * 4, none);
@@ -1265,6 +1290,11 @@ impl Sim {
                     vertex,
                     wgpu::BufferBindingType::Storage { read_only: true },
                 ),
+                buffer_entry(
+                    4,
+                    vertex,
+                    wgpu::BufferBindingType::Storage { read_only: true },
+                ),
             ],
         });
         fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
@@ -1351,6 +1381,7 @@ impl Sim {
                 entry(0, &params),
                 entry(1, &positions),
                 entry(2, &velocities),
+                entry(4, &density),
             ],
         );
 
@@ -1396,7 +1427,7 @@ impl Sim {
         let sprite_pl = pipe_layout("sim sprites", &sprite_layout, 0);
         let tracer_pl = pipe_layout("sim tracers", &tracer_layout, 48);
         let tracer_draw_pl = pipe_layout("sim tracer draw", &tracer_draw_layout, 0);
-        let disc_pl = pipe_layout("sim discs", &sprite_layout, 16);
+        let disc_pl = pipe_layout("sim discs", &sprite_layout, 32);
         let pipeline =
             |layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, entry_point: &str| {
                 device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1629,9 +1660,12 @@ impl Sim {
             max_substeps: substeps,
             substeps_used: 0,
             field_keep: FIELD_KEEP,
+            field_live: false,
             frame_seed: 0,
             #[cfg(test)]
             tracers,
+            #[cfg(test)]
+            density,
         }
     }
 }
@@ -1648,6 +1682,7 @@ impl Sim {
         );
         self.filter_bind = filter_bind(device, &self.filter_layout, &self.field, &self.filtered);
         self.filter_groups = filter_groups(surface);
+        self.field_live = false;
     }
 }
 
@@ -2173,9 +2208,6 @@ pub struct Renderer {
     mode: Mode,
     flat: [f32; 4],
     particle_view: bool,
-    // The thickness field accumulates across frames, so a frame that
-    // skipped it left a stale one behind.
-    field_live: bool,
     frames: u64,
     last_frame_ms: f64,
 }
@@ -2235,8 +2267,8 @@ impl Renderer {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        // The flat look's colour passes through untouched, so the
-        // format says which space the picker's bytes land in.
+        // The shaders write linear light, so the format says whether
+        // the hardware encodes on write; set_look linearises to match.
         eprintln!("surface: {:?}", config.format);
 
         let extent = [
@@ -2315,7 +2347,6 @@ impl Renderer {
             mode,
             flat: [0.0; 4],
             particle_view: false,
-            field_live: false,
             frames: 0,
             last_frame_ms: 0.0,
         })
@@ -2595,7 +2626,7 @@ impl Renderer {
             // After a frame that skipped the field, the first field
             // frame decays the stale one to nothing and splats the
             // whole weight: the same steady state, no ghost.
-            let keep = if self.field_live {
+            let keep = if s.field_live {
                 f64::from(s.field_keep)
             } else {
                 0.0
@@ -2662,8 +2693,11 @@ impl Renderer {
                     pass.draw(0..4, 0..p.count);
                 }
                 Mode::Sim(s) if !field => {
+                    // Clip space spans the extent, so a pixel is that
+                    // much of it over half the drawable's width.
+                    let metres_per_px = 2.0 * s.extent[0] / self.config.width as f32;
                     pass.set_pipeline(&s.discs);
-                    pass.set_immediates(0, &optics[48..64]);
+                    pass.set_immediates(0, &pack_disc(self.flat, MIN_DISC_PX * metres_per_px));
                     pass.set_bind_group(0, &s.sprite_bind, &[]);
                     pass.draw(0..4, 0..s.count);
                 }
@@ -2672,12 +2706,12 @@ impl Renderer {
                     pass.set_immediates(0, &optics);
                     pass.set_bind_group(0, &s.fill_bind, &[]);
                     pass.draw(0..3, 0..1);
-                    // The flat surface is the whole picture: two
-                    // colours, and nothing drawn over them.
                     if strands {
                         pass.set_pipeline(&s.points);
                         pass.set_bind_group(0, &s.tracer_draw_bind, &[]);
                         pass.draw(0..s.tracer_count, 0..1);
+                    // The flat surface is the whole picture: two
+                    // colours, and nothing drawn over them.
                     } else if !flat {
                         pass.set_pipeline(&s.sprites);
                         pass.set_bind_group(0, &s.sprite_bind, &[]);
@@ -2703,7 +2737,9 @@ impl Renderer {
         } else {
             None
         };
-        self.field_live = field;
+        if let Mode::Sim(s) = &mut self.mode {
+            s.field_live = field;
+        }
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.present(texture);
         if let (Some(t), Some(slot)) = (self.gpu_timing.as_ref(), slot) {
@@ -3151,6 +3187,163 @@ mod tests {
             .expect("poll");
     }
 
+    // Jack's rule for the flat look, 2026-09-02: two colours on the
+    // screen and nothing between. The discs are opaque and write no
+    // alpha, so every pixel is the colour or the black behind it.
+    #[test]
+    fn the_particle_view_draws_two_colours() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        // A settled second, so the discs size on real densities.
+        read_stats(&device, &queue, &sim, 7, 120, [0.0, -9.81, -0.5]);
+        let side = 64u32;
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("particle view"),
+            size: wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("particle view readback"),
+            size: u64::from(side * side * 4),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&sim.discs);
+            // Magenta: each component lands on a byte exactly, so a
+            // blend or a stray write shows as a third colour.
+            let floor = MIN_DISC_PX * 2.0 * TEST_EXTENT[0] / side as f32;
+            pass.set_immediates(0, &pack_disc([1.0, 0.0, 1.0, 1.0], floor));
+            pass.set_bind_group(0, &sim.sprite_bind, &[]);
+            pass.draw(0..4, 0..sim.count);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(side * 4),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+        readback.map_async(wgpu::MapMode::Read, .., |_| {});
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let bytes = readback.get_mapped_range(..).expect("mapped");
+        let mut water = 0;
+        for px in bytes.as_chunks::<4>().0 {
+            match px[..3] {
+                [0, 0, 0] => {}
+                [255, 0, 255] => water += 1,
+                _ => panic!("a third colour: {px:?}"),
+            }
+        }
+        assert!(water > side * side / 20, "the discs drew {water} pixels");
+    }
+
+    // The disc law of the particle view (sim_sprites.wgsl): a disc
+    // holds its full size while its neighbourhood is a body of water,
+    // and shrinks to the pixel floor as that neighbourhood empties.
+    // This is the measurement the law's two ends rest on. BODY_RHO
+    // and LONE_RHO mirror the shader's constants.
+    #[test]
+    fn the_settled_body_keeps_its_discs() {
+        const BODY_RHO: f32 = 0.65;
+        const LONE_RHO: f32 = 0.25;
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        read_stats(&device, &queue, &sim, 7, 600, [0.0, -9.81, -0.5]);
+        let size = u64::from(sim.count) * 4;
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("density staging"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(&sim.density, 0, &staging, 0, size);
+        queue.submit(std::iter::once(encoder.finish()));
+        staging.map_async(wgpu::MapMode::Read, .., |_| {});
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let bytes = staging.get_mapped_range(..).expect("mapped");
+        let mut rho: Vec<f32> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b) / sim::REST_DENSITY)
+            .collect();
+        rho.sort_unstable_by(f32::total_cmp);
+        let at = |q: f32| rho[((rho.len() - 1) as f32 * q) as usize];
+        eprintln!(
+            "settled rho/rho0: min {:.3} p1 {:.3} p5 {:.3} p50 {:.3} max {:.3}",
+            rho[0],
+            at(0.01),
+            at(0.05),
+            at(0.50),
+            rho[rho.len() - 1]
+        );
+        assert!(
+            at(0.05) >= BODY_RHO,
+            "a settled body would shrink: p5 {:.3}",
+            at(0.05)
+        );
+        // A lone particle carries its own kernel weight and, mid-slab,
+        // no wall support: the far end of the law.
+        let h = 1.2 * SIM_SPACING;
+        let mass = sim::REST_DENSITY * SIM_SPACING.powi(3);
+        let lone = mass * sim::kernel(0.0, h) / sim::REST_DENSITY;
+        eprintln!("lone particle: {lone:.3} of rho0");
+        assert!(lone <= LONE_RHO, "a lone drop would not shrink: {lone:.3}");
+    }
+
     // Seeds the real lattice, runs one rebuild and density sweep, and
     // reads the stats back: the whole solver chain, not just its
     // compilation.
@@ -3256,103 +3449,6 @@ mod tests {
 
     // The interior plateau of a field: the median of the texels at
     // 60% of the peak or more, with the peak.
-    // Jack's rule for the flat look, 2026-09-02: two colours on the
-    // screen and nothing between. The discs are opaque and write no
-    // alpha, so every pixel is the colour or the black behind it.
-    #[test]
-    fn the_particle_view_draws_two_colours() {
-        let Some((device, queue, sim)) = headless_sim() else {
-            return;
-        };
-        let side = 64u32;
-        let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("particle view"),
-            size: wgpu::Extent3d {
-                width: side,
-                height: side,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = target.create_view(&Default::default());
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("particle view readback"),
-            size: u64::from(side * side * 4),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            pass.set_pipeline(&sim.discs);
-            // Magenta: each component lands on a byte exactly, so a
-            // blend or a stray write shows as a third colour.
-            let colour: Vec<u8> = [1.0f32, 0.0, 1.0, 1.0]
-                .iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect();
-            pass.set_immediates(0, &colour);
-            pass.set_bind_group(0, &sim.sprite_bind, &[]);
-            pass.draw(0..4, 0..sim.count);
-        }
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &target,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(side * 4),
-                    rows_per_image: None,
-                },
-            },
-            wgpu::Extent3d {
-                width: side,
-                height: side,
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.submit(std::iter::once(encoder.finish()));
-        readback.map_async(wgpu::MapMode::Read, .., |_| {});
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .expect("poll");
-        let bytes = readback.get_mapped_range(..).expect("mapped");
-        let mut water = 0;
-        for px in bytes.as_chunks::<4>().0 {
-            match px[..3] {
-                [0, 0, 0] => {}
-                [255, 0, 255] => water += 1,
-                _ => panic!("a third colour: {px:?}"),
-            }
-        }
-        assert!(water > side * side / 20, "the discs drew {water} pixels");
-    }
-
     fn plateau(vals: &[f32]) -> (f32, f32) {
         let max = vals.iter().copied().fold(0.0, f32::max);
         let mut interior: Vec<f32> = vals.iter().copied().filter(|v| *v >= 0.6 * max).collect();
