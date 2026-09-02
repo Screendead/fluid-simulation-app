@@ -219,11 +219,11 @@ its half floats; both are fixed with tests. The resting-phone
 protocol (cadence under 4x replication at two pinned substeps, phone
 on the desk) measured the pass: a moving production frame 4.5 -> 2.8
 ms, and at rest the head locks 120 Hz (under 2.1 ms a frame) where
-the baseline never stills; the filter is neutral and the subgroup
-folds are 5 to 7% of a moving frame. Jack's goal is 4x to 16x the
-particles; the measured ladder rests 4x (6,336) at 120 Hz today. The
-optimisation record holds the numbers, the caveats and the next
-steps.
+the baseline, at two pinned substeps, never stills; the filter is
+neutral and the subgroup folds are 5 to 7% of a moving frame. Jack's
+goal is 4x to 16x the particles; the measured ladder rests 4x
+(6,336) at 120 Hz today. The optimisation record holds the numbers,
+the caveats and the next steps.
 
 M3 close waits on the optimisation pass: the roadmap's closure rule
 needs the oracle measured on the device, and three measurements are

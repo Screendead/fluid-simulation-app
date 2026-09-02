@@ -339,8 +339,8 @@ it.
    11.31 ms per R = 4 frame, 0.15 to 0.22 ms a production frame (5 to
    7%); the still state locks 120 Hz on both.
 
-Whole frame, cadence under R = 4 at pinned n = 2 (2026-09-01
-afternoon, handled, thermal serious):
+Whole frame, cadence under R = 4 at pinned n = 2 (2026-09-01, 21:40
+to 22:10, handled, thermal serious):
 baseline 20.75 ms -> 5.2 ms a frame; head (cuts + list + filter) 16.5
 ms -> 4.1 ms; head with every render draw skipped locks 8,334 us ->
 under 2.1 ms a frame for solver plus tracers. The same skip on the
@@ -384,16 +384,18 @@ baseline):
 | Build | Runs | Fluid state | Per R = 4 frame | Per production frame |
 |---|---|---|---|---|
 | baseline, 4d566e4 | 2 | moving, v_max 0.5 to 1.1 m/s for all 30 s | 17.93 and 17.99 ms | 4.5 ms |
-| head, 74bd175 | 2 | still from the third window (27 windows each) | 8,334 us lock | under 2.1 ms |
+| head, 74bd175 | 2 | still from the third window (27 windows each) | 8,333 and 8,332 us, the vsync lock | under 2.1 ms |
 | head, 74bd175, 2026-09-01 night | 2 | moving, v_max 0.5 to 1.7 m/s | 11.01 and 11.31 ms | 2.8 ms |
 
-The states differ because the pin takes the substep from the wall
+The states differ with the substep the pin takes from the wall
 clock. At 17.9 ms a frame the baseline's two substeps are 9 ms each,
-twice `DT_SUB_MAX` (4.2 ms), and the fluid boils without end; the
-head at 8.3 ms sits on the bound and rests. The like-state comparison
-is the moving state: 4.5 -> 2.8 ms a production frame, 1.6x, resting
-and cool, with the head's boil at least as hard as the baseline's.
-The afternoon chain above (5.2 -> 4.1) was handled and hot and
+twice `DT_SUB_MAX` (4.2 ms): its CFL clamp fires 730 to 800 times an
+R = 4 frame and the fluid boils for the whole 30 s. The head at 8.3
+ms sits on the bound, clamps under ten times a frame, and rests. The
+like-state comparison is the moving state: 4.5 -> 2.8 ms a production
+frame, 1.6x, resting and cool, with the head's boil the harder of the
+two (v_max 1.7 m/s, 2,500 clamps a frame in its worst window). The
+handled chain above (5.2 -> 4.1, 2026-09-01 evening) was hot and
 covered cuts, list and filter only. A same-session moving window for
 the head was not captured: both 30 s runs stilled, and the phone
 locked before a third run.
