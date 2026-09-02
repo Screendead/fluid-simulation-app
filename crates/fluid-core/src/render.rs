@@ -3822,6 +3822,295 @@ mod tests {
     /// Draws the discs of a settled slab into a square of `side` and
     /// hands back its BGRA pixels. The paint is the caller's, so one
     /// draw serves the solid look and the ramp alike.
+    // Jack, 2026-09-02: "a hue-wheel rainbow colouring based on the
+    // theta of the velocity". The disc draw carries a hue and a
+    // saturation down one interpolant, packed into clip z, and nothing
+    // else in the suite would notice if that pair came apart. Two
+    // claims: every disc is a pure hue scaled by its speed, which
+    // fails the moment the pack leaks one number into the other, and a
+    // sloshing pool paints its water around the wheel rather than into
+    // one corner of it.
+    #[test]
+    fn the_wheel_paints_pure_hues_around_the_circle() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        // Tipped hard on its side: the pool runs, and its water ends up
+        // going every way at once.
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            60,
+            [9.81, -2.0, -0.5],
+            sim::Touches::default(),
+        );
+        let side = 64u32;
+        let floor = MIN_DISC_PX * 2.0 * TEST_EXTENT[0] / side as f32;
+        // Black for the low colour, so a drawn pixel is the hue itself
+        // scaled by speed and nothing is mixed into it.
+        let paint = pack_paint(
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0, 2.0],
+            Lens::Direction.ends(&f),
+            Lens::Direction.code(),
+            floor,
+        );
+        let mut sextants = std::collections::BTreeSet::new();
+        let mut drawn = 0;
+        for px in draw_discs(&device, &queue, &sim, side, paint) {
+            let [b, g, r, _] = px;
+            let rgb = [r, g, b];
+            if rgb == [0; 3] {
+                continue;
+            }
+            drawn += 1;
+            // A hue at full saturation always has a channel at zero,
+            // and scaling by the speed leaves it there.
+            assert!(
+                rgb.iter().min() <= Some(&1),
+                "a disc drew something that is not a hue: {rgb:?}"
+            );
+            let arg = |pick: fn(&&u8, &&u8) -> std::cmp::Ordering| {
+                rgb.iter()
+                    .enumerate()
+                    .max_by(|a, b| pick(&a.1, &b.1))
+                    .expect("three channels")
+                    .0
+            };
+            sextants.insert((arg(|a, b| a.cmp(b)), arg(|a, b| b.cmp(a))));
+        }
+        eprintln!(
+            "wheel: {drawn} discs drawn over {} sextants",
+            sextants.len()
+        );
+        assert!(drawn > 100, "the wheel drew {drawn} pixels");
+        assert!(
+            sextants.len() >= 3,
+            "a running pool painted {} of the wheel: {sextants:?}",
+            sextants.len()
+        );
+    }
+
+    // The wheel down the other path. The surface cannot take a mean of
+    // an angle, so each particle splats its unit heading into a second
+    // field and the fill reads the heading of the sum; nothing else in
+    // the suite would notice if that field went missing, and a missing
+    // one reads as a single colour, not as a crash.
+    #[test]
+    fn the_wheel_paints_the_flat_surface_around_the_circle() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            60,
+            [9.81, -2.0, -0.5],
+            sim::Touches::default(),
+        );
+        let side = 64u32;
+        let black = [0.0, 0.0, 0.0, 1.0];
+        let optics = pack_optics(
+            [9.81, -2.0, -0.5],
+            sim.extent,
+            sim.field_settled,
+            black,
+            [0.0, 0.0, 0.0, 2.0],
+        );
+        let paint = pack_paint(
+            black,
+            [0.0, 0.0, 0.0, 2.0],
+            Lens::Direction.ends(&f),
+            Lens::Direction.code(),
+            0.0,
+        );
+        let mut sextants = std::collections::BTreeSet::new();
+        let mut water = 0;
+        for px in draw_surface(&device, &queue, &sim, side, paint, optics) {
+            let [b, g, r, _] = px;
+            let rgb = [r, g, b];
+            if rgb == [0; 3] {
+                continue;
+            }
+            water += 1;
+            assert!(
+                rgb.iter().min() <= Some(&1),
+                "the surface drew something that is not a hue: {rgb:?}"
+            );
+            let arg = |pick: fn(&&u8, &&u8) -> std::cmp::Ordering| {
+                rgb.iter()
+                    .enumerate()
+                    .max_by(|a, b| pick(&a.1, &b.1))
+                    .expect("three channels")
+                    .0
+            };
+            sextants.insert((arg(|a, b| a.cmp(b)), arg(|a, b| b.cmp(a))));
+        }
+        eprintln!(
+            "flat wheel: {water} water pixels over {} sextants",
+            sextants.len()
+        );
+        assert!(water > 100, "the wheel drew {water} pixels");
+        assert!(
+            sextants.len() >= 3,
+            "a running pool painted {} of the wheel: {sextants:?}",
+            sextants.len()
+        );
+    }
+
+    // The flat look's whole path: one clean splat into the field, the
+    // filter, and the fill. `paint`'s high w picks the ramp or the
+    // wheel, and the wheel splats its headings into the second field
+    // on the way.
+    fn draw_surface(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sim: &Sim,
+        side: u32,
+        paint: [u8; 48],
+        optics: [u8; 80],
+    ) -> Vec<[u8; 4]> {
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("flat surface"),
+            size: wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("flat surface readback"),
+            size: u64::from(side * side * 4),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let wheel =
+            f32::from_le_bytes(paint[28..32].try_into().expect("the high colour's w")) > 1.0;
+        let mut encoder = device.create_command_encoder(&Default::default());
+        for (field, pipeline) in [(&sim.field, &sim.body), (&sim.flow, &sim.body_flow)]
+            .into_iter()
+            .take(if wheel { 2 } else { 1 })
+        {
+            // One clean splat: the blend constant is one and the field
+            // is cleared, so no frame of decay is in the picture.
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: field,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_immediates(0, &paint);
+            pass.set_blend_constant(wgpu::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            });
+            pass.set_bind_group(0, &sim.sprite_bind, &[]);
+            pass.draw(0..4, 0..sim.count);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&sim.filter);
+            pass.set_bind_group(0, &sim.filter_bind, &[]);
+            pass.set_immediates(0, &optics);
+            pass.dispatch_workgroups(sim.filter_groups[0], sim.filter_groups[1], 1);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&sim.fill);
+            pass.set_immediates(0, &optics);
+            pass.set_bind_group(0, &sim.fill_bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(side * 4),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+        readback.map_async(wgpu::MapMode::Read, .., |_| {});
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let out = readback
+            .get_mapped_range(..)
+            .expect("mapped")
+            .as_chunks::<4>()
+            .0
+            .to_vec();
+        readback.unmap();
+        out
+    }
+
     fn draw_discs(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -4272,27 +4561,6 @@ mod tests {
             sim::Touches::default(),
         );
         let side = 64u32;
-        let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("flat surface"),
-            size: wgpu::Extent3d {
-                width: side,
-                height: side,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = target.create_view(&Default::default());
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("flat surface readback"),
-            size: u64::from(side * side * 4),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
         let optics = pack_optics(
             [0.0, -9.81, -0.5],
             sim.extent,
@@ -4300,107 +4568,21 @@ mod tests {
             [1.0, 0.0, 0.0, 1.0],
             [0.0, 0.0, 1.0, 1.0],
         );
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            // One clean splat: the blend constant is one and the field
-            // is cleared, so no frame of decay is in the picture.
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &sim.field,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            pass.set_pipeline(&sim.body);
-            pass.set_immediates(
-                0,
-                &pack_paint(
-                    [1.0, 0.0, 0.0, 1.0],
-                    [0.0, 0.0, 1.0, 1.0],
-                    Lens::Proximity.ends(&f),
-                    Lens::Proximity.code(),
-                    0.0,
-                ),
-            );
-            pass.set_blend_constant(wgpu::Color {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 1.0,
-            });
-            pass.set_bind_group(0, &sim.sprite_bind, &[]);
-            pass.draw(0..4, 0..sim.count);
-        }
-        {
-            let mut pass = encoder.begin_compute_pass(&Default::default());
-            pass.set_pipeline(&sim.filter);
-            pass.set_bind_group(0, &sim.filter_bind, &[]);
-            pass.set_immediates(0, &optics);
-            pass.dispatch_workgroups(sim.filter_groups[0], sim.filter_groups[1], 1);
-        }
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            pass.set_pipeline(&sim.fill);
-            pass.set_immediates(0, &optics);
-            pass.set_bind_group(0, &sim.fill_bind, &[]);
-            pass.draw(0..3, 0..1);
-        }
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &target,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(side * 4),
-                    rows_per_image: None,
-                },
-            },
-            wgpu::Extent3d {
-                width: side,
-                height: side,
-                depth_or_array_layers: 1,
-            },
+        let paint = pack_paint(
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            Lens::Proximity.ends(&f),
+            Lens::Proximity.code(),
+            0.0,
         );
-        queue.submit(std::iter::once(encoder.finish()));
-        readback.map_async(wgpu::MapMode::Read, .., |_| {});
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .expect("poll");
-        let bytes = readback.get_mapped_range(..).expect("mapped");
         let mut seen = std::collections::BTreeSet::new();
         let mut air = 0;
-        for px in bytes.as_chunks::<4>().0 {
+        for px in draw_surface(&device, &queue, &sim, side, paint, optics) {
             if px[..3] == [0, 0, 0] {
                 air += 1;
                 continue;
             }
-            let [b, g, r, _] = *px;
+            let [b, g, r, _] = px;
             assert_eq!(g, 0, "the ramp left its line: {px:?}");
             assert!(
                 (i32::from(r) + i32::from(b) - 255).abs() <= 1,
