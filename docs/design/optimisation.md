@@ -318,17 +318,26 @@ it.
    0.9 ms (baseline under handling: acquire 7 ms, p99 25 to 33 ms).
 3. The field filter (ce39dde). One compute dispatch blurs both
    directions in workgroup memory and writes the blurred thickness with
-   its texel differences and Laplacian; the surface shader takes one
-   sample instead of five. Bilinear sampling commutes with the
-   difference stencil, so the optics are unchanged up to the half-float
-   store. Device attribution pending a resting phone: the coarse spans
-   of a handled, hot run cannot separate it from its neighbours.
+   its raw texel differences, first and second; the surface shader
+   takes one sample instead of five. Bilinear sampling commutes with
+   the difference stencil, so the optics are unchanged up to the
+   half-float store. Resting-phone protocol (below): no measurable
+   whole-frame change against the list head — moving state 11.86 and
+   11.88 ms against 11.90 ms per R = 4 frame, and the still state
+   locks 120 Hz on both. The review found the first cut stored the
+   Laplacian already divided by step², which overflows the half-float
+   store at the waterline (1/step² is about 1.3e6 on the device);
+   74bd175 stores the raw second difference and divides in the fill,
+   with a test that recomputes every interior texel's differences
+   from the stored thickness (drift 0.012 against a 0.03 bound).
 4. Subgroup folds and the scan chunk (08d2f15). The lane folds are
    three `subgroupShuffleXor` steps with no barrier and no workgroup
    memory (naga needs no enable directive; `Features::SUBGROUP` is
    required unconditionally, as IMMEDIATES is); the scan's serial chunk
-   is sized to the grid, which also lifts the 8,192-cell cap. Laptop
-   guards only; device number pending.
+   is sized to the grid, which also lifts the 8,192-cell cap.
+   Resting-phone protocol (below): moving state 11.86 ms -> 11.01 and
+   11.31 ms per R = 4 frame, 0.15 to 0.22 ms a production frame (5 to
+   7%); the still state locks 120 Hz on both.
 
 Whole frame, cadence under R = 4 at pinned n = 2, thermal serious:
 baseline 20.75 ms -> 5.2 ms a frame; head (cuts + list + filter) 16.5
@@ -337,6 +346,59 @@ under 2.1 ms a frame for solver plus tracers. The same skip on the
 baseline reads 9.2 ms -> ~2.3 ms, which says the baseline's isolated
 solver sums overstate it: encoder boundaries cost more on the A15
 than the laptop's 22%.
+
+The resting-phone protocol (2026-09-01, 22:50 to 23:10; phone on the
+desk, plugged in, hands off, thermal nominal to fair): each build
+installed and run 30 s at R = 4, pinned n = 2, gate off, 60 s idle
+between runs, in mirrored order (list, filter, head, head, filter,
+list). The meter is the mean interval over each 120-frame window,
+from a cadence line added to the worktree profiler: the median
+interval quantises to the vsync and cannot resolve a change smaller
+than one. The windows split by the fluid's own state. While the seed
+transient or the boil moves it (v_max at or above 0.4 m/s) an R = 4
+frame costs 11.0 to 11.9 ms; once it stills (v_max under 0.1) every
+build locks 8,334 us, so a still production frame costs under 2.1 ms
+on all three and the meter floors. Compare like states only, and do
+not read the production GPU span in the still state: the display is
+not saturated there and the span is the governor's clock again.
+Moving-state medians per R = 4 frame: list 11.90 ms (14 windows),
+filter 11.86 and 11.88 (16, 14), head 11.01 and 11.31 (10, 4).
+
+The draw attribution, same protocol, head build, R = 6 pinned n = 2,
+30 s a run, moving-state medians per R = 6 frame: every draw 15.5 ms;
+without the fill 15.9 (no change: the fill hides behind the next
+replica's compute); without the points 12.3 (the tracer dots cost
+~0.5 ms a moving production frame, and nothing at rest, where the
+chargeless dots park outside the clip volume); without field, fill
+and points the cadence locks 8,334 us in both states, so solver plus
+tracers cost under 1.4 ms a frame. The render side of a moving frame
+is therefore ~1.2 ms of ~2.6, and the fine split's 2.3 to 3.1 ms
+surface span was overlap, not cost.
+
+### The review's findings (2026-09-01, night)
+
+A fresh-context review of the branch (top model; the diff, the
+repository and REVIEW.md, never the author's rationale) found two
+defects and one gap, all closed in 74bd175 and this record:
+
+1. scatter's counts-zeroing emptied the stage-0 microbench: its
+   density sweep read a cell's end as start plus count, so
+   `FLUID_BENCH` timed an empty loop. The sweep now reads the count
+   from the scatter cursor, and the bench's first-frame validation
+   checks every sixteenth density against a brute-force CPU sum
+   beside the scan; a test runs the same function (32 tests). The
+   bench's kernel is the old 27-cell stencil, not the shipped list
+   sweep, so it no longer times the shipped path; whether it stays
+   is Jack's call.
+2. The Laplacian overflow, item 3 above.
+3. The device numbers, items 3 and 4 above.
+
+Advisories taken: the stale sweep comments; the feature-gate comment
+(wgpu grants SUBGROUP on Metal 3 GPUs, A13 and later — the iOS 17
+floor admits the A12, which would fail device creation; raise the
+floor or accept the exclusion, Jack's call); the workgroup array
+sizes as constant expressions of their dials. Left as is:
+`nbr_over` accumulates for the run, as `clamp_count` does.
 
 ### The ladder (list build, gate off, pinned n; the cadence is the meter)
 
@@ -363,22 +425,19 @@ liquid-glass fill.
 
 ### Next, in order
 
-1. A resting, cool phone: the same protocol hands off (R = 4 pinned
-   n = 2 with and without each draw; fine mode), to attribute the
-   filter and price the points draw. Ten minutes.
-2. The tracer draw: a compute splat of the dots into a full-resolution
+1. The tracer draw: a compute splat of the dots into a full-resolution
    intensity buffer read by the surface shader (exact for single dots
    a pixel; overlapping dots would take the brighter, a look change
-   for Jack's eye), or fewer tracers (Jack's dial). Expected to return
-   ~1 ms a frame to the particle budget.
-3. The builder sweep, now the largest solver item: sort particle state
+   for Jack's eye), or fewer tracers (Jack's dial). Worth ~0.5 ms of a
+   moving frame by the draw attribution above, nothing at rest.
+2. The builder sweep, now the largest solver item: sort particle state
    into cell order each substep so the stencil walk and the list reads
    are contiguous; then a symmetric build (half the candidate pairs).
-4. The refine chain (ten list sweeps a substep): a convergence-gated
+3. The refine chain (ten list sweeps a substep): a convergence-gated
    iteration count through indirect dispatch, judged by the flicker
    meter before any device build; LANES 4/8/16 and workgroup 64/256
    as one-constant device A/Bs now that the folds are barrier-free.
-5. The runbook items below still stand.
+4. The runbook items below still stand.
 
 ## The runbook's remainder (waits for a phone session)
 
@@ -403,5 +462,5 @@ then captures unplugged sessions, which the battery bound needs.
    windows against 2; Jack's hand judges feel, the capture judges
    drops. Each latency step is one drawable (~14 MB) and one frame
    of sensor-to-photon lag.
-4. The device per-pass split: done above with the worktree profiler;
-   the resting-phone rerun is item 1 of "Next, in order".
+4. The device per-pass split: done, with the worktree profiler and
+   the resting-phone protocol above.
