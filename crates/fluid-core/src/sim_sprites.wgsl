@@ -13,6 +13,7 @@ struct SimParams {
 
 @group(0) @binding(0) var<uniform> params: SimParams;
 @group(0) @binding(1) var<storage, read> positions: array<vec4f>;
+// w carries the acceleration the solver's integrate step measured.
 @group(0) @binding(2) var<storage, read> velocities: array<vec4f>;
 
 const CALM: vec3f = vec3f(0.05, 0.22, 0.55);
@@ -92,6 +93,7 @@ fn dot_frag(in: PointVertex) -> @location(0) vec4f {
 struct BodyVertex {
     @builtin(position) clip: vec4f,
     @location(0) corner: vec2f,
+    @location(1) lens: f32,
 }
 
 @vertex
@@ -104,6 +106,10 @@ fn body(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyV
     // apart, and footprints of radius h leave holes between particles.
     out.clip = vec4f((positions[i].xy + corner * params.h * 1.5) / extent, 0.0, 1.0);
     out.corner = corner;
+    out.lens = 0.0;
+    if paint.high.w > 0.0 {
+        out.lens = lens_at(i);
+    }
     return out;
 }
 
@@ -115,7 +121,11 @@ fn weight(in: BodyVertex) -> @location(0) vec4f {
     // the edge threshold. The pass scales by 1 - keep through the
     // blend constant, the exact complement of the decay draw, so the
     // field's steady state is the raw splat at every keep.
-    return vec4f(falloff * falloff * 0.5, 0.0, 0.0, 0.0);
+    let w = falloff * falloff * 0.5;
+    // The second channel is the same splat weighted by the lens, so
+    // the surface recovers a kernel-weighted mean by dividing. Both
+    // channels decay together, which leaves the ratio alone.
+    return vec4f(w, w * in.lens, 0.0, 0.0);
 }
 
 // The particle view (M5 record): the water is its own particles, each
@@ -135,18 +145,65 @@ const DISC_RADIUS: f32 = 0.5;
 const BODY_RHO: f32 = 0.65;
 const LONE_RHO: f32 = 0.25;
 
-struct DiscLook {
-    water: vec4f,
+// How the flat looks are coloured, shared by the disc draw and the
+// body splat. pack_paint in render.rs is the packer.
+struct Paint {
+    // Linear light. low.w is one for either flat look and zero for the
+    // glass; high.w is one only when the ramp is on.
+    low: vec4f,
+    high: vec4f,
+    lens: u32,
+    // The ends of the lens's ramp, in the lens's own units.
+    lo: f32,
+    hi: f32,
     // Metres: three device pixels of the drawable, so the smallest
-    // disc is a dot and never one pixel.
+    // disc is a dot and never one pixel. The splat ignores it.
     r_min: f32,
 }
-var<immediate> look: DiscLook;
+var<immediate> paint: Paint;
 
 @group(0) @binding(4) var<storage, read> density: array<f32>;
+@group(0) @binding(5) var<storage, read> pressure: array<f32>;
+@group(0) @binding(6) var<storage, read> temperature: array<f32>;
+
+// The box's starting temperature, kelvin: AMBIENT_TEMPERATURE in
+// sim.rs, and the 20 C the lab constants in sim_solve.wgsl are quoted
+// at.
+const AMBIENT: f32 = 293.15;
+
+// Where particle i sits on the ramp, 0 to 1. Called only where the
+// ramp is on: the buffer loads are the whole cost, and the glass look
+// pays none of them. Lens::code in render.rs numbers the cases.
+fn lens_at(i: u32) -> f32 {
+    var m = 0.0;
+    switch paint.lens {
+        case 0u: {
+            m = length(velocities[i].xyz);
+        }
+        case 1u: {
+            m = velocities[i].w;
+        }
+        case 2u: {
+            m = pressure[i];
+        }
+        case 3u: {
+            m = density[i];
+        }
+        default: {
+            m = temperature[i] - AMBIENT;
+        }
+    }
+    return clamp((m - paint.lo) / (paint.hi - paint.lo), 0.0, 1.0);
+}
+
+struct DiscVertex {
+    @builtin(position) clip: vec4f,
+    @location(0) corner: vec2f,
+    @location(1) @interpolate(flat) tint: vec3f,
+}
 
 @vertex
-fn disc(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyVertex {
+fn disc(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> DiscVertex {
     let extent = -(params.box_min.xy + vec2f(params.cell));
     let corner = vec2f(f32(v & 1u), f32(v >> 1u)) * 2.0 - 1.0;
     let crowd = clamp(
@@ -154,17 +211,23 @@ fn disc(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyV
         0.0,
         1.0,
     );
-    let radius = mix(look.r_min, params.h * DISC_RADIUS, crowd);
-    var out: BodyVertex;
+    let radius = mix(paint.r_min, params.h * DISC_RADIUS, crowd);
+    var out: DiscVertex;
     out.clip = vec4f((positions[i].xy + corner * radius) / extent, 0.0, 1.0);
     out.corner = corner;
+    // A disc is one particle, so its colour is that particle's place
+    // on the ramp and nothing is interpolated across it.
+    out.tint = paint.low.rgb;
+    if paint.high.w > 0.0 {
+        out.tint = mix(paint.low.rgb, paint.high.rgb, lens_at(i));
+    }
     return out;
 }
 
 @fragment
-fn disc_frag(in: BodyVertex) -> @location(0) vec4f {
+fn disc_frag(in: DiscVertex) -> @location(0) vec4f {
     if dot(in.corner, in.corner) > 1.0 {
         discard;
     }
-    return vec4f(look.water.rgb, 1.0);
+    return vec4f(in.tint, 1.0);
 }

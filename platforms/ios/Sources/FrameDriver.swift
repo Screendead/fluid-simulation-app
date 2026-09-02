@@ -49,7 +49,8 @@ final class FrameDriver {
         }
         setLook(
             flat: Settings.flat, particles: Settings.particleView,
-            colour: Settings.flatColour)
+            colour: Settings.flatColour, gradient: Settings.gradient,
+            high: Settings.highColour, lens: Settings.lens)
         let link = CADisplayLink(target: self, selector: #selector(tick))
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
         link.add(to: .main, forMode: .common)
@@ -75,9 +76,12 @@ final class FrameDriver {
         fluid_renderer_touch(renderer, slot, Float(at.x), Float(at.y), down)
     }
 
-    func setLook(flat: Bool, particles: Bool, colour: FluidVec3) {
+    func setLook(
+        flat: Bool, particles: Bool, colour: FluidVec3,
+        gradient: Bool, high: FluidVec3, lens: UInt32
+    ) {
         guard let renderer else { return }
-        fluid_renderer_set_look(renderer, flat, particles, colour)
+        fluid_renderer_set_look(renderer, flat, particles, colour, gradient, high, lens)
         look = flat ? (particles ? "particles" : "flat") : "glass"
     }
 

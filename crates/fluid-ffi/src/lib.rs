@@ -1,7 +1,7 @@
 //! The C ABI the iOS shell links. `include/fluid_ffi.h` is generated from
 //! this file by cbindgen; the gate fails when the two drift.
 
-use fluid_core::{Look, MotionSample};
+use fluid_core::{Lens, Look, MotionSample, Paint};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -183,11 +183,16 @@ pub unsafe extern "C" fn fluid_renderer_touch(
     unsafe { &mut *renderer }.0.touch(slot, x, y, down);
 }
 
-/// Liquid glass when `flat` is false. Otherwise `colour` on black:
-/// the flat surface, or, when `particles` is also true, the
-/// particles alone as discs. `particles` alone does nothing.
-/// `colour`'s components are 0 to 1 as the picker shows them; the
-/// core linearises them for the surface.
+/// Liquid glass when `flat` is false. Otherwise paint on black: the
+/// flat surface, or, when `particles` is also true, the particles
+/// alone as discs. `particles` alone does nothing.
+///
+/// `low` is the one colour when `gradient` is false. When it is true,
+/// the colour runs from `low` to `high` across `lens`, whose range the
+/// core derives from the box: 0 velocity, 1 acceleration, 2 pressure,
+/// 3 proximity, 4 temperature, and anything else velocity. Colour
+/// components are 0 to 1 as the picker shows them; the core
+/// linearises them.
 ///
 /// # Safety
 ///
@@ -197,12 +202,30 @@ pub unsafe extern "C" fn fluid_renderer_set_look(
     renderer: *mut FluidRenderer,
     flat: bool,
     particles: bool,
-    colour: FluidVec3,
+    low: FluidVec3,
+    gradient: bool,
+    high: FluidVec3,
+    lens: u32,
 ) {
+    let paint = if gradient {
+        Paint::Ramp {
+            low: low.into(),
+            high: high.into(),
+            lens: match lens {
+                1 => Lens::Acceleration,
+                2 => Lens::Pressure,
+                3 => Lens::Proximity,
+                4 => Lens::Temperature,
+                _ => Lens::Velocity,
+            },
+        }
+    } else {
+        Paint::Solid(low.into())
+    };
     let look = match (flat, particles) {
         (false, _) => Look::Glass,
-        (true, false) => Look::Flat(colour.into()),
-        (true, true) => Look::Particles(colour.into()),
+        (true, false) => Look::Flat(paint),
+        (true, true) => Look::Particles(paint),
     };
     unsafe { &mut *renderer }.0.set_look(look);
 }

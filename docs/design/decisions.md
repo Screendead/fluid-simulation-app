@@ -193,6 +193,13 @@ gain one. A rating computed live from the running frame: it can only
 rate the scale that is running; the table rates the four before you
 pick.
 
+*Amended 2026-09-02, from Jack's request for a gradient.* The core's
+`set_look` carries a `Paint` — one colour, or two with a `Lens` — and
+computes every range the ramp needs from the box. The shell picks the
+colours and names the lens by number; it computes no range and no
+threshold. `fluid_renderer_set_look` grows the three arguments that
+say so.
+
 *Amended 2026-09-02, from Jack's request to drag the sim.* The split
 gains a fourth call, `touch(slot, x, y, down)`. The shell owns the
 touch handling and reports two things only it can know: which finger

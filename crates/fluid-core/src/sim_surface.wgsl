@@ -13,6 +13,12 @@
 @group(0) @binding(0) var field: texture_2d<f32>;
 @group(0) @binding(1) var field_sampler: sampler;
 @group(0) @binding(2) var filtered: texture_storage_2d<rgba16float, write>;
+// The raw splat, which the fill also binds: r the thickness, g that
+// thickness weighted by the lens. The flat look reads the ratio
+// straight, unblurred — a kernel-weighted mean over a 1.5 h footprint
+// is already smooth where the body is, and the blur exists for the
+// caustics, which the flat look never runs.
+@group(0) @binding(3) var splat: texture_2d<f32>;
 
 struct Optics {
     up: vec3f,
@@ -21,9 +27,12 @@ struct Optics {
     slab_depth: f32,
     glint_gain: f32,
     h: vec3f,
-    // The flat look: the water colour in linear light, w one; w zero
-    // is the glass.
+    // The flat look's two colours in linear light. flat.w is one for
+    // either flat look and zero for the glass; high.w is one only when
+    // the ramp is on, and then the colour runs low to high across the
+    // lens the splat already normalised into the field's g channel.
     flat: vec4f,
+    high: vec4f,
 }
 var<immediate> optics: Optics;
 
@@ -184,12 +193,20 @@ fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     let rel = f.r / optics.field_settled;
     let a = smoothstep(EDGE_LO, EDGE_HI, rel);
 
-    // The flat look: two colours and nothing between (Jack,
-    // 2026-09-02), the water where the thickness crosses the band's
-    // midpoint. The particle view skips this pass entirely.
+    // The flat look: the water where the thickness crosses the band's
+    // midpoint, black everywhere else, and a hard edge between them
+    // (Jack, 2026-09-02). One chosen colour, or the ramp across the
+    // body. The particle view skips this pass entirely.
     if (optics.flat.w > 0.0) {
         let water = rel >= 0.5 * (EDGE_LO + EDGE_HI);
-        return vec4f(select(vec3f(0.0), optics.flat.rgb, water), 1.0);
+        var colour = optics.flat.rgb;
+        if (optics.high.w > 0.0) {
+            // The threshold above is what makes the divide safe: no
+            // pixel reaches here with a thickness near zero.
+            let s = textureSampleLevel(splat, field_sampler, in.uv, 0.0);
+            colour = mix(optics.flat.rgb, optics.high.rgb, s.g / max(s.r, 1e-6));
+        }
+        return vec4f(select(vec3f(0.0), colour, water), 1.0);
     }
 
     // This pixel on the back wall, metres, y up.

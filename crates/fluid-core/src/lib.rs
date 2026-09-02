@@ -77,7 +77,7 @@ mod render;
 mod sim;
 #[cfg(feature = "film")]
 pub use render::film;
-pub use render::{Look, RenderOptions, RenderStats, Renderer};
+pub use render::{Lens, Look, Paint, RenderOptions, RenderStats, Renderer};
 
 /// How many fingers [`Renderer::touch`] tracks at once.
 pub const TOUCH_SLOTS: u32 = sim::MAX_TOUCHES as u32;

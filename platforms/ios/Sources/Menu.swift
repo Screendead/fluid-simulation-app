@@ -7,11 +7,15 @@ enum Settings {
     static let flatKey = "flat"
     static let particleViewKey = "particleView"
     static let flatColourKey = "flatColour"
+    static let gradientKey = "gradient"
+    static let highColourKey = "highColour"
+    static let lensKey = "lens"
     static let showRateKey = "showRate"
     static let showThermalKey = "showThermal"
     static let showCostKey = "showCost"
     static let defaultScale = 1.0
     static let hotPink = "FF69B4"
+    static let paleGold = "FFE9A8"
 
     @MainActor static var particleScale: Double {
         UserDefaults.standard.object(forKey: particleScaleKey) as? Double ?? defaultScale
@@ -26,6 +30,37 @@ enum Settings {
     @MainActor static var flatColour: FluidVec3 {
         FluidVec3(hex: UserDefaults.standard.string(forKey: flatColourKey) ?? hotPink)
     }
+
+    @MainActor static var gradient: Bool { UserDefaults.standard.bool(forKey: gradientKey) }
+
+    @MainActor static var highColour: FluidVec3 {
+        FluidVec3(hex: UserDefaults.standard.string(forKey: highColourKey) ?? paleGold)
+    }
+
+    @MainActor static var lens: UInt32 {
+        UInt32(UserDefaults.standard.integer(forKey: lensKey))
+    }
+}
+
+/// The fields a gradient can colour by. `code` is the core's
+/// numbering, which `fluid_renderer_set_look` documents. The note says
+/// what the colour means, since none of these is obvious from its name
+/// alone.
+struct LensChoice: Identifiable {
+    let code: Int
+    let label: String
+    let note: String
+    var id: Int { code }
+
+    static let all = [
+        LensChoice(code: 0, label: "Velocity", note: "How fast the water moves"),
+        LensChoice(code: 1, label: "Acceleration", note: "How hard it is thrown about"),
+        LensChoice(code: 2, label: "Pressure", note: "How hard it is squeezed"),
+        LensChoice(code: 3, label: "Proximity", note: "How crowded each drop's neighbours are"),
+        LensChoice(
+            code: 4, label: "Temperature",
+            note: "Millionths of a degree, from squeezing and stirring"),
+    ]
 }
 
 /// The four scales, and how the reference device runs each: the M5
@@ -69,6 +104,9 @@ struct MenuSheet: View {
     @Binding var flat: Bool
     @Binding var particleView: Bool
     @Binding var flatColour: String
+    @Binding var gradient: Bool
+    @Binding var highColour: String
+    @Binding var lens: Int
     @Binding var showRate: Bool
     @Binding var showThermal: Bool
     @Binding var showCost: Bool
@@ -77,6 +115,10 @@ struct MenuSheet: View {
 
     private var colour: Binding<Color> {
         Binding(get: { Color(hex: flatColour) }, set: { flatColour = $0.hex })
+    }
+
+    private var high: Binding<Color> {
+        Binding(get: { Color(hex: highColour) }, set: { highColour = $0.hex })
     }
 
     var body: some View {
@@ -101,10 +143,31 @@ struct MenuSheet: View {
                 }
                 Section("Look") {
                     Toggle("Flat colour", isOn: $flat)
-                    ColorPicker("Colour", selection: colour, supportsOpacity: false)
-                        .disabled(!flat)
+                    ColorPicker(
+                        gradient ? "Low" : "Colour", selection: colour,
+                        supportsOpacity: false
+                    )
+                    .disabled(!flat)
                     Toggle("Particle view", isOn: $particleView)
                         .disabled(!flat)
+                }
+                Section {
+                    Toggle("Gradient", isOn: $gradient)
+                        .disabled(!flat)
+                    if gradient {
+                        ColorPicker("High", selection: high, supportsOpacity: false)
+                            .disabled(!flat)
+                        Picker("Colour by", selection: $lens) {
+                            ForEach(LensChoice.all) { choice in
+                                Text(choice.label).tag(choice.code)
+                            }
+                        }
+                        .disabled(!flat)
+                    }
+                } footer: {
+                    if gradient, let choice = LensChoice.all.first(where: { $0.code == lens }) {
+                        Text(choice.note)
+                    }
                 }
                 Section("Readout") {
                     Toggle("Frame rate", isOn: $showRate)

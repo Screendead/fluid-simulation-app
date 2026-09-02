@@ -362,6 +362,128 @@ A finger down clears the gate and holds it clear. Without that, a
 still phone asleep on a desk would ignore the touch entirely: the
 frame returns before any solver work is encoded.
 
+## The lenses
+
+Jack, 2026-09-02: "make the color a gradient - the user should be able
+to choose a simple single colour or optionally two colours denoting
+low->high values. The colours should then be applied to a metric of the
+user's configuration; one of [velocity, acceleration, pressure,
+proximity] (add others if you think they'd be cool; use discernment)."
+
+One colour is the flat look unchanged. Two colours make a ramp across
+one field, low to high, and every field is one the solver already
+carries — so a lens costs no pass of its own.
+
+| Lens | The scalar | Where it comes from |
+|---|---|---|
+| Velocity | speed, m/s | `length(velocities[i].xyz)` |
+| Acceleration | m/s² | `velocities[i].w`, written by `integrate` |
+| Pressure | Pa | the solver's `pressure` |
+| Proximity | density against rest | the solver's `density` |
+| Temperature | K above ambient | the solver's `temperature` |
+
+Temperature is the fifth, which the roadmap's M5 row already asked for
+and Jack's list did not. It shows where the water has been squeezed and
+stirred, in millionths of a degree.
+
+Rejected: vorticity. It is the most interesting field the app does not
+have, and the only one on this page that needs work of its own — a
+neighbour sweep per particle, or a curl of the splatted velocity grid,
+which exists only while the strands run and only at the coarse cell
+size. Worth building when Jack asks; not worth a sweep smuggled in
+behind a colour picker.
+
+### Acceleration, and where it comes from
+
+The other four fields sit in a buffer already. Acceleration did not,
+and the honest number is the whole velocity change over a substep —
+body force, viscosity, tension and every pressure iteration together.
+That total exists in exactly one place, the top of `integrate`, and
+only by difference against where the substep started.
+
+So `integrate` keeps the previous substep's velocity in `prev_vel` and
+writes the magnitude of the change into `velocities[].w`, a slot every
+writer already set to zero and nothing read. No new binding reaches
+the draw.
+
+Two details are deliberate. The difference is taken before the wall
+zeroes a contact, so the boundary's own impulse does not draw an
+outline of the box. And it is not taken in `forces_den_apply`, where
+the velocity is in registers already: `kd` is half-warm-started there,
+so a settled column would read half a gravity everywhere instead of
+nothing.
+
+### The ranges
+
+A lens needs two ends. Four of the five are derived and fixed, so the
+same water reads the same colour from one frame to the next.
+
+| Lens | Full colour at | Why |
+|---|---|---|
+| Velocity | `sqrt(2 g h)` | the speed of a fall down the column |
+| Acceleration | `g` | one gravity |
+| Pressure | `2 rho0 g h` | see below |
+| Proximity | rest density, from `LONE_RHO` up | the disc law's own two ends |
+| Temperature | the frame's own two ends | see below |
+
+`h` is the settled column's height, which is the box's half-height
+because the slab seeds the lower half.
+
+**Pressure is twice hydrostatic, not hydrostatic.** The solver's
+pressure is not the column's weight: `forces_eval` opens each substep
+at half the last one's pressure and the solve adds its corrections on
+top, so a converged substep settles at twice what it corrects.
+Measured 2.41 times hydrostatic at the floor of a settled column (this
+machine, 2026-09-02). Anchoring at twice puts the pool's floor at the
+top of the ramp and its surface at the bottom, which spends the whole
+ramp on the depth of the water.
+
+**Temperature ranges over the frame it paints**, alone among the five.
+Viscous heating is irreversible, so a particle's temperature is a
+history rather than a state and it climbs for as long as the app runs:
+any fixed ceiling goes dead. Its spatial spread is what the lens is
+for, and the stats readback already carries the frame's coldest and
+hottest particle. The floor on the span is the adiabatic rise under
+the hydrostatic pressure above, so a box of uniform water paints flat
+instead of turning float noise into a rainbow. The readback is a
+second stale, which no eye can see in a field that drifts over
+minutes.
+
+### Where the colour is applied
+
+| Look | How |
+|---|---|
+| Particle view | Each disc takes its own particle's place on the ramp, flat-interpolated. One buffer read in the vertex stage. |
+| Flat surface | The body splat writes the lens into the field's second channel, weighted by the same kernel footprint as the thickness. The fill divides one by the other. |
+| Glass | Untouched. |
+
+The field texture is `Rg16Float` instead of `R16Float`: r the
+thickness, g that thickness times the lens. Both channels decay
+together through the same blend, so the ratio survives the field's
+frame-to-frame average, and r is bit-for-bit what it was —
+`FIELD_SETTLED` and the edge band did not move, which
+`the_settled_field_matches_the_calibration` still shows.
+
+The flat look reads that ratio from the raw splat, not from the blur.
+A kernel-weighted mean over a 1.5 h footprint is already smooth inside
+the body, and the blur exists for the caustics, which the flat look
+never runs. That saves a second blurred channel and a second filter
+pipeline. The threshold that decides water from air runs first, so the
+divide never sees a thickness near zero.
+
+The glass look stays glass. Jack's directive of 2026-08-30 makes the
+water renderer the default view and puts every field lens behind the
+menu; a metric tint over real refraction would fight both. A vertex
+branch on the high colour's w keeps the glass from paying for the lens
+buffers at all.
+
+**This amends the flat look's rule above.** "Literally only two
+available colours for the screen: black, and the chosen water colour"
+still holds with one colour chosen, which is the default. With two, the
+body carries the ramp between them — and the hard water/air edge, the
+part of the rule that is about the look rather than the count, is
+unchanged: no blur, no fade, water or black.
+
 ## Tested and exercised
 
 - `the_ladder_seeds_near_its_scales`: each scale seeds within 5% of
@@ -407,5 +529,19 @@ frame returns before any solver work is encoded.
   trough opens behind it, and the churn carries on after the lift.
   The harness drives slot 0 only; the two-finger case is the GPU
   test's.
+- `a_ramp_paints_the_discs_between_its_two_colours` and
+  `a_ramp_paints_the_flat_surface_between_its_two_colours`: red to
+  blue across proximity, down each of the two paths. Every drawn pixel
+  must sit on the line between the two colours, and the picture must
+  not be one colour. Measured this machine, 2026-09-02: 53 distinct
+  steps on the discs, 47 on the surface.
+- `a_settled_column_lands_inside_every_lens`: where settled water
+  actually falls on each ramp, which is the check a derived range can
+  still fail. Measured this machine, 2026-09-02: pressure to 1.17 of
+  its ramp at the pool floor, proximity 0.61 at the free surface to
+  1.01 in the body, velocity 0.010, and the temperature ramp spanning
+  the frame exactly. It caught two bad anchors before they shipped —
+  pressure at 2.41 of a one-times-hydrostatic ramp, and temperature at
+  9.01 of a fixed one.
 - Every shell path is exercised by the menu; the shell has no test
   target.

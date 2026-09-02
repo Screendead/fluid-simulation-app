@@ -14,6 +14,9 @@ struct ContentView: View {
     @AppStorage(Settings.flatKey) private var flat = false
     @AppStorage(Settings.particleViewKey) private var particleView = false
     @AppStorage(Settings.flatColourKey) private var flatColour = Settings.hotPink
+    @AppStorage(Settings.gradientKey) private var gradient = false
+    @AppStorage(Settings.highColourKey) private var highColour = Settings.paleGold
+    @AppStorage(Settings.lensKey) private var lens = 0
     @AppStorage(Settings.showRateKey) private var showRate = false
     @AppStorage(Settings.showThermalKey) private var showThermal = false
     @AppStorage(Settings.showCostKey) private var showCost = false
@@ -56,6 +59,7 @@ struct ContentView: View {
             MenuSheet(
                 particleScale: $particleScale, flat: $flat, particleView: $particleView,
                 flatColour: $flatColour,
+                gradient: $gradient, highColour: $highColour, lens: $lens,
                 showRate: $showRate, showThermal: $showThermal, showCost: $showCost,
                 particles: driver.particles(at:))
             .presentationDetents([.medium, .large])
@@ -67,9 +71,15 @@ struct ContentView: View {
         .onChange(of: flat) { setLook() }
         .onChange(of: particleView) { setLook() }
         .onChange(of: flatColour) { setLook() }
+        .onChange(of: gradient) { setLook() }
+        .onChange(of: highColour) { setLook() }
+        .onChange(of: lens) { setLook() }
     }
 
     private func setLook() {
-        driver.setLook(flat: flat, particles: particleView, colour: FluidVec3(hex: flatColour))
+        driver.setLook(
+            flat: flat, particles: particleView, colour: FluidVec3(hex: flatColour),
+            gradient: gradient, high: FluidVec3(hex: highColour),
+            lens: UInt32(lens))
     }
 }

@@ -61,6 +61,7 @@ var<immediate> step: Step;
 @group(0) @binding(16) var<storage, read_write> nbr: array<vec4f>;
 @group(0) @binding(17) var<storage, read_write> nbr_n: array<u32>;
 @group(0) @binding(18) var<storage, read_write> wall_grad: array<vec4f>;
+@group(0) @binding(19) var<storage, read_write> prev_vel: array<vec4f>;
 
 // XSPH velocity blending as a per-second rate, not a per-substep
 // fraction: the substep count follows the pacing policy, so a fixed
@@ -684,8 +685,8 @@ fn den_apply(@builtin(global_invocation_id) gid: vec3u) {
 }
 
 // Close the substep: CFL clamp (counted, never silent), position
-// update, inelastic walls, and the temperature's pressure work from
-// this substep's pressure delta.
+// update, inelastic walls, the acceleration the lens reads, and the
+// temperature's pressure work from this substep's pressure delta.
 @compute @workgroup_size(256)
 fn integrate(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= params.count {
@@ -706,13 +707,21 @@ fn integrate(@builtin(global_invocation_id) id: vec3u) {
         v *= ceiling / speed;
         atomicAdd(&clamp_count, 1u);
     }
+    // What the acceleration lens reads, in w: this substep's whole
+    // velocity change over dt — body force, viscosity, tension and
+    // every pressure iteration together, which is the only place they
+    // are all in. Taken before the wall zeroes a contact, so the
+    // boundary's own impulse does not outline the box. Nothing else
+    // reads w, and every other writer sets it to zero.
+    let accel = length(v - prev_vel[id.x].xyz) / step.dt;
     var p = positions[id.x].xyz + v * step.dt;
     let lo = wall_lo();
     let hi = -lo;
     let clamped = clamp(p, lo, hi);
     v = select(v, vec3f(0.0), clamped != p);
     positions[id.x] = vec4f(clamped, 0.0);
-    velocities[id.x] = vec4f(v, 0.0);
+    prev_vel[id.x] = vec4f(v, 0.0);
+    velocities[id.x] = vec4f(v, accel);
     let dp = pressure[id.x] - prev_pressure[id.x];
     prev_pressure[id.x] = pressure[id.x];
     temperature[id.x] += temperature[id.x] * EXPANSION

@@ -136,11 +136,16 @@ void fluid_renderer_touch(struct FluidRenderer *renderer,
                           bool down);
 
 /**
- * Liquid glass when `flat` is false. Otherwise `colour` on black:
- * the flat surface, or, when `particles` is also true, the
- * particles alone as discs. `particles` alone does nothing.
- * `colour`'s components are 0 to 1 as the picker shows them; the
- * core linearises them for the surface.
+ * Liquid glass when `flat` is false. Otherwise paint on black: the
+ * flat surface, or, when `particles` is also true, the particles
+ * alone as discs. `particles` alone does nothing.
+ *
+ * `low` is the one colour when `gradient` is false. When it is true,
+ * the colour runs from `low` to `high` across `lens`, whose range the
+ * core derives from the box: 0 velocity, 1 acceleration, 2 pressure,
+ * 3 proximity, 4 temperature, and anything else velocity. Colour
+ * components are 0 to 1 as the picker shows them; the core
+ * linearises them.
  *
  * # Safety
  *
@@ -149,7 +154,10 @@ void fluid_renderer_touch(struct FluidRenderer *renderer,
 void fluid_renderer_set_look(struct FluidRenderer *renderer,
                              bool flat,
                              bool particles,
-                             struct FluidVec3 colour);
+                             struct FluidVec3 low,
+                             bool gradient,
+                             struct FluidVec3 high,
+                             uint32_t lens);
 
 /**
  * # Safety
