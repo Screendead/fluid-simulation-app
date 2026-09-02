@@ -187,15 +187,14 @@ var<immediate> paint: Paint;
 
 const TAU: f32 = 6.2831855;
 
-/// sRGB's transfer function inverted, as `linear` in render.rs: the
-/// wheel picks its hues in the space the colour pickers show, and
-/// every shader here works in linear light.
-fn srgb_to_linear(c: vec3f) -> vec3f {
-    return select(
-        pow((c + vec3f(0.055)) / 1.055, vec3f(2.4)),
-        c / 12.92,
-        c <= vec3f(0.04045),
-    );
+// Gamma two, not sRGB's exact curve. The wheel's hues are chosen
+// here rather than picked by the user, so the curve only has to look
+// like a rainbow — and the exact one is three pows a fragment, which
+// cost 600 microseconds a frame on the disc draw (reference device,
+// 2026-09-02, 3,512 against 2,912). A picked colour still goes
+// through the exact curve, in `linear` in render.rs.
+fn to_linear(c: vec3f) -> vec3f {
+    return c * c;
 }
 
 // Where particle i sits on the ramp, 0 to 1. Called only where the
@@ -231,20 +230,27 @@ fn heading(i: u32) -> f32 {
     return atan2(velocities[i].y, velocities[i].x) / TAU + 0.5;
 }
 
-// A hue and a saturation down one interpolant: the hue in ten bits
-// above the point, the saturation below it. A varying of its own is
-// what this avoids, and that costs 490 us a frame (M5 record).
-const HUE_STEPS: f32 = 1023.0;
-const HUE_SCALE: f32 = 1024.0;
+// A saturation and a hue down one interpolant: the saturation in ten
+// bits above the point, the hue below it. A varying of its own is what
+// this avoids, and that costs 490 us a frame (M5 record).
+//
+// The hue takes the fraction, not the saturation, because the pair is
+// only exactly recoverable while the interpolator returns the vertex
+// value bit for bit. A value that lands one unit the wrong side of a
+// step carries a hue that has wrapped a whole turn — which is the
+// colour it already was — where a wrapped saturation would drop a
+// disc to the low colour and read as a twinkle.
+const SAT_STEPS: f32 = 1023.0;
+const SAT_SCALE: f32 = 1024.0;
 
 fn wheel_at(i: u32) -> f32 {
-    return (floor(heading(i) * HUE_STEPS) + min(lens_at(i), 0.999)) / HUE_SCALE;
+    return (floor(lens_at(i) * SAT_STEPS) + fract(heading(i))) / SAT_SCALE;
 }
 
 // The full-saturation hue wheel, hue 0 at red.
 fn hue_colour(h: f32) -> vec3f {
     let k = abs(fract(h + vec3f(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
-    return srgb_to_linear(clamp(k - 1.0, vec3f(0.0), vec3f(1.0)));
+    return to_linear(clamp(k - 1.0, vec3f(0.0), vec3f(1.0)));
 }
 
 // The hue takes over late, as the square of where the speed sits on
@@ -253,9 +259,9 @@ fn hue_colour(h: f32) -> vec3f {
 // direction of slow water is noise, so a linear mix would smear that
 // noise over the whole pool.
 fn wheel_colour(z: f32) -> vec3f {
-    let packed = z * HUE_SCALE;
-    let s = fract(packed);
-    return mix(paint.low.rgb, hue_colour(floor(packed) / HUE_STEPS), s * s);
+    let packed = z * SAT_SCALE;
+    let s = floor(packed) / SAT_STEPS;
+    return mix(paint.low.rgb, hue_colour(fract(packed)), s * s);
 }
 
 // What a quad vertex of the body splat and the disc draw share; z is

@@ -456,7 +456,7 @@ one particle spacing of water holds, so they scale with the ladder.
 | Velocity, Direction | `sqrt(2 g d)`, 0.44 m/s | the speed of a fall through one spacing | 0.02, so the floor holds |
 | Acceleration | `g` | the fall itself | 195, well over |
 | Pressure | `rho0 g d`, 98 Pa | the weight of one spacing of water | 7,100, well over |
-| Proximity | `0.01 rho0` | a percent of rest density | 280, well over |
+| Proximity | `0.01 rho0`, 10 | a percent of rest density | 280 across the pool, 4 across the settled body alone |
 
 The floor binds on a still pool and nowhere else, which is what it is
 for. It is also the guard against a zero span, so it is stated for
@@ -540,10 +540,19 @@ lens.
 
 **Two numbers down one interpolant.** The disc needs a hue and a
 saturation where a ramp needs one number, and a varying of its own
-costs 490 microseconds a frame (below). Both ride in clip `z`: the hue
-in ten bits above the point, the saturation below it. Every vertex of
-a quad carries the same value, so the fragment reads the pair back
+costs 490 microseconds a frame (below). Both ride in clip `z`: the
+saturation in ten bits above the point, the hue below it. Every vertex
+of a quad carries the same value, so the fragment reads the pair back
 whole.
+
+The hue takes the fraction and not the other way round, because "reads
+it back whole" holds only while the interpolator returns the vertex
+value bit for bit. Put the hue below the point and a value that lands
+one unit the wrong side of a step carries a hue wrapped a whole turn,
+which is the colour it already was. Put the saturation there and the
+same slip drops a disc to the low colour, which reads as a twinkle in
+fast water. The test cannot tell those apart — a black disc looks like
+air — so the packing is ordered to make the failure invisible instead.
 
 **An angle has no mean.** The flat surface takes a kernel-weighted
 mean of the lens and would average headings across the seam at half a
@@ -559,6 +568,14 @@ more decay draw and one more splat, and it is written only while the
 lens is on. Widening the one field to four channels was the
 alternative and it was rejected: it would tax the glass look, which
 never reads a lens, on every frame.
+
+**The readout's pressure moved with the lens.** `RenderStats`'
+`pressure_min` and `pressure_max`, and the `p ..Pa` field of the
+console line, now report the running mean rather than the substep's
+raw pressure — one reduction, not two, and the mean is the better
+number for the order-of-magnitude check that field is for. The
+compression pair is untouched and stays raw, and that is the pair
+that watches the solver converge.
 
 ### Where the colour is applied
 
@@ -698,8 +715,10 @@ pass in one run.
   `a_ramp_paints_the_flat_surface_between_its_two_colours`: red to
   blue across proximity, down each of the two paths. Every drawn pixel
   must sit on the line between the two colours, and the picture must
-  not be one colour. Measured this machine, 2026-09-02: 53 distinct
-  steps on the discs, 47 on the surface.
+  not be one colour. Measured this machine, 2026-09-02: 59 distinct
+  steps on the discs, 84 on the surface, both up from 53 and 47 when
+  the ramp was derived — the frame's own ends are tighter, so the same
+  water spends more of the ramp.
 - `a_settled_pool_holds_its_colours_still`: how far a settled
   particle walks along its ramp between two frames, one number a lens.
   It replaces `a_settled_column_lands_inside_every_lens`, which
@@ -710,5 +729,15 @@ pass in one run.
   settled pool reads under a tenth of the speed ramp, which is the
   span floor's own test, and proximity separates the body from the
   free surface by a quarter of its ramp.
+- `the_wheel_paints_pure_hues_around_the_circle` and
+  `the_wheel_paints_the_flat_surface_around_the_circle`: the wheel
+  down each path, on a pool tipped hard on its side. Every drawn pixel
+  must be a pure hue scaled by its speed, which is false the moment
+  the clip-z pack leaks its hue into its saturation, and the water
+  must land round the wheel rather than in a corner of it. Measured
+  this machine, 2026-09-02: six sextants on the discs, five on the
+  surface. Neither claim is made by the stability test above, and a
+  broken pack or a missing heading field draws colour either way.
 - Every shell path is exercised by the menu; the shell has no test
-  target.
+  target. `FLUID_LOOK` names the look for a console run, which is how
+  the measurements below reach a look the menu is not left in.

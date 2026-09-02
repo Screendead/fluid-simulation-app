@@ -634,7 +634,7 @@ impl Lens {
             // The weight of one spacing of water.
             Lens::Pressure => sim::REST_DENSITY * crate::STANDARD_GRAVITY * spacing,
             // A percent of rest density; the settled body's own
-            // compression spans a fifth of that.
+            // compression spans four kilograms of it.
             Lens::Proximity => 0.01 * sim::REST_DENSITY,
         }
     }

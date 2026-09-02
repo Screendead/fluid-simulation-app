@@ -29,17 +29,19 @@ const TAU: f32 = 6.2831855;
 
 // Both mirrored from sim_sprites.wgsl, which paints the same wheel on
 // the discs; a divergence is a bug.
-fn srgb_to_linear(c: vec3f) -> vec3f {
-    return select(
-        pow((c + vec3f(0.055)) / 1.055, vec3f(2.4)),
-        c / 12.92,
-        c <= vec3f(0.04045),
-    );
+// Gamma two, not sRGB's exact curve. The wheel's hues are chosen
+// here rather than picked by the user, so the curve only has to look
+// like a rainbow — and the exact one is three pows a fragment, which
+// cost 600 microseconds a frame on the disc draw (reference device,
+// 2026-09-02, 3,512 against 2,912). A picked colour still goes
+// through the exact curve, in `linear` in render.rs.
+fn to_linear(c: vec3f) -> vec3f {
+    return c * c;
 }
 
 fn hue_colour(h: f32) -> vec3f {
     let k = abs(fract(h + vec3f(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
-    return srgb_to_linear(clamp(k - 1.0, vec3f(0.0), vec3f(1.0)));
+    return to_linear(clamp(k - 1.0, vec3f(0.0), vec3f(1.0)));
 }
 
 struct Optics {
