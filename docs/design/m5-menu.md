@@ -377,14 +377,20 @@ carries — so a lens costs no pass of its own.
 | Lens | The scalar | Where it comes from |
 |---|---|---|
 | Velocity | speed, m/s | `length(velocities[i].xyz)` |
-| Acceleration | m/s² | `velocities[i].w`, written by `integrate` |
-| Pressure | Pa | the solver's `pressure` |
+| Acceleration | m/s² | `velocities[i].w`, a running mean `integrate` writes |
+| Pressure | Pa | `prev_vel[i].w`, the same mean of the solver's `pressure` |
 | Proximity | density against rest | the solver's `density` |
-| Temperature | K above ambient | the solver's `temperature` |
+| Direction | which way, as a hue | `atan2` of the in-plane velocity |
 
-Temperature is the fifth, which the roadmap's M5 row already asked for
-and Jack's list did not. It shows where the water has been squeezed and
-stirred, in millionths of a degree.
+The fifth was temperature until Jack looked at it, 2026-09-02: it
+"doesn't really show anything interesting. Temp doesn't change much,
+if at all, and it just looks like random dappling mostly since the
+temps of nearby particles don't correlate with each other." He is
+right, and the arithmetic says why: a settled box spreads 1.5
+millikelvin end to end, while a float near 293 K resolves 30
+microkelvin, so the lens painted about fifty quantisation steps. The
+direction wheel takes its number. Temperature stays in the solver and
+on the readout, where a drift over minutes is the point.
 
 Rejected: vorticity. It is the most interesting field the app does not
 have, and the only one on this page that needs work of its own — a
@@ -403,8 +409,9 @@ only by difference against where the substep started.
 
 So `integrate` keeps the previous substep's velocity in `prev_vel` and
 writes the magnitude of the change into `velocities[].w`, a slot every
-writer already set to zero and nothing read. No new binding reaches
-the draw.
+writer set to zero and nothing read. Those writers now carry it
+through instead, which they must: a slot two dispatches zero every
+substep cannot hold a running mean. No new binding reaches the draw.
 
 Two details are deliberate. The difference is taken before the wall
 zeroes a contact, so the boundary's own impulse does not draw an
@@ -415,46 +422,150 @@ nothing.
 
 ### The ranges
 
-A lens needs two ends. Four of the five are derived and fixed, so the
-same water reads the same colour from one frame to the next.
+Jack, 2026-09-02: "The gradient should go from the lowest value
+*actually present in the sim* to the highest *actually present*. Not
+from some absolute number to another."
 
-| Lens | Full colour at | Why |
+So every ramp spans the frame's own two ends. `reduce_stats` already
+reduced four of the five fields; it now hands back a low-high pair for
+each, in the two rounds that were carrying one and a half each. The
+reduction lanes were the constraint: `reduce_pair` sums one lane and
+takes extrema in three, which is one sum and three extrema a round,
+and eight extrema were wanted. `reduce_bounds` is the second helper —
+two low lanes, two high lanes, two lenses a round — and it needs no
+round and no buffer read that was not there already, because velocity
+and acceleration come out of one fetch of `velocities[i]`.
+
+| Lens | Low | High |
 |---|---|---|
-| Velocity | `sqrt(2 g h)` | the speed of a fall down the column |
-| Acceleration | `g` | one gravity |
-| Pressure | `2 rho0 g h` | see below |
-| Proximity | rest density, from `LONE_RHO` up | the disc law's own two ends |
-| Temperature | the frame's own two ends | see below |
+| Velocity | slowest particle | fastest |
+| Acceleration | least | most |
+| Pressure | least | most |
+| Proximity | sparsest neighbourhood | fullest |
+| Direction | the velocity pair; the hue rides on it |
 
-`h` is the settled column's height, which is the box's half-height
-because the slab seeds the lower half.
+**A floor under the span.** A ramp between two ends that are almost
+the same number is a ramp across the solver's own noise. A settled
+pool spans 0.02 m/s of speed and every particle walks the whole of
+that every frame, which paints confetti. Each lens carries the
+narrowest span worth a ramp, and three of the four are the quantity
+one particle spacing of water holds, so they scale with the ladder.
 
-**Pressure is twice hydrostatic, not hydrostatic.** The solver's
-pressure is not the column's weight: `forces_eval` opens each substep
-at half the last one's pressure and the solve adds its corrections on
-top, so a converged substep settles at twice what it corrects.
-Measured 2.41 times hydrostatic at the floor of a settled column (this
-machine, 2026-09-02). Anchoring at twice puts the pool's floor at the
-top of the ramp and its surface at the bottom, which spends the whole
-ramp on the depth of the water.
+| Lens | Floor | What it is | A settled pool |
+|---|---|---|---|
+| Velocity, Direction | `sqrt(2 g d)`, 0.44 m/s | the speed of a fall through one spacing | 0.02, so the floor holds |
+| Acceleration | `g` | the fall itself | 195, well over |
+| Pressure | `rho0 g d`, 98 Pa | the weight of one spacing of water | 7,100, well over |
+| Proximity | `0.01 rho0` | a percent of rest density | 280, well over |
 
-**Temperature ranges over the frame it paints**, alone among the five.
-Viscous heating is irreversible, so a particle's temperature is a
-history rather than a state and it climbs for as long as the app runs:
-any fixed ceiling goes dead. Its spatial spread is what the lens is
-for, and the stats readback already carries the frame's coldest and
-hottest particle. The floor on the span is the adiabatic rise under
-the hydrostatic pressure above, so a box of uniform water paints flat
-instead of turning float noise into a rainbow. The readback is a
-second stale, which no eye can see in a field that drifts over
-minutes.
+The floor binds on a still pool and nowhere else, which is what it is
+for. It is also the guard against a zero span, so it is stated for
+every lens, not only the one that needs it today.
+
+**The ends are chased, not taken.** A frame's own extremes walk: the
+settled pool's speed ceiling moves a seventh of its own span every
+frame, and pressure's a fortieth, and any of that shifts every colour
+on the screen at once. `Ramp` holds the live lens's two ends and
+follows the frame with `1 - exp(-dt/tau)`. Opening out takes 0.15 s,
+so a splash has its colours inside a third of a second; closing in
+takes 0.6 s, so the palette does not breathe every time the fastest
+particle slows down. The ramp resets when the lens changes and holds
+while the pool sleeps.
+
+Nothing is derived from the box any more. The old anchors — a fall
+down the column, twice hydrostatic, the disc law's two ends — were
+each derived and each defensible, and the pressure one carried a real
+finding: the solver's pressure is not the column's weight, because
+`forces_eval` opens each substep at half the last one's pressure and
+the solve adds its corrections on top, so a converged substep settles
+at twice what it corrects. That is still what the pressure lens
+*means*. It is no longer where the ramp ends.
+
+### The shimmer
+
+Jack, 2026-09-02: "the water is a bit flickery with the gradient on,
+at near-rest."
+
+The measurement is how far a settled particle walks along its ramp
+between two frames, averaged over every particle, from a headless run
+of 30 frames after a 600-frame settle
+(`a_settled_pool_holds_its_colours_still`, this machine). One number a
+lens, and it ranked the causes in one run.
+
+| Lens | Before | After |
+|---|---|---|
+| Velocity | 0.09% | 0.52% |
+| Acceleration | **19.4%** | 0.09% |
+| Pressure | 2.2% | 0.06% |
+| Proximity | 0.01% | 0.13% |
+| Direction | — | 0.02% |
+
+The acceleration lens was the flicker, by a factor of nine over the
+next worst. Its raw number is the pressure solve's residual as much as
+the flow: a settled pool reads 20 g on one particle while the pool
+around it reads a tenth of that, and the tail is real — a particle in
+contact with a wall is zeroed and re-accelerated every substep. So
+both that lens and pressure now read a running mean over 50 ms, in the
+same `1 - exp(-rate·dt)` form the finger and XSPH use, so the substep
+count cannot change it. The mean costs one `mix` each: `integrate`
+already has both values in registers, and both slots were free —
+`velocities[].w` was already the lens's, and `prev_vel[].w` was
+written as zero and read by nothing. Two other writers of `velocities`
+had to stop zeroing `w`, which they do by carrying it through.
+
+Velocity and proximity got noisier, and that is the price of Jack's
+ask: the ramp is tighter now, so the same jitter covers more of it.
+Both stay an order of magnitude under the acceleration lens's old
+number, and velocity's 0.52% is the span floor doing its work — 
+without it the number is 11%.
+
+### The wheel
+
+Jack, 2026-09-02: "What *would* be cool is a hue-wheel rainbow
+colouring based on the theta of the velocity!"
+
+The hue is `atan2(v.y, v.x)`, the whole wheel over a turn. The chosen
+low colour is what still water reads, and the hue takes over as the
+**square** of where the water's speed sits on the velocity ramp.
+
+The square is not decoration. The direction of water at rest is noise
+— a uniform random angle every frame — so a linear mix smears that
+noise over the whole pool: 1.15% of colour movement a frame on a
+settled pool, against 0.02% squared. It also reads better, because the
+wheel is then saying something about the water that is moving instead
+of tinting everything.
+
+The high colour goes unread, and the menu hides its picker for this
+lens.
+
+**Two numbers down one interpolant.** The disc needs a hue and a
+saturation where a ramp needs one number, and a varying of its own
+costs 490 microseconds a frame (below). Both ride in clip `z`: the hue
+in ten bits above the point, the saturation below it. Every vertex of
+a quad carries the same value, so the fragment reads the pair back
+whole.
+
+**An angle has no mean.** The flat surface takes a kernel-weighted
+mean of the lens and would average headings across the seam at half a
+turn — a pool sloshing left has half its particles at +3.13 radians
+and half at -3.13, and the mean of those is the opposite colour. So
+the direction lens splats a second field of its own: each particle
+adds its unit heading vector, and the surface reads the heading of the
+sum, which is right everywhere. The saturation comes from the ordinary
+lens channel, which for this lens is the speed.
+
+That second field is an `Rg16Float` of the same size as the first, one
+more decay draw and one more splat, and it is written only while the
+lens is on. Widening the one field to four channels was the
+alternative and it was rejected: it would tax the glass look, which
+never reads a lens, on every frame.
 
 ### Where the colour is applied
 
 | Look | How |
 |---|---|
 | Particle view | Each disc takes its own particle's place on the ramp, flat-interpolated. One buffer read in the vertex stage. |
-| Flat surface | The body splat writes the lens into the field's second channel, weighted by the same kernel footprint as the thickness. The fill divides one by the other. |
+| Flat surface | The body splat writes the lens into the field's second channel, weighted by the same kernel footprint as the thickness. The fill divides one by the other. The direction lens adds a second field of headings. |
 | Glass | Untouched. |
 
 The field texture is `Rg16Float` instead of `R16Float`: r the
@@ -589,13 +700,15 @@ pass in one run.
   must sit on the line between the two colours, and the picture must
   not be one colour. Measured this machine, 2026-09-02: 53 distinct
   steps on the discs, 47 on the surface.
-- `a_settled_column_lands_inside_every_lens`: where settled water
-  actually falls on each ramp, which is the check a derived range can
-  still fail. Measured this machine, 2026-09-02: pressure to 1.17 of
-  its ramp at the pool floor, proximity 0.61 at the free surface to
-  1.01 in the body, velocity 0.010, and the temperature ramp spanning
-  the frame exactly. It caught two bad anchors before they shipped —
-  pressure at 2.41 of a one-times-hydrostatic ramp, and temperature at
-  9.01 of a fixed one.
+- `a_settled_pool_holds_its_colours_still`: how far a settled
+  particle walks along its ramp between two frames, one number a lens.
+  It replaces `a_settled_column_lands_inside_every_lens`, which
+  checked where settled water fell on a *derived* ramp and went
+  vacuous when the ramp became the frame's own two ends. The shimmer
+  table above is its output. It also keeps two of the old test's
+  claims, which the auto ramp does not make true by construction: a
+  settled pool reads under a tenth of the speed ramp, which is the
+  span floor's own test, and proximity separates the body from the
+  free surface by a quarter of its ramp.
 - Every shell path is exercised by the menu; the shell has no test
   target.

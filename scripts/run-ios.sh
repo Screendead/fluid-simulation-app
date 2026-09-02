@@ -1,6 +1,7 @@
 #!/bin/bash
 # Usage: scripts/run-ios.sh [Debug|Release]   FLUID_DEVICE overrides the reference device.
-# FLUID_PARTICLES and FLUID_RADIUS reach the app for the ramp runs.
+# FLUID_PARTICLES and FLUID_RADIUS reach the app for the ramp runs, and
+# FLUID_LOOK names the look for a measurement run ("flat:direction").
 set -euo pipefail
 cd "$(dirname "$0")/.."
 config="${1:-Debug}"
@@ -13,4 +14,5 @@ DEVICECTL_CHILD_FLUID_BENCH="${FLUID_BENCH:-}" \
 DEVICECTL_CHILD_FLUID_SPACING="${FLUID_SPACING:-}" \
 DEVICECTL_CHILD_FLUID_SIM="${FLUID_SIM:-}" \
 DEVICECTL_CHILD_FLUID_TRACERS="${FLUID_TRACERS:-}" \
+DEVICECTL_CHILD_FLUID_LOOK="${FLUID_LOOK:-}" \
 xcrun devicectl device process launch --device "$device" com.screendead.FluidApp

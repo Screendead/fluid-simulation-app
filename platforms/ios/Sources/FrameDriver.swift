@@ -47,10 +47,11 @@ final class FrameDriver {
             print("fluid_renderer_create failed")
             return
         }
+        let chosen = Look(env["FLUID_LOOK"])
         setLook(
-            flat: Settings.flat, particles: Settings.particleView,
-            colour: Settings.flatColour, gradient: Settings.gradient,
-            high: Settings.highColour, lens: Settings.lens)
+            flat: chosen.flat, particles: chosen.particles,
+            colour: Settings.flatColour, gradient: chosen.gradient,
+            high: Settings.highColour, lens: chosen.lens)
         let link = CADisplayLink(target: self, selector: #selector(tick))
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
         link.add(to: .main, forMode: .common)
@@ -82,7 +83,7 @@ final class FrameDriver {
     ) {
         guard let renderer else { return }
         fluid_renderer_set_look(renderer, flat, particles, colour, gradient, high, lens)
-        look = flat ? (particles ? "particles" : "flat") : "glass"
+        look = Look(flat: flat, particles: particles, gradient: gradient, lens: lens).name
     }
 
     @objc private func tick(_ link: CADisplayLink) {

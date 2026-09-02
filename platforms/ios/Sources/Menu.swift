@@ -216,3 +216,48 @@ extension Color {
         return String(format: "%02X%02X%02X", byte(r), byte(g), byte(b))
     }
 }
+
+/// Which look a run draws. The menu writes the stored one; a
+/// measurement run over the console cannot reach the menu, so
+/// `FLUID_LOOK` names one instead: "glass", "flat" or "particles",
+/// with the lens after a colon where a run wants the gradient on
+/// ("flat:direction"). `name` is what the log line reports, so a
+/// number carries the look it was taken in.
+struct Look {
+    let flat: Bool
+    let particles: Bool
+    let gradient: Bool
+    let lens: UInt32
+
+    @MainActor init(_ spec: String?) {
+        guard let parts = spec?.split(separator: ":"), let look = parts.first else {
+            self.init(
+                flat: Settings.flat, particles: Settings.particleView,
+                gradient: Settings.gradient, lens: Settings.lens)
+            return
+        }
+        let lens = parts.dropFirst().first.flatMap { name in
+            LensChoice.all.first { $0.label.lowercased() == name.lowercased() }
+        }
+        self.init(
+            flat: look != "glass", particles: look == "particles",
+            gradient: lens != nil, lens: UInt32(lens?.code ?? 0))
+    }
+
+    init(flat: Bool, particles: Bool, gradient: Bool, lens: UInt32) {
+        self.flat = flat
+        self.particles = particles
+        self.gradient = gradient
+        self.lens = lens
+    }
+
+    var name: String {
+        let base = flat ? (particles ? "particles" : "flat") : "glass"
+        guard flat, gradient,
+            let choice = LensChoice.all.first(where: { $0.code == Int(lens) })
+        else {
+            return base
+        }
+        return "\(base)+\(choice.label.lowercased())"
+    }
+}

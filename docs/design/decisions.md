@@ -200,6 +200,15 @@ colours and names the lens by number; it computes no range and no
 threshold. `fluid_renderer_set_look` grows the three arguments that
 say so.
 
+*Amended 2026-09-02, from Jack's ask for the ranges.* The ramp's two
+ends are no longer derived from the box. They are the lowest and the
+highest the frame itself holds, reduced in the solver's own statistics
+block. Jack: "The gradient should go from the lowest value *actually
+present in the sim* to the highest *actually present*." The core still
+computes them and the shell still only names a lens by number, so the
+split above is unchanged. The lens set changes with it: temperature
+goes, and the direction wheel takes its number.
+
 *Amended 2026-09-02, from Jack's request to drag the sim.* The split
 gains a fourth call, `touch(slot, x, y, down)`. The shell owns the
 touch handling and reports two things only it can know: which finger
