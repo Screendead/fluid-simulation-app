@@ -250,13 +250,21 @@ point so that a boundary slip wraps a whole turn instead of dropping
 a disc to black; the flat surface splats unit headings into a second
 field, because a mean of angles is wrong at the seam.
 
+One regression came with the wheel and was caught by the before-and-
+after sweep: the flat surface lost 230 microseconds a frame to the
+wheel's arithmetic sitting in the fill's fragment shader, on a branch
+that look never takes. The wheel has its own entry point now and the
+time came back whole. The M5 record has the sweep and the protocol it
+needed — the settled cost is the lowest p50 a run reports, and
+`FLUID_LOOK` names the look for a console run.
+
 What remains, in the order the records list it: the optimisation
 record's next steps (the tracer draw, the builder sweep, the refine
 chain); the runbook's remainder (the M3 exit measurements, budget O2,
 the battery bound, the frame-latency-1 experiment); the direction
-wheel's own cost, which is the largest unexplained number on the
-branch; and Jack's dials on the drag and his eye on the five lenses.
-The next one is Jack's pick.
+wheel's own cost, which is the second field it splats and the only
+lens that pays for a pass; and Jack's dials on the drag and his eye
+on the five lenses. The next one is Jack's pick.
 
 The history of the pass, for the record:
 

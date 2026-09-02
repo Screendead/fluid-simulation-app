@@ -636,9 +636,10 @@ Both passes carry the ramp in clip `z` instead. Neither has a depth
 attachment, so `z` is an interpolant already paid for, and every vertex
 of a quad carries the same value, so the fragment reads it back exactly.
 The lens is clamped to 0 to 1, which is the whole clip range, so no
-primitive can be clipped by it. With that, the lenses cost nothing
-measurable: 2,248 microseconds against the pre-lens 2,240 and the
-pre-drag 2,439.
+primitive can be clipped by it. With that, the lens costs nothing
+measurable on the particle view: 2,248 microseconds against the
+pre-lens 2,240 and the pre-drag 2,439. On the flat surface it is not
+free, which nothing measured until "Measured again" below.
 
 The glass look stays glass. Jack's directive of 2026-08-30 makes the
 water renderer the default view and puts every field lens behind the
@@ -649,9 +650,10 @@ buffers at all.
 **This amends the flat look's rule above.** "Literally only two
 available colours for the screen: black, and the chosen water colour"
 still holds with one colour chosen, which is the default. With two, the
-body carries the ramp between them — and the hard water/air edge, the
-part of the rule that is about the look rather than the count, is
-unchanged: no blur, no fade, water or black.
+body carries the ramp between them, and under the direction wheel it
+carries the wheel's own hues, which Jack asked for by name. The hard
+water/air edge, the part of the rule that is about the look rather
+than the count, is unchanged: no blur, no fade, water or black.
 
 ## Measured (reference device, 2026-09-02, evening)
 
@@ -704,9 +706,12 @@ a console run cannot reach it, so before this every look but the
 stored one was out of reach. The console line now names the look it
 measured, gradient and lens included.
 
-One launch a row, 100 seconds, phone flat and still on the desk, 1x.
+One launch a row, 100 seconds, phone flat and still on the desk, 1x,
+GPU p50 in microseconds. The before column is `b8be8d4` with only the
+look override patched in, so both builds could be driven into the same
+look.
 
-| Look | Before (`b8be8d4`) | After | Delta |
+| Look | Before | After | Delta |
 |---|---|---|---|
 | Glass | @@B_GLASS@@ | @@N_GLASS@@ | @@D_GLASS@@ |
 | Flat, one colour | @@B_FLAT@@ | @@N_FLAT@@ | @@D_FLAT@@ |
@@ -716,29 +721,54 @@ One launch a row, 100 seconds, phone flat and still on the desk, 1x.
 | Particles + velocity ramp | @@B_PARTV@@ | @@N_PARTV@@ | @@D_PARTV@@ |
 | Particles + direction wheel | — | @@N_PARTD@@ | new |
 
-The before column is `b8be8d4` with only the look override patched in,
-so both builds could be driven into the same look. Every row holds 120
-Hz; the largest is @@WORST@@ of the 8,333 microsecond budget.
-
-Three things the table says.
+Every row holds 120 Hz; the largest is @@WORST@@ of the 8,333
+microsecond budget.
 
 **Auto-ranging and the two running means are free.** They touch the
-solver, which every look runs, and the three looks without a lens
-moved by less than the run-to-run spread.
+solver, which every look runs, and the glass and both particle views
+moved by less than the spread between runs.
 
-**A ramp on the flat surface is not free**, and never was: @@RAMPFLAT@@
-microseconds, which is the fill's second texture sample per water
-pixel and the splat's second channel. The earlier evening measured the
-ramp on the particle view (free) and on the glass (76 microseconds)
-but never on the flat surface with the ramp on.
+**A ramp on the flat surface is not free**, and never was:
+@@RAMPFLAT@@ microseconds, which is the fill's second texture sample
+per water pixel and the splat's second channel. The earlier evening
+measured the ramp on the particle view (free) and on the glass (76
+microseconds) but never on the flat surface with the ramp on.
 
-**The wheel is the expensive one**, and it is expensive twice over for
-different reasons. On the particle view it costs @@WPART@@ microseconds
-in the disc fragment; three-quarters of that was sRGB's exact curve,
-and the gamma-two approximation took it back. On the flat surface it
-costs @@WFLAT@@, and that is the second field's decay and splat, which
-the particle view does not run — the pow made no difference there,
-because the water covers fewer pixels than the discs do.
+**The flat surface lost 230 microseconds and it was the wheel, on a
+branch that look never takes.** The flat rows above are the only
+ones that moved, and the fill's fragment shader is the only thing they
+share that the glass and the particle view do not lean on: the flat
+look returns from it in a dozen lines, so the shader's own cost is
+most of what it pays, where the glass's fill runs the whole optics
+after it. Adding the wheel's arithmetic to that shader cost the look
+that never runs it.
+
+The wheel now has an entry point of its own, `surface_wheel_frag`, and
+`flat_look` takes `wheel` as a literal from each, so the branch folds
+at compile time. Measured back to back on the same still desk, and the
+plain flat look is the row that carries the claim — it never enters the
+branch at all:
+
+| Look | Before | Branch in the shader | Own entry point |
+|---|---|---|---|
+| Flat, one colour | @@B_FLAT2@@ | @@N_FLAT2@@ | @@S_FLAT@@ |
+| Flat + velocity ramp | @@B_FLATV@@ | @@N_FLATV@@ | @@S_FLATV@@ |
+| Flat + direction wheel | — | @@N_FLATD@@ | @@S_FLATD@@ |
+
+**The wheel is the expensive lens**, and it is expensive twice over
+for different reasons. On the particle view it costs @@WPART@@
+microseconds in the disc fragment. Two measurements sit either side of
+that: sRGB's exact curve in the same fragment cost about 600 (3,512
+with the three `pow`s against 2,912 without, both minima of runs that
+woke), and what is left after the gamma-two approximation is the
+number above. The first is larger than the second, which is the
+run-to-run spread talking — the honest reading is that the curve cost
+about as much again as the whole wheel does now, not a fraction of it.
+
+On the flat surface the wheel costs @@WFLAT@@, and that is the second
+field's decay and splat, which the particle view does not run. The
+`pow` made no difference there, because the water covers fewer pixels
+than the discs do.
 
 The lever on the flat one is the flow field's resolution. It is a
 quarter of the drawable in each dimension, like the thickness field,

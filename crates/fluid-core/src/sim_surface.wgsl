@@ -212,36 +212,54 @@ fn decay_frag(in: FillVertex) -> @location(0) vec4f {
     return vec4f(0.0);
 }
 
+// The flat look: the water where the thickness crosses the band's
+// midpoint, black everywhere else, and a hard edge between them
+// (Jack, 2026-09-02). One chosen colour, or the ramp across the body.
+// The particle view skips this pass entirely.
+//
+// `wheel` arrives as a literal from each entry point, so the branch
+// folds away at compile time and the wheel's hue arithmetic never
+// enters the shader the glass and the ramp share. Left as a runtime
+// branch it cost the flat look 230 us a frame on a pixel that never
+// took it: 3,332 microseconds before the wheel existed, 3,560 with
+// the branch, 3,321 with it folded (reference device, 2026-09-02,
+// back to back on a still desk).
+fn flat_look(uv: vec2f, rel: f32, wheel: bool) -> vec4f {
+    let water = rel >= 0.5 * (EDGE_LO + EDGE_HI);
+    var colour = optics.flat.rgb;
+    if (optics.high.w > 0.0) {
+        // The threshold above is what makes the divide safe: no pixel
+        // reaches here with a thickness near zero.
+        let s = textureSampleLevel(splat, field_sampler, uv, 0.0);
+        let t = s.g / max(s.r, 1e-6);
+        if (wheel) {
+            let d = textureSampleLevel(flow, field_sampler, uv, 0.0).rg;
+            // The wheel takes over as the square, as it does on the
+            // discs in sim_sprites.wgsl.
+            colour = mix(optics.flat.rgb, hue_colour(atan2(d.y, d.x) / TAU + 0.5), t * t);
+        } else {
+            colour = mix(optics.flat.rgb, optics.high.rgb, t);
+        }
+    }
+    return vec4f(select(vec3f(0.0), colour, water), 1.0);
+}
+
+// The wheel's own fill. Bound only by a flat look with the direction
+// lens on, so it takes the flat branch without testing for it.
+@fragment
+fn surface_wheel_frag(in: FillVertex) -> @location(0) vec4f {
+    let f = textureSampleLevel(field, field_sampler, in.uv, 0.0);
+    return flat_look(in.uv, f.r / optics.field_settled, true);
+}
+
 @fragment
 fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     let f = textureSampleLevel(field, field_sampler, in.uv, 0.0);
     let rel = f.r / optics.field_settled;
     let a = smoothstep(EDGE_LO, EDGE_HI, rel);
 
-    // The flat look: the water where the thickness crosses the band's
-    // midpoint, black everywhere else, and a hard edge between them
-    // (Jack, 2026-09-02). One chosen colour, or the ramp across the
-    // body. The particle view skips this pass entirely.
     if (optics.flat.w > 0.0) {
-        let water = rel >= 0.5 * (EDGE_LO + EDGE_HI);
-        var colour = optics.flat.rgb;
-        if (optics.high.w > 0.0) {
-            // The threshold above is what makes the divide safe: no
-            // pixel reaches here with a thickness near zero.
-            let s = textureSampleLevel(splat, field_sampler, in.uv, 0.0);
-            let t = s.g / max(s.r, 1e-6);
-            var high = optics.high.rgb;
-            var mixed = t;
-            if (optics.high.w > 1.0) {
-                let d = textureSampleLevel(flow, field_sampler, in.uv, 0.0).rg;
-                high = hue_colour(atan2(d.y, d.x) / TAU + 0.5);
-                // The wheel takes over as the square, as it does on
-                // the discs in sim_sprites.wgsl.
-                mixed = t * t;
-            }
-            colour = mix(optics.flat.rgb, high, mixed);
-        }
-        return vec4f(select(vec3f(0.0), colour, water), 1.0);
+        return flat_look(in.uv, rel, false);
     }
 
     // This pixel on the back wall, metres, y up.

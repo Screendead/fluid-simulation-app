@@ -275,23 +275,31 @@ fn body_quad(v: u32, at: vec2f, radius: f32, z: f32) -> BodyVertex {
     return out;
 }
 
-@vertex
-fn disc(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyVertex {
+// A disc keeps its full size inside a body of water and shrinks as its
+// neighbourhood thins, never below the pixel floor the immediates
+// carry.
+fn disc_quad(v: u32, i: u32, z: f32) -> BodyVertex {
     let crowd = clamp(
         (density[i] / params.rho0 - LONE_RHO) / (BODY_RHO - LONE_RHO),
         0.0,
         1.0,
     );
-    let radius = mix(paint.r_min, params.h * DISC_RADIUS, crowd);
+    return body_quad(v, positions[i].xy, mix(paint.r_min, params.h * DISC_RADIUS, crowd), z);
+}
+
+// The wheel has a pipeline of its own, vertex and fragment both. Left
+// on a branch inside these two, its arithmetic cost the ordinary disc
+// draw 500 microseconds a frame on a branch that draw never takes —
+// registers are allocated for an entry point whole, taken branch or
+// not (reference device, 2026-09-02; the fill pass in sim_surface.wgsl
+// carried the same fault).
+@vertex
+fn disc(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyVertex {
     var lens = 0.0;
     if paint.high.w > 0.0 {
-        if paint.lens == DIRECTION {
-            lens = wheel_at(i);
-        } else {
-            lens = lens_at(i);
-        }
+        lens = lens_at(i);
     }
-    return body_quad(v, positions[i].xy, radius, lens);
+    return disc_quad(v, i, lens);
 }
 
 @fragment
@@ -299,10 +307,20 @@ fn disc_frag(in: BodyVertex) -> @location(0) vec4f {
     if dot(in.corner, in.corner) > 1.0 {
         discard;
     }
-    if paint.lens == DIRECTION && paint.high.w > 0.0 {
-        return vec4f(wheel_colour(in.clip.z), 1.0);
-    }
     // With no ramp the high colour is zero and so is the lens, so the
     // mix is the low colour and needs no branch of its own.
     return vec4f(mix(paint.low.rgb, paint.high.rgb, in.clip.z), 1.0);
+}
+
+@vertex
+fn disc_wheel(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyVertex {
+    return disc_quad(v, i, wheel_at(i));
+}
+
+@fragment
+fn disc_wheel_frag(in: BodyVertex) -> @location(0) vec4f {
+    if dot(in.corner, in.corner) > 1.0 {
+        discard;
+    }
+    return vec4f(wheel_colour(in.clip.z), 1.0);
 }

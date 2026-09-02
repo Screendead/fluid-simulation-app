@@ -1358,8 +1358,10 @@ struct Sim {
     advect: wgpu::ComputePipeline,
     points: wgpu::RenderPipeline,
     discs: wgpu::RenderPipeline,
+    discs_wheel: wgpu::RenderPipeline,
     body: wgpu::RenderPipeline,
     body_flow: wgpu::RenderPipeline,
+    fill_wheel: wgpu::RenderPipeline,
     decay: wgpu::RenderPipeline,
     fill: wgpu::RenderPipeline,
     fill_layout: wgpu::BindGroupLayout,
@@ -1890,6 +1892,34 @@ impl Sim {
                 multiview_mask: None,
                 cache: None,
             }),
+            discs_wheel: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim discs wheel"),
+                layout: Some(&paint_pl),
+                vertex: wgpu::VertexState {
+                    module: &sprite_module,
+                    entry_point: Some("disc_wheel"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &sprite_module,
+                    entry_point: Some("disc_wheel_frag"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::COLOR,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            }),
             body: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("sim body"),
                 layout: Some(&paint_pl),
@@ -1992,6 +2022,31 @@ impl Sim {
                 fragment: Some(wgpu::FragmentState {
                     module: &surface_module,
                     entry_point: Some("surface_frag"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(OVER),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            }),
+            fill_wheel: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim fill wheel"),
+                layout: Some(&fill_pl),
+                vertex: wgpu::VertexState {
+                    module: &surface_module,
+                    entry_point: Some("fill"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &surface_module,
+                    entry_point: Some("surface_wheel_frag"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
@@ -3219,7 +3274,11 @@ impl Renderer {
                     // Clip space spans the extent, so a pixel is that
                     // much of it over half the drawable's width.
                     let metres_per_px = 2.0 * s.extent[0] / self.config.width as f32;
-                    pass.set_pipeline(&s.discs);
+                    pass.set_pipeline(if paint.high[3] > 1.0 {
+                        &s.discs_wheel
+                    } else {
+                        &s.discs
+                    });
                     pass.set_immediates(
                         0,
                         &pack_paint(
@@ -3234,7 +3293,7 @@ impl Renderer {
                     pass.draw(0..4, 0..s.count);
                 }
                 Mode::Sim(s) => {
-                    pass.set_pipeline(&s.fill);
+                    pass.set_pipeline(if wheel { &s.fill_wheel } else { &s.fill });
                     pass.set_immediates(0, &optics);
                     pass.set_bind_group(0, &s.fill_bind, &[]);
                     pass.draw(0..3, 0..1);
@@ -4067,7 +4126,7 @@ mod tests {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&sim.fill);
+            pass.set_pipeline(if wheel { &sim.fill_wheel } else { &sim.fill });
             pass.set_immediates(0, &optics);
             pass.set_bind_group(0, &sim.fill_bind, &[]);
             pass.draw(0..3, 0..1);
@@ -4154,7 +4213,9 @@ mod tests {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&sim.discs);
+            let wheel =
+                f32::from_le_bytes(paint[28..32].try_into().expect("the high colour's w")) > 1.0;
+            pass.set_pipeline(if wheel { &sim.discs_wheel } else { &sim.discs });
             pass.set_immediates(0, &paint);
             pass.set_bind_group(0, &sim.sprite_bind, &[]);
             pass.draw(0..4, 0..sim.count);
