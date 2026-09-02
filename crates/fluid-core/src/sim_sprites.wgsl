@@ -91,9 +91,14 @@ fn dot_frag(in: PointVertex) -> @location(0) vec4f {
 // The liquid body: each solver particle splats its kernel footprint
 // into the half-resolution field the surface pass thresholds.
 struct BodyVertex {
+    // z carries the particle's place on the ramp, 0 to 1. Neither pass
+    // has a depth attachment, so clip z is an interpolant already paid
+    // for, and a varying of its own is not cheap: one flat vec3 on the
+    // disc draw cost 490 us a frame at 1,620 discs (reference device,
+    // 2026-09-02). Every vertex of a quad carries the same value, so
+    // the fragment reads it back exactly.
     @builtin(position) clip: vec4f,
     @location(0) corner: vec2f,
-    @location(1) lens: f32,
 }
 
 @vertex
@@ -104,12 +109,12 @@ fn body(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyV
     // 1.5 h, or the flat pose fails: gravity into the glass spreads
     // the fluid one particle deep, in-plane neighbours sit millimetres
     // apart, and footprints of radius h leave holes between particles.
-    out.clip = vec4f((positions[i].xy + corner * params.h * 1.5) / extent, 0.0, 1.0);
-    out.corner = corner;
-    out.lens = 0.0;
+    var lens = 0.0;
     if paint.high.w > 0.0 {
-        out.lens = lens_at(i);
+        lens = lens_at(i);
     }
+    out.clip = vec4f((positions[i].xy + corner * params.h * 1.5) / extent, lens, 1.0);
+    out.corner = corner;
     return out;
 }
 
@@ -125,7 +130,7 @@ fn weight(in: BodyVertex) -> @location(0) vec4f {
     // The second channel is the same splat weighted by the lens, so
     // the surface recovers a kernel-weighted mean by dividing. Both
     // channels decay together, which leaves the ratio alone.
-    return vec4f(w, w * in.lens, 0.0, 0.0);
+    return vec4f(w, w * in.clip.z, 0.0, 0.0);
 }
 
 // The particle view (M5 record): the water is its own particles, each
@@ -196,14 +201,8 @@ fn lens_at(i: u32) -> f32 {
     return clamp((m - paint.lo) / (paint.hi - paint.lo), 0.0, 1.0);
 }
 
-struct DiscVertex {
-    @builtin(position) clip: vec4f,
-    @location(0) corner: vec2f,
-    @location(1) @interpolate(flat) tint: vec3f,
-}
-
 @vertex
-fn disc(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> DiscVertex {
+fn disc(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyVertex {
     let extent = -(params.box_min.xy + vec2f(params.cell));
     let corner = vec2f(f32(v & 1u), f32(v >> 1u)) * 2.0 - 1.0;
     let crowd = clamp(
@@ -212,22 +211,22 @@ fn disc(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> DiscV
         1.0,
     );
     let radius = mix(paint.r_min, params.h * DISC_RADIUS, crowd);
-    var out: DiscVertex;
-    out.clip = vec4f((positions[i].xy + corner * radius) / extent, 0.0, 1.0);
-    out.corner = corner;
-    // A disc is one particle, so its colour is that particle's place
-    // on the ramp and nothing is interpolated across it.
-    out.tint = paint.low.rgb;
+    var lens = 0.0;
     if paint.high.w > 0.0 {
-        out.tint = mix(paint.low.rgb, paint.high.rgb, lens_at(i));
+        lens = lens_at(i);
     }
+    var out: BodyVertex;
+    out.clip = vec4f((positions[i].xy + corner * radius) / extent, lens, 1.0);
+    out.corner = corner;
     return out;
 }
 
 @fragment
-fn disc_frag(in: DiscVertex) -> @location(0) vec4f {
+fn disc_frag(in: BodyVertex) -> @location(0) vec4f {
     if dot(in.corner, in.corner) > 1.0 {
         discard;
     }
-    return vec4f(in.tint, 1.0);
+    // With no ramp the high colour is zero and so is the lens, so the
+    // mix is the low colour and needs no branch of its own.
+    return vec4f(mix(paint.low.rgb, paint.high.rgb, in.clip.z), 1.0);
 }

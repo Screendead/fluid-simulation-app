@@ -471,6 +471,23 @@ never runs. That saves a second blurred channel and a second filter
 pipeline. The threshold that decides water from air runs first, so the
 divide never sees a thickness near zero.
 
+**A varying is not free on the A15.** The disc first carried its
+colour to the fragment as one flat `vec3`. That cost 490 microseconds a
+frame at 1,620 discs — 877 to 1,368 on the render pass, with the
+compute pass untouched at 1,350 (reference device, 2026-09-02, per-pass
+timestamps, particle view on a still desk). Neither the acceleration
+buffer, the nineteenth storage binding, the two new sprite bindings nor
+the lens read itself moved the number; removing the varying restored it
+exactly.
+
+Both passes carry the ramp in clip `z` instead. Neither has a depth
+attachment, so `z` is an interpolant already paid for, and every vertex
+of a quad carries the same value, so the fragment reads it back exactly.
+The lens is clamped to 0 to 1, which is the whole clip range, so no
+primitive can be clipped by it. With that, the lenses cost nothing
+measurable: 2,248 microseconds against the pre-lens 2,240 and the
+pre-drag 2,439.
+
 The glass look stays glass. Jack's directive of 2026-08-30 makes the
 water renderer the default view and puts every field lens behind the
 menu; a metric tint over real refraction would fight both. A vertex
@@ -483,6 +500,28 @@ still holds with one colour chosen, which is the default. With two, the
 body carries the ramp between them — and the hard water/air edge, the
 part of the rule that is about the look rather than the count, is
 unchanged: no blur, no fade, water or black.
+
+## Measured (reference device, 2026-09-02, evening)
+
+Particle view at 1x, phone flat and still on a desk, `devicectl`
+console over the fall-and-settle and into the idle gate. One build a
+row, each launched cold.
+
+| Build | GPU p50 settled | Frame interval |
+|---|---|---|
+| Before the drag (`4c4436d`) | 2,439 µs | 120 Hz |
+| Drag and multi-touch (`24d01f5`) | 2,240 µs | 120 Hz |
+| Lenses, with the disc varying | 2,723 µs | 120 Hz |
+| Lenses, ramp in clip z | 2,248 µs | 120 Hz |
+
+Both features are free. The 2,240 against 2,439 is a small unexplained
+win in the drag commit, reproduced twice; it is not claimed as one.
+
+The two-span split above came from a throwaway build that printed the
+compute and render timestamps apart instead of summing them. That is
+the tool to reach for again: the summed number said only that a frame
+had grown, and four wrong hypotheses died before the split named the
+pass in one run.
 
 ## Tested and exercised
 
