@@ -188,11 +188,12 @@ pub unsafe extern "C" fn fluid_renderer_touch(
 /// alone as discs. `particles` alone does nothing.
 ///
 /// `low` is the one colour when `gradient` is false. When it is true,
-/// the colour runs from `low` to `high` across `lens`, whose range the
-/// core derives from the box: 0 velocity, 1 acceleration, 2 pressure,
-/// 3 proximity, 4 temperature, and anything else velocity. Colour
-/// components are 0 to 1 as the picker shows them; the core
-/// linearises them.
+/// the colour runs from `low` to `high` across `lens`, between the
+/// lowest and highest the frame itself holds: 0 velocity,
+/// 1 acceleration, 2 pressure, 3 proximity, and anything else
+/// velocity. 4 is the direction wheel, which takes its hue from which
+/// way the water goes and reads no `high`. Colour components are 0 to
+/// 1 as the picker shows them; the core linearises them.
 ///
 /// # Safety
 ///
@@ -215,7 +216,7 @@ pub unsafe extern "C" fn fluid_renderer_set_look(
                 1 => Lens::Acceleration,
                 2 => Lens::Pressure,
                 3 => Lens::Proximity,
-                4 => Lens::Temperature,
+                4 => Lens::Direction,
                 _ => Lens::Velocity,
             },
         }

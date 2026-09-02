@@ -197,7 +197,7 @@ pub fn film(
     });
     let stats = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("film stats"),
-        size: 44,
+        size: STATS_BYTES,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -391,7 +391,7 @@ pub fn film(
             pass.set_bind_group(0, &sim.tracer_draw_bind, &[]);
             pass.draw(0..sim.tracer_count, 0..1);
         }
-        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &stats, 0, 44);
+        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &stats, 0, STATS_BYTES);
         let sampled = f % every == 0;
         if sampled {
             encoder.copy_texture_to_buffer(
@@ -573,16 +573,20 @@ pub enum Lens {
     /// Speed, metres per second.
     Velocity,
     /// The whole velocity change over a substep, metres per second
-    /// squared: body force, viscosity, tension and pressure together.
+    /// squared: body force, viscosity, tension and pressure together,
+    /// as a running mean.
     Acceleration,
-    /// The solver's pressure, pascals.
+    /// The solver's pressure, pascals, as a running mean.
     Pressure,
     /// How crowded a particle's neighbourhood is — its density against
     /// rest density. Jack's word for it, 2026-09-02.
     Proximity,
-    /// Kelvin above the box's starting temperature. Compression warms
-    /// water; this is that, in millionths of a degree.
-    Temperature,
+    /// Which way the water goes, as a hue around the wheel, taking
+    /// over from the low colour as it speeds up. Jack's pick,
+    /// 2026-09-02, in place of temperature: a box that warms by
+    /// millionths of a degree paints float noise, and neighbouring
+    /// particles carry no shared history to correlate.
+    Direction,
 }
 
 impl Lens {
@@ -594,62 +598,106 @@ impl Lens {
             Lens::Acceleration => 1,
             Lens::Pressure => 2,
             Lens::Proximity => 3,
-            Lens::Temperature => 4,
+            Lens::Direction => 4,
         }
     }
 
-    /// The two ends of the ramp, in the lens's own units. `warmth` is
-    /// the frame's own coldest and hottest particle, kelvin, which
-    /// only the temperature lens reads.
-    ///
-    /// Four of the five are derived and fixed, so the same water reads
-    /// the same colour from one frame to the next. The anchor for
-    /// three of those is the settled column: the seeded slab fills the
-    /// lower half of the box, so its height `h` is the box's
-    /// half-height, and its floor carries `rho0 * g * h` of pressure.
-    /// Full colour then means as much of the quantity as the water's
-    /// own weight can make, which survives a change of box or of
-    /// scale. Proximity has rest density for an anchor instead.
-    fn range(self, extent: [f32; 2], warmth: [f32; 2]) -> [f32; 2] {
-        let h = extent[1];
-        let hydrostatic = sim::REST_DENSITY * crate::STANDARD_GRAVITY * h;
+    /// The two ends the frame itself set, from the reduce_stats block
+    /// in sim_solve.wgsl. Jack, 2026-09-02: "The gradient should go
+    /// from the lowest value actually present in the sim to the
+    /// highest actually present." The wheel ramps its hue in over
+    /// speed, so it reads the velocity lens's pair.
+    fn ends(self, stats: &[f32; STATS]) -> [f32; 2] {
         match self {
-            // The speed of a fall down the whole column.
-            Lens::Velocity => [0.0, (2.0 * crate::STANDARD_GRAVITY * h).sqrt()],
-            Lens::Acceleration => [0.0, crate::STANDARD_GRAVITY],
-            // Twice hydrostatic, because the solver's pressure is not
-            // the column's weight but the warm start's steady state:
-            // forces_eval opens each substep at half the last one's
-            // pressure and the solve adds its corrections on top, so a
-            // converged substep settles at twice what it corrects.
-            // Measured 2.41 times hydrostatic at the floor of a
-            // settled column (this machine, 2026-09-02,
-            // a_settled_column_lands_inside_every_lens), which puts
-            // the pool's floor at the top of the ramp and its surface
-            // at the bottom.
-            Lens::Pressure => [0.0, 2.0 * hydrostatic],
-            // The disc law's empty end (M5 record): a lone particle
-            // carries only its own kernel weight, a body reads rest.
-            Lens::Proximity => [LONE_RHO * sim::REST_DENSITY, sim::REST_DENSITY],
-            // The one lens that ranges over the frame it paints.
-            // Viscous heating is irreversible, so a particle's
-            // temperature is a history, not a state, and it climbs for
-            // as long as the app runs: any fixed ceiling goes dead. Its
-            // spatial spread is what the lens is for, and that is what
-            // the frame's own two ends give. The floor on the span is
-            // the adiabatic rise under the hydrostatic pressure above,
-            // so a box of uniform water paints flat instead of turning
-            // float noise into a rainbow.
-            Lens::Temperature => {
-                let lo = warmth[0] - sim::AMBIENT_TEMPERATURE;
-                let adiabatic = sim::AMBIENT_TEMPERATURE * sim::EXPANSION * hydrostatic
-                    / (sim::REST_DENSITY * sim::HEAT_CAPACITY);
-                [
-                    lo,
-                    (warmth[1] - sim::AMBIENT_TEMPERATURE).max(lo + adiabatic),
-                ]
-            }
+            Lens::Velocity | Lens::Direction => [stats[11], stats[6]],
+            Lens::Acceleration => [stats[12], stats[13]],
+            Lens::Pressure => [stats[4], stats[5]],
+            Lens::Proximity => [stats[2], stats[3]],
         }
+    }
+
+    /// The narrowest span worth a ramp, in the lens's own units. Water
+    /// whose spread is under it is uniform as far as the eye goes, and
+    /// stretching a ramp across the solver's own noise paints confetti:
+    /// a settled pool's speeds span 0.02 m/s and every particle walks
+    /// the whole of that every frame (measured 2026-09-02, this
+    /// machine). Three of the four are the quantity one particle
+    /// spacing of water carries, so each scales with the ladder.
+    fn floor(self, spacing: f32) -> f32 {
+        match self {
+            // The speed of a fall through one spacing. A settled pool
+            // is a twentieth of it.
+            Lens::Velocity | Lens::Direction => (2.0 * crate::STANDARD_GRAVITY * spacing).sqrt(),
+            // The fall itself: water thrown about by less than one
+            // gravity is not being thrown about.
+            Lens::Acceleration => crate::STANDARD_GRAVITY,
+            // The weight of one spacing of water.
+            Lens::Pressure => sim::REST_DENSITY * crate::STANDARD_GRAVITY * spacing,
+            // A percent of rest density; the settled body's own
+            // compression spans a fifth of that.
+            Lens::Proximity => 0.01 * sim::REST_DENSITY,
+        }
+    }
+}
+
+/// The ends of the live lens's ramp, chased frame by frame rather than
+/// taken. A frame's own extremes walk far enough to shift every colour
+/// on the screen at once — a settled pool's speed ceiling moves a
+/// seventh of its own span every frame (measured 2026-09-02, this
+/// machine) — and the eye reads that as the water flickering.
+struct Ramp {
+    lens: Option<Lens>,
+    ends: [f32; 2],
+}
+
+impl Ramp {
+    /// Opening out is quick, so a splash has its colours within a
+    /// third of a second; closing in is slow, so the palette does not
+    /// breathe every time the fastest particle slows down.
+    const OPEN_TAU: f32 = 0.15;
+    const CLOSE_TAU: f32 = 0.6;
+
+    fn new() -> Self {
+        Self {
+            lens: None,
+            ends: [0.0; 2],
+        }
+    }
+
+    /// None until the first stats readback lands: the block starts
+    /// zeroed, and a ramp built on it would paint the whole box one
+    /// end of itself. Density is the test, since no water has none.
+    fn follow(
+        &mut self,
+        lens: Lens,
+        stats: &[f32; STATS],
+        spacing: f32,
+        dt: f32,
+    ) -> Option<[f32; 2]> {
+        if stats[3] <= 0.0 {
+            return None;
+        }
+        let floor = lens.floor(spacing);
+        let mut want = lens.ends(stats);
+        want[1] = want[1].max(want[0] + floor);
+        if self.lens != Some(lens) {
+            self.lens = Some(lens);
+            self.ends = want;
+            return Some(want);
+        }
+        for (i, (end, want)) in self.ends.iter_mut().zip(want).enumerate() {
+            // The low end opens by falling and the high end by rising.
+            let opening = if i == 0 { want < *end } else { want > *end };
+            let tau = if opening {
+                Self::OPEN_TAU
+            } else {
+                Self::CLOSE_TAU
+            };
+            *end += (want - *end) * (1.0 - (-dt / tau).exp());
+        }
+        // Both ends closing in at once can otherwise cross.
+        self.ends[1] = self.ends[1].max(self.ends[0] + floor);
+        Some(self.ends)
     }
 }
 
@@ -688,15 +736,14 @@ fn linear(c: f32) -> f32 {
     }
 }
 
+/// Slots in the reduce_stats block of sim_solve.wgsl, one f32 each.
+/// The shader is the authority on what each one holds.
+const STATS: usize = 14;
+const STATS_BYTES: u64 = STATS as u64 * 4;
+
 /// The smallest a disc of the particle view may draw, in pixels of
 /// the drawable. Jack, 2026-09-02: "They should never be 1px".
 const MIN_DISC_PX: f32 = 3.0;
-
-/// The empty end of the disc law (M5 record), as a fraction of rest
-/// density, mirrored from sim_sprites.wgsl: a lone particle carries
-/// only its own kernel weight. Also the low end of the proximity
-/// lens, which measures the same thing the law does.
-const LONE_RHO: f32 = 0.25;
 
 /// The Paint immediates block in sim_sprites.wgsl, which the disc
 /// draw and the body splat share: the two colours in linear light,
@@ -716,11 +763,12 @@ fn pack_paint(low: [f32; 4], high: [f32; 4], range: [f32; 2], lens: u32, r_min: 
     raw
 }
 
-/// What the shaders need to know about a look, packed once when it is
-/// set: the low colour with a one in w for either flat look, the high
-/// colour with a one in w when the ramp is on, the lens code, and the
-/// ends of its ramp. The glass is all zeros, which is how every shader
-/// knows it is drawing glass.
+/// What the shaders need to know about a look: the low colour with a
+/// one in w for either flat look, the high colour whose w says how the
+/// body is painted (0 the low colour alone, 1 the ramp, 2 the
+/// direction wheel), the lens code, and the ends of its ramp. The
+/// glass is all zeros, which is how every shader knows it is drawing
+/// glass.
 #[derive(Clone, Copy)]
 struct Painted {
     low: [f32; 4],
@@ -730,7 +778,10 @@ struct Painted {
 }
 
 impl Painted {
-    fn new(look: Look, extent: [f32; 2], warmth: [f32; 2]) -> Painted {
+    /// `ends` is the live ramp, or None where there is no ramp to
+    /// draw: a solid colour, the glass, or a lens whose field has not
+    /// been read back yet.
+    fn new(look: Look, ends: Option<[f32; 2]>) -> Painted {
         let paint = match look {
             Look::Glass => {
                 return Painted {
@@ -742,25 +793,24 @@ impl Painted {
             }
             Look::Flat(p) | Look::Particles(p) => p,
         };
-        let colour = |c: [f32; 3]| [linear(c[0]), linear(c[1]), linear(c[2]), 1.0];
-        match paint {
-            Paint::Solid(c) => Painted {
-                low: colour(c),
+        let colour = |c: [f32; 3], w: f32| [linear(c[0]), linear(c[1]), linear(c[2]), w];
+        match (paint, ends) {
+            (Paint::Ramp { low, high, lens }, Some(range)) => Painted {
+                low: colour(low, 1.0),
+                // The wheel paints its own colours over the whole
+                // ramp, so the high colour goes unread and its slot
+                // carries the two apart instead.
+                high: colour(high, if lens == Lens::Direction { 2.0 } else { 1.0 }),
+                lens: lens.code(),
+                range,
+            },
+            (Paint::Solid(c), _) | (Paint::Ramp { low: c, .. }, None) => Painted {
+                low: colour(c, 1.0),
                 high: [0.0; 4],
                 lens: 0,
                 range: [0.0, 1.0],
             },
-            Paint::Ramp { low, high, lens } => Painted {
-                low: colour(low),
-                high: colour(high),
-                lens: lens.code(),
-                range: lens.range(extent, warmth),
-            },
         }
-    }
-
-    fn flat(&self) -> bool {
-        self.low[3] > 0.0
     }
 }
 
@@ -1309,6 +1359,7 @@ struct Sim {
     points: wgpu::RenderPipeline,
     discs: wgpu::RenderPipeline,
     body: wgpu::RenderPipeline,
+    body_flow: wgpu::RenderPipeline,
     decay: wgpu::RenderPipeline,
     fill: wgpu::RenderPipeline,
     fill_layout: wgpu::BindGroupLayout,
@@ -1316,6 +1367,7 @@ struct Sim {
     field_sampler: wgpu::Sampler,
     field: wgpu::TextureView,
     filter: wgpu::ComputePipeline,
+    flow: wgpu::TextureView,
     filtered: wgpu::TextureView,
     filter_bind: wgpu::BindGroup,
     filter_groups: [u32; 2],
@@ -1328,7 +1380,7 @@ struct Sim {
     sprite_bind: wgpu::BindGroup,
     stats_src: wgpu::Buffer,
     stats_staging: [StagingSlot; 3],
-    stats: [f32; 11],
+    stats: [f32; STATS],
     spacing: f32,
     field_settled: f32,
     extent: [f32; 2],
@@ -1338,9 +1390,10 @@ struct Sim {
     max_substeps: u32,
     substeps_used: u32,
     field_keep: f32,
-    // The thickness field accumulates across frames, so a frame that
-    // skipped it, and a texture just built, leave nothing to keep.
+    // Both fields accumulate across frames, so a frame that skipped
+    // one, and a texture just built, leave it nothing to keep.
     field_live: bool,
+    flow_live: bool,
     frame_seed: u32,
     #[cfg(test)]
     tracers: wgpu::Buffer,
@@ -1350,6 +1403,8 @@ struct Sim {
     positions: wgpu::Buffer,
     #[cfg(test)]
     velocities: wgpu::Buffer,
+    #[cfg(test)]
+    prev_vel: wgpu::Buffer,
 }
 
 impl Sim {
@@ -1424,8 +1479,8 @@ impl Sim {
         let nbr_n = storage("sim neighbour counts", u64::from(count) * 4, none);
         let nbr_over = storage("sim neighbour overflow", 4, none);
         let wall_grad = storage("sim wall gradients", u64::from(count) * 16, none);
-        let prev_vel = storage("sim previous velocities", u64::from(count) * 16, none);
-        let stats_src = storage("sim stats", 44, wgpu::BufferUsages::COPY_SRC);
+        let prev_vel = storage("sim previous velocities", u64::from(count) * 16, readback);
+        let stats_src = storage("sim stats", STATS_BYTES, wgpu::BufferUsages::COPY_SRC);
         // The box starts at the lab constants' temperature, 20 C.
         let temperature = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim temperature"),
@@ -1465,7 +1520,7 @@ impl Sim {
         let stats_staging = std::array::from_fn(|_| StagingSlot {
             buffer: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("sim stats staging"),
-                size: 44,
+                size: STATS_BYTES,
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -1578,11 +1633,6 @@ impl Sim {
                     vertex,
                     wgpu::BufferBindingType::Storage { read_only: true },
                 ),
-                buffer_entry(
-                    6,
-                    vertex,
-                    wgpu::BufferBindingType::Storage { read_only: true },
-                ),
             ],
         });
         fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
@@ -1671,8 +1721,7 @@ impl Sim {
                 entry(1, &positions),
                 entry(2, &velocities),
                 entry(4, &density),
-                entry(5, &pressure),
-                entry(6, &temperature),
+                entry(5, &prev_vel),
             ],
         );
 
@@ -1702,12 +1751,20 @@ impl Sim {
             ..Default::default()
         });
         let field = field_view(device, "sim field", surface);
+        let flow = field_view(device, "sim flow", surface);
         // The optics read the field through field_filter: the raw splat
         // in, the blurred thickness with its differences out, and the
         // fill pass samples that.
         let filter_layout = layout_filter(device);
         let filtered = filtered_view(device, surface);
-        let fill_bind = field_bind(device, &fill_layout, &filtered, &field_sampler, &field);
+        let fill_bind = field_bind(
+            device,
+            &fill_layout,
+            &filtered,
+            &field_sampler,
+            &field,
+            &flow,
+        );
         let filter_bind = filter_bind(device, &filter_layout, &field, &filtered);
         let surface_module = module("sim_surface", include_str!("sim_surface.wgsl"));
         let fill_pl = pipe_layout("sim surface", &fill_layout, 80);
@@ -1861,6 +1918,34 @@ impl Sim {
                 multiview_mask: None,
                 cache: None,
             }),
+            body_flow: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim body flow"),
+                layout: Some(&paint_pl),
+                vertex: wgpu::VertexState {
+                    module: &sprite_module,
+                    entry_point: Some("body_flow"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &sprite_module,
+                    entry_point: Some("flow"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rg16Float,
+                        blend: Some(SPLAT),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            }),
             decay: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("sim decay"),
                 layout: Some(
@@ -1929,6 +2014,7 @@ impl Sim {
                 compilation_options: Default::default(),
                 cache: None,
             }),
+            flow,
             filtered,
             filter_bind,
             filter_groups: filter_groups(surface),
@@ -1941,7 +2027,7 @@ impl Sim {
             sprite_bind,
             stats_src,
             stats_staging,
-            stats: [0.0; 11],
+            stats: [0.0; STATS],
             spacing,
             field_settled: FIELD_SETTLED * SIM_SPACING / spacing,
             extent,
@@ -1952,6 +2038,7 @@ impl Sim {
             substeps_used: 0,
             field_keep: FIELD_KEEP,
             field_live: false,
+            flow_live: false,
             frame_seed: 0,
             #[cfg(test)]
             tracers,
@@ -1961,6 +2048,8 @@ impl Sim {
             positions,
             #[cfg(test)]
             velocities,
+            #[cfg(test)]
+            prev_vel,
         }
     }
 }
@@ -1968,6 +2057,7 @@ impl Sim {
 impl Sim {
     fn resize(&mut self, device: &wgpu::Device, surface: [u32; 2]) {
         self.field = field_view(device, "sim field", surface);
+        self.flow = field_view(device, "sim flow", surface);
         self.filtered = filtered_view(device, surface);
         self.fill_bind = field_bind(
             device,
@@ -1975,10 +2065,12 @@ impl Sim {
             &self.filtered,
             &self.field_sampler,
             &self.field,
+            &self.flow,
         );
         self.filter_bind = filter_bind(device, &self.filter_layout, &self.field, &self.filtered);
         self.filter_groups = filter_groups(surface);
         self.field_live = false;
+        self.flow_live = false;
     }
 }
 
@@ -2089,6 +2181,7 @@ fn field_bind(
     field: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
     splat: &wgpu::TextureView,
+    flow: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("sim surface"),
@@ -2105,6 +2198,10 @@ fn field_bind(
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: wgpu::BindingResource::TextureView(splat),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(flow),
             },
         ],
     })
@@ -2135,6 +2232,17 @@ fn layout_frag(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
             // has no place in a fragment layout.
             wgpu::BindGroupLayoutEntry {
                 binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // The direction lens's own field.
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -2521,6 +2629,7 @@ pub struct Renderer {
     force_filter: ForceFilter,
     rotation: RotationTracker,
     fingers: Fingers,
+    ramp: Ramp,
     idle: IdleGate,
     idle_frames: u64,
     mode: Mode,
@@ -2660,6 +2769,7 @@ impl Renderer {
             force_filter: ForceFilter::new(),
             rotation: RotationTracker::new(),
             fingers: Fingers::new(),
+            ramp: Ramp::new(),
             idle: IdleGate::new(),
             idle_frames: 0,
             mode,
@@ -2764,24 +2874,7 @@ impl Renderer {
             Mode::Sim(s) => s.extent,
             _ => [1.0; 2],
         };
-        // The temperature lens ranges over the frame; the stats
-        // readback is a second stale, which no eye can see in a field
-        // that drifts over minutes.
-        let warmth = match &self.mode {
-            // The stats buffer starts zeroed and its first readback is
-            // a frame or two out. No real temperature is zero kelvin,
-            // so that is the test: until one arrives the ramp spans
-            // the ambient band and the box paints its low colour,
-            // rather than clamping every particle to the high one.
-            Mode::Sim(s) if s.stats[8] > 0.0 => [s.stats[7], s.stats[8]],
-            _ => [sim::AMBIENT_TEMPERATURE; 2],
-        };
-        let paint = Painted::new(self.look, extent, warmth);
-        let optics = match &self.mode {
-            Mode::Sim(s) => pack_optics(force, extent, s.field_settled, paint.low, paint.high),
-            _ => [0; 80],
-        };
-        let flat = paint.flat();
+        let flat = !matches!(self.look, Look::Glass);
         // The particle view draws the solver's own particles, so it
         // needs no thickness field: the splat, the blur and the
         // surface pass go unencoded.
@@ -2816,6 +2909,24 @@ impl Renderer {
         } else {
             sim::Touches::default()
         };
+        // The ramp chases the frame's own two ends, so it needs the
+        // frame's dt and the readback the gate above kept from
+        // advancing.
+        let ends = match (&self.mode, self.look) {
+            (
+                Mode::Sim(s),
+                Look::Flat(Paint::Ramp { lens, .. }) | Look::Particles(Paint::Ramp { lens, .. }),
+            ) => self.ramp.follow(lens, &s.stats, s.spacing, dt),
+            _ => None,
+        };
+        let paint = Painted::new(self.look, ends);
+        let optics = match &self.mode {
+            Mode::Sim(s) => pack_optics(force, extent, s.field_settled, paint.low, paint.high),
+            _ => [0; 80],
+        };
+        // The direction wheel is the one lens the surface cannot read
+        // out of the thickness field.
+        let wheel = field && paint.high[3] > 1.0;
         if let Mode::Sim(s) = &mut self.mode {
             // CFL: dt <= 0.4 d / v_max, from the one-frame-stale v_max
             // the stats readback drained. The GPU clamp enforces the dt
@@ -3016,6 +3127,53 @@ impl Renderer {
             pass.draw(0..4, 0..s.count);
         }
         if let Mode::Sim(s) = &self.mode
+            && wheel
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &s.flow,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                ..Default::default()
+            });
+            let keep = if s.flow_live {
+                f64::from(s.field_keep)
+            } else {
+                0.0
+            };
+            let splat = 1.0 - keep;
+            pass.set_pipeline(&s.decay);
+            pass.set_blend_constant(wgpu::Color {
+                r: keep,
+                g: keep,
+                b: keep,
+                a: keep,
+            });
+            pass.draw(0..3, 0..1);
+            pass.set_pipeline(&s.body_flow);
+            pass.set_immediates(
+                0,
+                &pack_paint(paint.low, paint.high, paint.range, paint.lens, 0.0),
+            );
+            pass.set_blend_constant(wgpu::Color {
+                r: splat,
+                g: splat,
+                b: splat,
+                a: splat,
+            });
+            pass.set_bind_group(0, &s.sprite_bind, &[]);
+            pass.draw(0..4, 0..s.count);
+        }
+        if let Mode::Sim(s) = &self.mode
             && field
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -3105,7 +3263,13 @@ impl Renderer {
                 .iter()
                 .position(|x| x.state.load(Ordering::Acquire) == SLOT_FREE);
             if let Some(i) = free {
-                encoder.copy_buffer_to_buffer(&s.stats_src, 0, &s.stats_staging[i].buffer, 0, 44);
+                encoder.copy_buffer_to_buffer(
+                    &s.stats_src,
+                    0,
+                    &s.stats_staging[i].buffer,
+                    0,
+                    STATS_BYTES,
+                );
             }
             free
         } else {
@@ -3113,6 +3277,7 @@ impl Renderer {
         };
         if let Mode::Sim(s) = &mut self.mode {
             s.field_live = field;
+            s.flow_live = wheel;
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.present(texture);
@@ -3222,7 +3387,7 @@ impl Renderer {
     pub fn stats(&self) -> RenderStats {
         let (f, substeps) = match &self.mode {
             Mode::Sim(s) => (s.stats, s.substeps_used),
-            _ => ([0.0; 11], 0),
+            _ => ([0.0; STATS], 0),
         };
         RenderStats {
             compression_avg: f[0],
@@ -3450,7 +3615,7 @@ mod tests {
     #[test]
     fn the_flat_colour_is_linearised() {
         let hot_pink = [1.0, 105.0 / 255.0, 180.0 / 255.0];
-        let solid = |look| Painted::new(look, [1.0, 1.0], [sim::AMBIENT_TEMPERATURE; 2]);
+        let solid = |look| Painted::new(look, None);
         let [r, g, b, w] = solid(Look::Flat(Paint::Solid(hot_pink))).low;
         assert_eq!((r, w), (1.0, 1.0));
         // The discs take their colour from the same word.
@@ -3525,10 +3690,10 @@ mod tests {
         frames: u32,
         gravity: [f32; 3],
         touches: sim::Touches,
-    ) -> [f32; 11] {
+    ) -> [f32; STATS] {
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stats staging"),
-            size: 44,
+            size: STATS_BYTES,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -3612,7 +3777,7 @@ mod tests {
             pass.set_pipeline(&sim.reduce_stats);
             pass.dispatch_workgroups(1, 1, 1);
         }
-        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &staging, 0, 44);
+        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &staging, 0, STATS_BYTES);
         queue.submit(std::iter::once(encoder.finish()));
         staging.map_async(wgpu::MapMode::Read, .., |_| {});
         device
@@ -3622,7 +3787,7 @@ mod tests {
             })
             .expect("poll");
         let bytes = staging.get_mapped_range(..).expect("mapped");
-        let mut out = [0.0f32; 11];
+        let mut out = [0.0f32; STATS];
         for (v, chunk) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
             *v = f32::from_le_bytes(*chunk);
         }
@@ -3783,7 +3948,7 @@ mod tests {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        read_stats(
+        let f = read_stats(
             &device,
             &queue,
             &sim,
@@ -3797,7 +3962,7 @@ mod tests {
         let paint = pack_paint(
             [1.0, 0.0, 0.0, 1.0],
             [0.0, 0.0, 1.0, 1.0],
-            Lens::Proximity.range(TEST_EXTENT, [sim::AMBIENT_TEMPERATURE; 2]),
+            Lens::Proximity.ends(&f),
             Lens::Proximity.code(),
             floor,
         );
@@ -3838,29 +4003,9 @@ mod tests {
             [0.0, -9.81, -0.5],
             sim::Touches::default(),
         );
-        let size = u64::from(sim.count) * 4;
-        let staging = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("density staging"),
-            size,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut encoder = device.create_command_encoder(&Default::default());
-        encoder.copy_buffer_to_buffer(&sim.density, 0, &staging, 0, size);
-        queue.submit(std::iter::once(encoder.finish()));
-        staging.map_async(wgpu::MapMode::Read, .., |_| {});
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .expect("poll");
-        let bytes = staging.get_mapped_range(..).expect("mapped");
-        let mut rho: Vec<f32> = bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|b| f32::from_le_bytes(*b) / sim::REST_DENSITY)
+        let mut rho: Vec<f32> = read_floats(&device, &queue, &sim.density, sim.count)
+            .into_iter()
+            .map(|r| r / sim::REST_DENSITY)
             .collect();
         rho.sort_unstable_by(f32::total_cmp);
         let at = |q: f32| rho[((rho.len() - 1) as f32 * q) as usize];
@@ -3883,7 +4028,24 @@ mod tests {
         let mass = sim::REST_DENSITY * SIM_SPACING.powi(3);
         let lone = mass * sim::kernel(0.0, h) / sim::REST_DENSITY;
         eprintln!("lone particle: {lone:.3} of rho0");
+        // The empty end of the disc law, mirrored from
+        // sim_sprites.wgsl.
+        const LONE_RHO: f32 = 0.25;
         assert!(lone <= LONE_RHO, "a lone drop would not shrink: {lone:.3}");
+    }
+
+    fn read_floats(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        buffer: &wgpu::Buffer,
+        count: u32,
+    ) -> Vec<f32> {
+        read_back(device, queue, buffer, u64::from(count) * 4)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect()
     }
 
     fn read_vec4(
@@ -3892,9 +4054,22 @@ mod tests {
         buffer: &wgpu::Buffer,
         count: u32,
     ) -> Vec<[f32; 4]> {
-        let size = u64::from(count) * 16;
+        read_back(device, queue, buffer, u64::from(count) * 16)
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .map(|c| std::array::from_fn(|i| f32::from_le_bytes(c.as_chunks::<4>().0[i])))
+            .collect()
+    }
+
+    fn read_back(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        buffer: &wgpu::Buffer,
+        size: u64,
+    ) -> Vec<u8> {
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("vec4 staging"),
+            label: Some("readback staging"),
             size,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -3909,13 +4084,27 @@ mod tests {
                 timeout: None,
             })
             .expect("poll");
-        let bytes = staging.get_mapped_range(..).expect("mapped");
-        bytes
-            .as_chunks::<16>()
-            .0
-            .iter()
-            .map(|c| std::array::from_fn(|i| f32::from_le_bytes(c.as_chunks::<4>().0[i])))
-            .collect()
+        let out = staging.get_mapped_range(..).expect("mapped").to_vec();
+        staging.unmap();
+        out
+    }
+
+    const LENSES: [Lens; 5] = [
+        Lens::Velocity,
+        Lens::Acceleration,
+        Lens::Pressure,
+        Lens::Proximity,
+        Lens::Direction,
+    ];
+
+    /// hue_colour in sim_sprites.wgsl, in the sRGB the picker shows;
+    /// the test compares colours against each other, never against the
+    /// linear-light ones the shader hands the hardware.
+    fn hue_rgb(h: f32) -> [f32; 3] {
+        std::array::from_fn(|i| {
+            let off = [1.0, 2.0 / 3.0, 1.0 / 3.0][i];
+            ((h + off).fract() * 6.0 - 3.0).abs().clamp(1.0, 2.0) - 1.0
+        })
     }
 
     // Jack, 2026-09-02: "It shouldn't repel; it should drag the water
@@ -4073,7 +4262,7 @@ mod tests {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        read_stats(
+        let f = read_stats(
             &device,
             &queue,
             &sim,
@@ -4134,7 +4323,7 @@ mod tests {
                 &pack_paint(
                     [1.0, 0.0, 0.0, 1.0],
                     [0.0, 0.0, 1.0, 1.0],
-                    Lens::Proximity.range(sim.extent, [sim::AMBIENT_TEMPERATURE; 2]),
+                    Lens::Proximity.ends(&f),
                     Lens::Proximity.code(),
                     0.0,
                 ),
@@ -4228,68 +4417,107 @@ mod tests {
         assert!(seen.len() >= 3, "the ramp painted one colour: {seen:?}");
     }
 
-    // A lens whose range is derived, not dialled, can still be dead:
-    // anchored so high that settled water sits black, or so low that
-    // it saturates. This measures where a settled column actually
-    // lands on each ramp. The numbers are the M5 record's.
+    // Jack, 2026-09-02: "the water is a bit flickery with the gradient
+    // on, at near-rest". A ramp between the frame's own two ends puts
+    // the solver's own noise on the screen unless the lens's field is
+    // quiet and the span has a floor under it. This measures both at
+    // once: how far a settled particle walks along its ramp from one
+    // frame to the next. The numbers are the M5 record's.
     #[test]
-    fn a_settled_column_lands_inside_every_lens() {
+    fn a_settled_pool_holds_its_colours_still() {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        let f = read_stats(
-            &device,
-            &queue,
-            &sim,
-            7,
-            600,
-            [0.0, -9.81, -0.5],
-            sim::Touches::default(),
-        );
-        let warmth = [f[7], f[8]];
-        let at = |lens: Lens, v: f32| {
-            let [lo, hi] = lens.range(TEST_EXTENT, warmth);
-            assert!(hi > lo, "{lens:?} has no range");
-            (v - lo) / (hi - lo)
-        };
-        let deep = at(Lens::Pressure, f[5]);
-        let body = at(Lens::Proximity, f[3]);
-        let fringe = at(Lens::Proximity, f[2]);
-        let hot = at(Lens::Temperature, f[8] - sim::AMBIENT_TEMPERATURE);
-        let cold = at(Lens::Temperature, f[7] - sim::AMBIENT_TEMPERATURE);
-        let quick = at(Lens::Velocity, f[6]);
+        let g = [0.0, -9.81, -0.5];
+        read_stats(&device, &queue, &sim, 7, 600, g, sim::Touches::default());
+        const FRAMES: usize = 30;
+        let mut walk = [0.0f64; 5];
+        let mut last: Option<Vec<[f32; 5]>> = None;
+        let mut ends = [[0.0f32; 2]; 5];
+        for _ in 0..FRAMES {
+            let f = read_stats(&device, &queue, &sim, 7, 1, g, sim::Touches::default());
+            for (lens, slot) in LENSES.into_iter().zip(&mut ends) {
+                *slot = Ramp::new()
+                    .follow(lens, &f, SIM_SPACING, 0.0)
+                    .expect("the readback is live after 600 frames");
+            }
+            let ramp = |lens: usize, v: f32| {
+                let [lo, hi] = ends[lens];
+                ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
+            };
+            let velocities = read_vec4(&device, &queue, &sim.velocities, sim.count);
+            let smooth_p = read_vec4(&device, &queue, &sim.prev_vel, sim.count);
+            let density = read_floats(&device, &queue, &sim.density, sim.count);
+            let now: Vec<[f32; 5]> = velocities
+                .iter()
+                .zip(&smooth_p)
+                .zip(&density)
+                .map(|((v, p), rho)| {
+                    let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                    [
+                        ramp(0, speed),
+                        ramp(1, v[3]),
+                        ramp(2, p[3]),
+                        ramp(3, *rho),
+                        // The wheel's own place on the screen: the
+                        // heading, taken as far as speed has mixed it
+                        // in, which is what the eye sees move.
+                        v[1].atan2(v[0]) / std::f32::consts::TAU + 0.5,
+                    ]
+                })
+                .collect();
+            if let Some(was) = last.replace(now) {
+                let now = last.as_ref().expect("just replaced");
+                for (a, b) in was.iter().zip(now) {
+                    for (lens, step) in walk.iter_mut().enumerate().take(4) {
+                        *step += f64::from((b[lens] - a[lens]).abs()) / now.len() as f64;
+                    }
+                    // The wheel moves in colour, not along a line.
+                    let wheel = |q: &[f32; 5]| {
+                        let c = hue_rgb(q[4]);
+                        std::array::from_fn::<f32, 3, _>(|i| c[i] * q[0] * q[0])
+                    };
+                    let (x, y) = (wheel(a), wheel(b));
+                    let d: f32 = (0..3).map(|i| (x[i] - y[i]).powi(2)).sum();
+                    walk[4] += f64::from(d.sqrt()) / now.len() as f64;
+                }
+            }
+        }
+        for step in &mut walk {
+            *step /= (FRAMES - 1) as f64;
+        }
         eprintln!(
-            "settled, as a fraction of each ramp: pressure to {deep:.2}, \
-             proximity {fringe:.2} to {body:.2}, temperature {cold:.2} to {hot:.2}, \
-             velocity to {quick:.3}"
+            "settled, walked along the ramp a frame: velocity {:.4}, acceleration {:.4}, \
+             pressure {:.4}, proximity {:.4}, direction {:.4}",
+            walk[0], walk[1], walk[2], walk[3], walk[4]
         );
-        // The pool's floor near the top of the pressure ramp, its
-        // surface at the bottom: the lens spends the depth of the
-        // water on the ramp instead of a corner of it.
-        assert!(
-            (0.3..1.6).contains(&deep),
-            "the pressure lens reads {deep:.2} of its ramp at the pool floor"
-        );
+        for (lens, step) in LENSES.into_iter().zip(walk) {
+            assert!(
+                step < 0.01,
+                "{lens:?} walks {step:.4} of its ramp a frame on settled water"
+            );
+        }
+        // The floor is what holds the speed ramp open: a settled pool
+        // spans a fraction of it and paints its low colour, where the
+        // frame's own two ends alone would stretch noise over the
+        // whole of it.
+        let quick = {
+            let [lo, hi] = ends[0];
+            let f = read_stats(&device, &queue, &sim, 7, 1, g, sim::Touches::default());
+            (f[6] - lo) / (hi - lo)
+        };
+        assert!((0.0..0.1).contains(&quick), "settled v {quick:.3}");
         // Proximity must separate the body from the free surface, and
         // a settled slab has no spray, so its sparsest particle is a
-        // surface one — the 0.67 of rest density the disc law
-        // measured, not an isolated drop.
-        assert!(
-            body > 0.9,
-            "a settled body is not a full neighbourhood: {body:.2}"
-        );
+        // surface one, not an isolated drop.
+        let f = read_stats(&device, &queue, &sim, 7, 1, g, sim::Touches::default());
+        let [lo, hi] = ends[3];
+        let fringe = (f[2] - lo) / (hi - lo);
+        let body = (f[3] - lo) / (hi - lo);
         assert!(
             body - fringe > 0.25,
             "the free surface reads as body: {fringe:.2} against {body:.2}"
         );
-        // The temperature ramp is the frame's own two ends, so it
-        // spans exactly them.
-        assert!(
-            cold.abs() < 1e-3 && (hot - 1.0).abs() < 1e-3,
-            "the temperature ramp missed the frame: {cold:.3} to {hot:.3}"
-        );
-        // Settled water is meant to be dark under the velocity lens.
-        assert!((0.0..0.1).contains(&quick), "settled v {quick:.3}");
     }
 
     // Seeds the real lattice, runs one rebuild and density sweep, and

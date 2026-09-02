@@ -19,6 +19,28 @@
 // is already smooth where the body is, and the blur exists for the
 // caustics, which the flat look never runs.
 @group(0) @binding(3) var splat: texture_2d<f32>;
+// The direction lens's own field: the kernel-weighted sum of the unit
+// heading vectors, which body_flow in sim_sprites.wgsl writes and only
+// that lens fills. An angle has no mean across the seam at half a
+// turn; the sum of the unit vectors has one everywhere.
+@group(0) @binding(4) var flow: texture_2d<f32>;
+
+const TAU: f32 = 6.2831855;
+
+// Both mirrored from sim_sprites.wgsl, which paints the same wheel on
+// the discs; a divergence is a bug.
+fn srgb_to_linear(c: vec3f) -> vec3f {
+    return select(
+        pow((c + vec3f(0.055)) / 1.055, vec3f(2.4)),
+        c / 12.92,
+        c <= vec3f(0.04045),
+    );
+}
+
+fn hue_colour(h: f32) -> vec3f {
+    let k = abs(fract(h + vec3f(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+    return srgb_to_linear(clamp(k - 1.0, vec3f(0.0), vec3f(1.0)));
+}
 
 struct Optics {
     up: vec3f,
@@ -28,9 +50,10 @@ struct Optics {
     glint_gain: f32,
     h: vec3f,
     // The flat look's two colours in linear light. flat.w is one for
-    // either flat look and zero for the glass; high.w is one only when
-    // the ramp is on, and then the colour runs low to high across the
-    // lens the splat already normalised into the field's g channel.
+    // either flat look and zero for the glass. high.w says how the
+    // body is painted: 0 the low colour alone, 1 the ramp from low to
+    // high across the lens the splat normalised into the field's g
+    // channel, 2 the direction wheel over that same channel.
     flat: vec4f,
     high: vec4f,
 }
@@ -204,7 +227,17 @@ fn surface_frag(in: FillVertex) -> @location(0) vec4f {
             // The threshold above is what makes the divide safe: no
             // pixel reaches here with a thickness near zero.
             let s = textureSampleLevel(splat, field_sampler, in.uv, 0.0);
-            colour = mix(optics.flat.rgb, optics.high.rgb, s.g / max(s.r, 1e-6));
+            let t = s.g / max(s.r, 1e-6);
+            var high = optics.high.rgb;
+            var mixed = t;
+            if (optics.high.w > 1.0) {
+                let d = textureSampleLevel(flow, field_sampler, in.uv, 0.0).rg;
+                high = hue_colour(atan2(d.y, d.x) / TAU + 0.5);
+                // The wheel takes over as the square, as it does on
+                // the discs in sim_sprites.wgsl.
+                mixed = t * t;
+            }
+            colour = mix(optics.flat.rgb, high, mixed);
         }
         return vec4f(select(vec3f(0.0), colour, water), 1.0);
     }

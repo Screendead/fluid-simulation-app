@@ -101,21 +101,35 @@ struct BodyVertex {
     @location(0) corner: vec2f,
 }
 
+// 1.5 h, or the flat pose fails: gravity into the glass spreads the
+// fluid one particle deep, in-plane neighbours sit millimetres apart,
+// and footprints of radius h leave holes between particles.
+const SPLAT_RADIUS: f32 = 1.5;
+
 @vertex
 fn body(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyVertex {
-    let extent = -(params.box_min.xy + vec2f(params.cell));
-    let corner = vec2f(f32(v & 1u), f32(v >> 1u)) * 2.0 - 1.0;
-    var out: BodyVertex;
-    // 1.5 h, or the flat pose fails: gravity into the glass spreads
-    // the fluid one particle deep, in-plane neighbours sit millimetres
-    // apart, and footprints of radius h leave holes between particles.
     var lens = 0.0;
     if paint.high.w > 0.0 {
         lens = lens_at(i);
     }
-    out.clip = vec4f((positions[i].xy + corner * params.h * 1.5) / extent, lens, 1.0);
-    out.corner = corner;
-    return out;
+    return body_quad(v, positions[i].xy, params.h * SPLAT_RADIUS, lens);
+}
+
+// The direction lens's own splat, into the second field: the surface
+// cannot take a mean of an angle across the seam at half a turn, so
+// each particle splats the unit vector and the surface reads the
+// heading of the sum.
+@vertex
+fn body_flow(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyVertex {
+    return body_quad(v, positions[i].xy, params.h * SPLAT_RADIUS, heading(i));
+}
+
+@fragment
+fn flow(in: BodyVertex) -> @location(0) vec4f {
+    let falloff = max(1.0 - dot(in.corner, in.corner), 0.0);
+    let w = falloff * falloff * 0.5;
+    let a = (in.clip.z - 0.5) * TAU;
+    return vec4f(w * cos(a), w * sin(a), 0.0, 0.0);
 }
 
 @fragment
@@ -168,43 +182,95 @@ struct Paint {
 var<immediate> paint: Paint;
 
 @group(0) @binding(4) var<storage, read> density: array<f32>;
-@group(0) @binding(5) var<storage, read> pressure: array<f32>;
-@group(0) @binding(6) var<storage, read> temperature: array<f32>;
+// The solver's prev_vel: w is the pressure lens's running mean.
+@group(0) @binding(5) var<storage, read> prev_vel: array<vec4f>;
 
-// The box's starting temperature, kelvin: AMBIENT_TEMPERATURE in
-// sim.rs, and the 20 C the lab constants in sim_solve.wgsl are quoted
-// at.
-const AMBIENT: f32 = 293.15;
+const TAU: f32 = 6.2831855;
+
+/// sRGB's transfer function inverted, as `linear` in render.rs: the
+/// wheel picks its hues in the space the colour pickers show, and
+/// every shader here works in linear light.
+fn srgb_to_linear(c: vec3f) -> vec3f {
+    return select(
+        pow((c + vec3f(0.055)) / 1.055, vec3f(2.4)),
+        c / 12.92,
+        c <= vec3f(0.04045),
+    );
+}
 
 // Where particle i sits on the ramp, 0 to 1. Called only where the
 // ramp is on: the buffer loads are the whole cost, and the glass look
-// pays none of them. Lens::code in render.rs numbers the cases.
+// pays none of them. Lens::code in render.rs numbers the cases, and
+// the direction wheel ramps on speed like the velocity lens does.
 fn lens_at(i: u32) -> f32 {
     var m = 0.0;
     switch paint.lens {
-        case 0u: {
-            m = length(velocities[i].xyz);
-        }
         case 1u: {
             m = velocities[i].w;
         }
         case 2u: {
-            m = pressure[i];
+            m = prev_vel[i].w;
         }
         case 3u: {
             m = density[i];
         }
         default: {
-            m = temperature[i] - AMBIENT;
+            m = length(velocities[i].xyz);
         }
     }
     return clamp((m - paint.lo) / (paint.hi - paint.lo), 0.0, 1.0);
 }
 
-@vertex
-fn disc(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyVertex {
+// The direction lens. Which way the water goes sets the hue; how fast
+// it goes sets how far the hue has taken over from the low colour,
+// because the direction of water at rest is noise and a still pool
+// must not be confetti.
+const DIRECTION: u32 = 4u;
+
+fn heading(i: u32) -> f32 {
+    return atan2(velocities[i].y, velocities[i].x) / TAU + 0.5;
+}
+
+// A hue and a saturation down one interpolant: the hue in ten bits
+// above the point, the saturation below it. A varying of its own is
+// what this avoids, and that costs 490 us a frame (M5 record).
+const HUE_STEPS: f32 = 1023.0;
+const HUE_SCALE: f32 = 1024.0;
+
+fn wheel_at(i: u32) -> f32 {
+    return (floor(heading(i) * HUE_STEPS) + min(lens_at(i), 0.999)) / HUE_SCALE;
+}
+
+// The full-saturation hue wheel, hue 0 at red.
+fn hue_colour(h: f32) -> vec3f {
+    let k = abs(fract(h + vec3f(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+    return srgb_to_linear(clamp(k - 1.0, vec3f(0.0), vec3f(1.0)));
+}
+
+// The hue takes over late, as the square of where the speed sits on
+// the ramp: barely moving water keeps the low colour whole, and the
+// wheel is left to say something about the water that is moving. The
+// direction of slow water is noise, so a linear mix would smear that
+// noise over the whole pool.
+fn wheel_colour(z: f32) -> vec3f {
+    let packed = z * HUE_SCALE;
+    let s = fract(packed);
+    return mix(paint.low.rgb, hue_colour(floor(packed) / HUE_STEPS), s * s);
+}
+
+// What a quad vertex of the body splat and the disc draw share; z is
+// the value the fragment reads back.
+fn body_quad(v: u32, at: vec2f, radius: f32, z: f32) -> BodyVertex {
     let extent = -(params.box_min.xy + vec2f(params.cell));
     let corner = vec2f(f32(v & 1u), f32(v >> 1u)) * 2.0 - 1.0;
+    var out: BodyVertex;
+    out.clip = vec4f((at + corner * radius) / extent, z, 1.0);
+    out.corner = corner;
+    return out;
+}
+
+@vertex
+fn disc(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyVertex {
     let crowd = clamp(
         (density[i] / params.rho0 - LONE_RHO) / (BODY_RHO - LONE_RHO),
         0.0,
@@ -213,18 +279,22 @@ fn disc(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyV
     let radius = mix(paint.r_min, params.h * DISC_RADIUS, crowd);
     var lens = 0.0;
     if paint.high.w > 0.0 {
-        lens = lens_at(i);
+        if paint.lens == DIRECTION {
+            lens = wheel_at(i);
+        } else {
+            lens = lens_at(i);
+        }
     }
-    var out: BodyVertex;
-    out.clip = vec4f((positions[i].xy + corner * radius) / extent, lens, 1.0);
-    out.corner = corner;
-    return out;
+    return body_quad(v, positions[i].xy, radius, lens);
 }
 
 @fragment
 fn disc_frag(in: BodyVertex) -> @location(0) vec4f {
     if dot(in.corner, in.corner) > 1.0 {
         discard;
+    }
+    if paint.lens == DIRECTION && paint.high.w > 0.0 {
+        return vec4f(wheel_colour(in.clip.z), 1.0);
     }
     // With no ramp the high colour is zero and so is the lens, so the
     // mix is the low colour and needs no branch of its own.

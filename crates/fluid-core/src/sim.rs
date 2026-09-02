@@ -5,16 +5,6 @@
 /// Rest density of water at 20 °C, kg/m³.
 pub(crate) const REST_DENSITY: f32 = 998.2;
 
-/// The temperature the box starts at, kelvin: the 20 °C the lab
-/// constants above and in sim_solve.wgsl are quoted at.
-pub(crate) const AMBIENT_TEMPERATURE: f32 = 293.15;
-
-/// Volumetric thermal expansion and specific heat capacity of water at
-/// 20 °C, mirrored from sim_solve.wgsl. The lens range for temperature
-/// is the only reader on this side; a divergence is a bug.
-pub(crate) const EXPANSION: f32 = 2.07e-4;
-pub(crate) const HEAT_CAPACITY: f32 = 4184.0;
-
 /// Interior depth of the reference device, metres (iPhone 13 Pro Max,
 /// 7.65 mm), times the world scale. A second device would bring its own.
 pub(crate) const SLAB_DEPTH: f32 = crate::WORLD_SCALE * 0.007_65;

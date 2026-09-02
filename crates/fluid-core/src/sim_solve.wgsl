@@ -53,7 +53,7 @@ var<immediate> step: Step;
 @group(0) @binding(9) var<storage, read_write> pressure: array<f32>;
 @group(0) @binding(10) var<storage, read_write> prev_pressure: array<f32>;
 @group(0) @binding(11) var<storage, read_write> temperature: array<f32>;
-@group(0) @binding(12) var<storage, read_write> stats: array<f32, 11>;
+@group(0) @binding(12) var<storage, read_write> stats: array<f32, 14>;
 @group(0) @binding(13) var<storage, read_write> clamp_count: atomic<u32>;
 @group(0) @binding(14) var<storage, read_write> accel: array<vec4f>;
 @group(0) @binding(15) var<storage, read_write> xsph: array<vec4f>;
@@ -83,6 +83,12 @@ const XSPH_RATE: f32 = 6.0;
 // hard it pulls. Only the screen plane is entrained: the finger has
 // no depth, and pulling z to zero would flatten the flow it stirs.
 const TOUCH_RATE: f32 = 40.0;
+
+// How fast a lens's own running mean chases the substep, per second.
+// Both means exist for the same reason: the solver's per-substep
+// numbers carry iteration noise the eye reads as a shimmer, and a
+// 50 ms mean of a settled pool holds still (M5 record, "The shimmer").
+const LENS_RATE: f32 = 20.0;
 
 fn fingers(pos: vec3f, v: vec3f) -> vec3f {
     var pull = vec2f(0.0);
@@ -599,7 +605,8 @@ fn apply_kappa_wide(gid: u32) {
     let total = lane_fold(vec4f(dv, 0.0));
     if lane == 0u && p < params.count {
         let dv_full = params.mass * total.xyz + kd[p] * wall_grad[p].xyz;
-        velocities[p] = vec4f(velocities[p].xyz - step.dt * dv_full, 0.0);
+        let was = velocities[p];
+        velocities[p] = vec4f(was.xyz - step.dt * dv_full, was.w);
     }
 }
 
@@ -629,7 +636,8 @@ fn forces_den_apply(@builtin(global_invocation_id) gid: vec3u) {
         // the box centre; the residual is a uniform Omega^2 times a few
         // centimetres, absorbed by the accelerometer term.
         let r = positions[p].xyz;
-        let v = velocities[p].xyz;
+        let was = velocities[p];
+        let v = was.xyz;
         let fict = -cross(step.domega, r)
             - cross(step.omega, cross(step.omega, r))
             - 2.0 * cross(step.omega, v);
@@ -640,7 +648,7 @@ fn forces_den_apply(@builtin(global_invocation_id) gid: vec3u) {
         );
         temperature[p] += step.dt * a.w;
         let dv_full = params.mass * total.xyz + kd[p] * wall_grad[p].xyz;
-        velocities[p] = vec4f(forced - step.dt * dv_full, 0.0);
+        velocities[p] = vec4f(forced - step.dt * dv_full, was.w);
     }
 }
 
@@ -692,7 +700,8 @@ fn integrate(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= params.count {
         return;
     }
-    var v = velocities[id.x].xyz;
+    let was = velocities[id.x];
+    var v = was.xyz;
     let speed = length(v);
     // Detached spray may outrun CFL: below half rest density there is
     // no neighbourhood to tunnel through, so flight is ballistic and
@@ -711,17 +720,24 @@ fn integrate(@builtin(global_invocation_id) id: vec3u) {
     // velocity change over dt — body force, viscosity, tension and
     // every pressure iteration together, which is the only place they
     // are all in. Taken before the wall zeroes a contact, so the
-    // boundary's own impulse does not outline the box. Nothing else
-    // reads w, and every other writer sets it to zero.
+    // boundary's own impulse does not outline the box. The raw number
+    // is the pressure solve's residual as much as the flow: a settled
+    // pool reads 20 g on one particle while the pool around it reads a
+    // tenth of that. w carries the running mean instead, which is the
+    // acceleration an eye can see. Every other writer carries w
+    // through untouched.
     let accel = length(v - prev_vel[id.x].xyz) / step.dt;
+    let chase = 1.0 - exp(-LENS_RATE * step.dt);
     var p = positions[id.x].xyz + v * step.dt;
     let lo = wall_lo();
     let hi = -lo;
     let clamped = clamp(p, lo, hi);
     v = select(v, vec3f(0.0), clamped != p);
     positions[id.x] = vec4f(clamped, 0.0);
-    prev_vel[id.x] = vec4f(v, 0.0);
-    velocities[id.x] = vec4f(v, accel);
+    velocities[id.x] = vec4f(v, mix(was.w, accel, chase));
+    // w carries the pressure lens's own running mean; the solve never
+    // reads it, and prev_vel has no other reader.
+    prev_vel[id.x] = vec4f(v, mix(prev_vel[id.x].w, pressure[id.x], chase));
     let dp = pressure[id.x] - prev_pressure[id.x];
     prev_pressure[id.x] = pressure[id.x];
     temperature[id.x] += temperature[id.x] * EXPANSION
@@ -746,16 +762,36 @@ fn reduce_pair(local: u32) {
     }
 }
 
+// Two low-high pairs at once: a and c carry the low ends, b and d the
+// high ones. Every lens ramps between the two ends of its own field,
+// so the reduction hands back pairs.
+fn reduce_bounds(local: u32) {
+    workgroupBarrier();
+    for (var off = 128u; off > 0u; off >>= 1u) {
+        if local < off {
+            red_a[local] = min(red_a[local], red_a[local + off]);
+            red_b[local] = max(red_b[local], red_b[local + off]);
+            red_c[local] = min(red_c[local], red_c[local + off]);
+            red_d[local] = max(red_d[local], red_d[local + off]);
+        }
+        workgroupBarrier();
+    }
+}
+
+const HUGE: f32 = 1e30;
+
 // The frame's field statistics in one workgroup, three strided passes:
-// compression avg/max + rho min/max, pressure min/max + v_max, then
-// temperature min/max. stats[9] mirrors the cumulative clamp counter.
+// compression avg/max with rho min/max, speed and acceleration min/max,
+// then pressure and temperature min/max. Every min/max pair but the
+// compression is a lens's ramp. stats[9] mirrors the cumulative clamp
+// counter.
 @compute @workgroup_size(256)
 fn reduce_stats(@builtin(local_invocation_id) local: vec3u) {
     let l = local.x;
     var s = 0.0;
     var m = 0.0;
-    var lo = 1e30;
-    var hi = -1e30;
+    var lo = HUGE;
+    var hi = -HUGE;
     for (var i = l; i < params.count; i += 256u) {
         let c = density[i] / params.rho0 - 1.0;
         s += max(c, 0.0);
@@ -775,38 +811,49 @@ fn reduce_stats(@builtin(local_invocation_id) local: vec3u) {
         stats[3] = red_d[0];
     }
     workgroupBarrier();
-    s = 0.0;
-    lo = 1e30;
-    hi = -1e30;
-    var vmax = 0.0;
+    var v_lo = HUGE;
+    var v_hi = -HUGE;
+    var a_lo = HUGE;
+    var a_hi = -HUGE;
     for (var i = l; i < params.count; i += 256u) {
-        lo = min(lo, pressure[i]);
-        hi = max(hi, pressure[i]);
-        vmax = max(vmax, length(velocities[i].xyz));
+        let q = velocities[i];
+        let speed = length(q.xyz);
+        v_lo = min(v_lo, speed);
+        v_hi = max(v_hi, speed);
+        a_lo = min(a_lo, q.w);
+        a_hi = max(a_hi, q.w);
     }
-    red_a[l] = 0.0;
-    red_b[l] = vmax;
-    red_c[l] = lo;
-    red_d[l] = hi;
-    reduce_pair(l);
+    red_a[l] = v_lo;
+    red_b[l] = v_hi;
+    red_c[l] = a_lo;
+    red_d[l] = a_hi;
+    reduce_bounds(l);
     if l == 0u {
-        stats[4] = red_c[0];
-        stats[5] = red_d[0];
+        stats[11] = red_a[0];
         stats[6] = red_b[0];
+        stats[12] = red_c[0];
+        stats[13] = red_d[0];
     }
     workgroupBarrier();
-    lo = 1e30;
-    hi = -1e30;
+    var p_lo = HUGE;
+    var p_hi = -HUGE;
+    var t_lo = HUGE;
+    var t_hi = -HUGE;
     for (var i = l; i < params.count; i += 256u) {
-        lo = min(lo, temperature[i]);
-        hi = max(hi, temperature[i]);
+        let p = prev_vel[i].w;
+        p_lo = min(p_lo, p);
+        p_hi = max(p_hi, p);
+        t_lo = min(t_lo, temperature[i]);
+        t_hi = max(t_hi, temperature[i]);
     }
-    red_a[l] = 0.0;
-    red_b[l] = 0.0;
-    red_c[l] = lo;
-    red_d[l] = hi;
-    reduce_pair(l);
+    red_a[l] = p_lo;
+    red_b[l] = p_hi;
+    red_c[l] = t_lo;
+    red_d[l] = t_hi;
+    reduce_bounds(l);
     if l == 0u {
+        stats[4] = red_a[0];
+        stats[5] = red_b[0];
         stats[7] = red_c[0];
         stats[8] = red_d[0];
         stats[9] = f32(atomicLoad(&clamp_count));

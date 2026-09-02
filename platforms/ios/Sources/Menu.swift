@@ -45,11 +45,12 @@ enum Settings {
 /// The fields a gradient can colour by. `code` is the core's
 /// numbering, which `fluid_renderer_set_look` documents. The note says
 /// what the colour means, since none of these is obvious from its name
-/// alone.
+/// alone. `wheel` picks its own colours and leaves the high one unread.
 struct LensChoice: Identifiable {
     let code: Int
     let label: String
     let note: String
+    var wheel: Bool = false
     var id: Int { code }
 
     static let all = [
@@ -58,8 +59,10 @@ struct LensChoice: Identifiable {
         LensChoice(code: 2, label: "Pressure", note: "How hard it is squeezed"),
         LensChoice(code: 3, label: "Proximity", note: "How crowded each drop's neighbours are"),
         LensChoice(
-            code: 4, label: "Temperature",
-            note: "Millionths of a degree, from squeezing and stirring"),
+            code: 4, label: "Direction",
+            note: "Which way the water goes, around the colour wheel. Your low colour "
+                + "holds where it barely moves; the high colour goes unused.",
+            wheel: true),
     ]
 }
 
@@ -121,6 +124,10 @@ struct MenuSheet: View {
         Binding(get: { Color(hex: highColour) }, set: { highColour = $0.hex })
     }
 
+    private var choice: LensChoice? {
+        LensChoice.all.first { $0.code == lens }
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -144,7 +151,8 @@ struct MenuSheet: View {
                 Section("Look") {
                     Toggle("Flat colour", isOn: $flat)
                     ColorPicker(
-                        gradient ? "Low" : "Colour", selection: colour,
+                        gradient && !(choice?.wheel ?? false) ? "Low" : "Colour",
+                        selection: colour,
                         supportsOpacity: false
                     )
                     .disabled(!flat)
@@ -155,8 +163,10 @@ struct MenuSheet: View {
                     Toggle("Gradient", isOn: $gradient)
                         .disabled(!flat)
                     if gradient {
-                        ColorPicker("High", selection: high, supportsOpacity: false)
-                            .disabled(!flat)
+                        if !(choice?.wheel ?? false) {
+                            ColorPicker("High", selection: high, supportsOpacity: false)
+                                .disabled(!flat)
+                        }
                         Picker("Colour by", selection: $lens) {
                             ForEach(LensChoice.all) { choice in
                                 Text(choice.label).tag(choice.code)
@@ -165,7 +175,7 @@ struct MenuSheet: View {
                         .disabled(!flat)
                     }
                 } footer: {
-                    if gradient, let choice = LensChoice.all.first(where: { $0.code == lens }) {
+                    if gradient, let choice {
                         Text(choice.note)
                     }
                 }
