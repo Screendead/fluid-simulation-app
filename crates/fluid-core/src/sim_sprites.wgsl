@@ -190,9 +190,10 @@ const TAU: f32 = 6.2831855;
 // Gamma two, not sRGB's exact curve. The wheel's hues are chosen
 // here rather than picked by the user, so the curve only has to look
 // like a rainbow — and the exact one is three pows a fragment, which
-// cost 600 microseconds a frame on the disc draw (reference device,
-// 2026-09-02, 3,512 against 2,912). A picked colour still goes
-// through the exact curve, in `linear` in render.rs.
+// cost 613 microseconds a frame on the disc draw (reference device,
+// 2026-09-02, 3,589 against 2,976 settled). That is five times what
+// the wheel costs over an ordinary ramp now. A picked colour still
+// goes through the exact curve, in `linear` in render.rs.
 fn to_linear(c: vec3f) -> vec3f {
     return c * c;
 }
@@ -287,12 +288,13 @@ fn disc_quad(v: u32, i: u32, z: f32) -> BodyVertex {
     return body_quad(v, positions[i].xy, mix(paint.r_min, params.h * DISC_RADIUS, crowd), z);
 }
 
-// The wheel has a pipeline of its own, vertex and fragment both. Left
-// on a branch inside these two, its arithmetic cost the ordinary disc
-// draw 500 microseconds a frame on a branch that draw never takes —
-// registers are allocated for an entry point whole, taken branch or
-// not (reference device, 2026-09-02; the fill pass in sim_surface.wgsl
-// carried the same fault).
+// The wheel has a pipeline of its own, vertex and fragment both.
+// Registers are allocated for an entry point whole, taken branch or
+// not, so leaving the wheel on a branch inside these two cost the
+// wheel's own draw 140 microseconds a frame and the ordinary disc
+// draw nothing measurable (reference device, 2026-09-02, two pairs
+// installed back to back). The fill pass in sim_surface.wgsl carried
+// the same fault and paid more for it.
 @vertex
 fn disc(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> BodyVertex {
     var lens = 0.0;

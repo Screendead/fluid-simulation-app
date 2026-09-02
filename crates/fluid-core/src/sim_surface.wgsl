@@ -220,10 +220,10 @@ fn decay_frag(in: FillVertex) -> @location(0) vec4f {
 // `wheel` arrives as a literal from each entry point, so the branch
 // folds away at compile time and the wheel's hue arithmetic never
 // enters the shader the glass and the ramp share. Left as a runtime
-// branch it cost the flat look 230 us a frame on a pixel that never
-// took it: 3,332 microseconds before the wheel existed, 3,560 with
-// the branch, 3,321 with it folded (reference device, 2026-09-02,
-// back to back on a still desk).
+// branch it cost the flat look 200 us a frame on a pixel that never
+// took it: 3,847 microseconds with the branch against 3,644 with it
+// folded (reference device, 2026-09-02, the two builds installed one
+// after the other, twice through).
 fn flat_look(uv: vec2f, rel: f32, wheel: bool) -> vec4f {
     let water = rel >= 0.5 * (EDGE_LO + EDGE_HI);
     var colour = optics.flat.rgb;

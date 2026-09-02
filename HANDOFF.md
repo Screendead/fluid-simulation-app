@@ -251,10 +251,12 @@ a disc to black; the flat surface splats unit headings into a second
 field, because a mean of angles is wrong at the seam.
 
 One regression came with the wheel and was caught by the before-and-
-after sweep: the flat surface lost 230 microseconds a frame to the
+after sweep: the flat surface lost 200 microseconds a frame to the
 wheel's arithmetic sitting in the fill's fragment shader, on a branch
-that look never takes. The wheel has its own entry point now and the
-time came back whole. The M5 record has the sweep and the protocol it
+that look never takes, because an entry point's registers are
+allocated for the whole of it. The fill and the disc draw each have a
+second entry point now, and both paired measurements say the time came
+back. The M5 record has the sweep and the protocol it
 needed — the settled cost is the lowest p50 a run reports, and
 `FLUID_LOOK` names the look for a console run.
 

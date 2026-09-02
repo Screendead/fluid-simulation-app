@@ -632,6 +632,11 @@ buffer, the nineteenth storage binding, the two new sprite bindings nor
 the lens read itself moved the number; removing the varying restored it
 exactly.
 
+That finding has a sibling, found the same day and recorded under
+"Measured again": a branch costs what it contains, whether or not the
+draw takes it. Both are the same lesson — on this GPU a draw is priced
+by what its entry point *can* do, not by what it does.
+
 Both passes carry the ramp in clip `z` instead. Neither has a depth
 attachment, so `z` is an interpolant already paid for, and every vertex
 of a quad carries the same value, so the fragment reads it back exactly.
@@ -694,78 +699,88 @@ pass in one run.
 
 ## Measured again (reference device, 2026-09-02, late)
 
-Two protocol changes, both from getting a number wrong first.
-
-**The settled cost is the lowest p50 a run reports, not the last
-one.** The ring holds recent frames, so a run that wakes near the end
-carries the wake in its final line. Reading the last line said that
-removing three `pow`s made a shader slower.
+Three protocol changes, each from a number read wrong first.
 
 **`FLUID_LOOK` names the look.** The menu is the only other way in and
 a console run cannot reach it, so before this every look but the
 stored one was out of reach. The console line now names the look it
 measured, gradient and lens included.
 
-One launch a row, 100 seconds, phone flat and still on the desk, 1x,
-GPU p50 in microseconds. The before column is `b8be8d4` with only the
-look override patched in, so both builds could be driven into the same
-look.
+**The settled cost is the p50 the ring reports while the frame counter
+is frozen.** Two wrong readings preceded it. The last line reports
+whatever the desk was doing at the end, and said that removing three
+`pow`s made a shader slower. The run's lowest p50 reports the fall
+rather than the settle, and on the particle view the fall is the
+cheaper of the two, so it reads a number the water never holds. While
+the gate has the pool the window holds settled frames and nothing
+else, so the longest frozen run is the number.
 
-| Look | Before | After | Delta |
-|---|---|---|---|
-| Glass | @@B_GLASS@@ | @@N_GLASS@@ | @@D_GLASS@@ |
-| Flat, one colour | @@B_FLAT@@ | @@N_FLAT@@ | @@D_FLAT@@ |
-| Flat + velocity ramp | @@B_FLATV@@ | @@N_FLATV@@ | @@D_FLATV@@ |
-| Flat + direction wheel | — | @@N_FLATD@@ | new |
-| Particles, one colour | @@B_PART@@ | @@N_PART@@ | @@D_PART@@ |
-| Particles + velocity ramp | @@B_PARTV@@ | @@N_PARTV@@ | @@D_PARTV@@ |
-| Particles + direction wheel | — | @@N_PARTD@@ | new |
+**A cross-sweep delta of 200 microseconds means nothing.** The same
+build measured an hour apart moved by that much on the flat look while
+the glass held to 65, so a claim about a code change needs its two
+builds measured back to back, installed one after the other. Every
+causal number below is a pair taken that way. The table is the
+shipping build's own cost, not a difference.
 
-Every row holds 120 Hz; the largest is @@WORST@@ of the 8,333
-microsecond budget.
+One launch a row, 100 seconds, phone flat and still on the desk, 1x.
 
-**Auto-ranging and the two running means are free.** They touch the
-solver, which every look runs, and the glass and both particle views
-moved by less than the spread between runs.
+| Look | GPU p50 settled | Of the 8,333 µs budget |
+|---|---|---|
+| Glass | 6,430 | 77% |
+| Flat, one colour | 3,586 | 43% |
+| Flat + velocity ramp | 3,733 | 45% |
+| Flat + direction wheel | 4,968 | 60% |
+| Particles, one colour | 2,554 | 31% |
+| Particles + velocity ramp | 2,587 | 31% |
+| Particles + direction wheel | 2,708 | 32% |
+
+Every look holds 120 Hz. Against `b8be8d4` every look without the
+wheel sits inside the spread above, which is as much as this protocol
+can say: the auto-ranging and the two running means are free, and
+nothing here is a measurement of them being free to a hundred
+microseconds.
+
+**A branch costs what it contains.** The wheel's arithmetic went into
+`disc_frag` and into the fill's flat branch, and an entry point's
+registers are allocated for the whole of it, taken branch or not. Both
+now have a second entry point; the fill's `flat_look` takes `wheel` as
+a literal from each, so its branch folds at compile time. Two pairs,
+each build installed straight after the other on the same still desk,
+twice through:
+
+| Pair | Wheel on a branch | Wheel in its own pipeline |
+|---|---|---|
+| Flat surface, one colour | 3,847 | 3,644 |
+| Particle view, one colour | 2,592 | 2,578 |
+| Particle view, wheel on | 3,140 | 3,021 |
+
+The flat surface is where it bites, on the look that never enters the
+branch: its fill returns in a dozen lines, so the shader's own cost is
+most of what that look pays, where the glass runs the whole optics
+after it. On the particle view the cost lands on the wheel's own draw
+instead and the ordinary one is untouched.
+
+An earlier reading put the particle view's share at 500 microseconds.
+That was two sweeps an hour apart, not a pair, and it is withdrawn —
+it is the reason the third protocol rule above exists.
+
+This is the same shape as the varying finding above and it wants the
+same habit: on this GPU a draw is priced by what its entry point *can*
+do, not by what it does.
 
 **A ramp on the flat surface is not free**, and never was:
-@@RAMPFLAT@@ microseconds, which is the fill's second texture sample
+147 microseconds, which is the fill's second texture sample
 per water pixel and the splat's second channel. The earlier evening
 measured the ramp on the particle view (free) and on the glass (76
 microseconds) but never on the flat surface with the ramp on.
 
-**The flat surface lost 230 microseconds and it was the wheel, on a
-branch that look never takes.** The flat rows above are the only
-ones that moved, and the fill's fragment shader is the only thing they
-share that the glass and the particle view do not lean on: the flat
-look returns from it in a dozen lines, so the shader's own cost is
-most of what it pays, where the glass's fill runs the whole optics
-after it. Adding the wheel's arithmetic to that shader cost the look
-that never runs it.
+**The wheel is the expensive lens**, on the flat surface. On the
+particle view it costs 121 microseconds over an ordinary ramp, and it
+very nearly did not: sRGB's exact curve in the same fragment cost 613
+of its own (3,589 against 2,976), five times what the whole lens costs
+now and the largest single saving of the evening.
 
-The wheel now has an entry point of its own, `surface_wheel_frag`, and
-`flat_look` takes `wheel` as a literal from each, so the branch folds
-at compile time. Measured back to back on the same still desk, and the
-plain flat look is the row that carries the claim — it never enters the
-branch at all:
-
-| Look | Before | Branch in the shader | Own entry point |
-|---|---|---|---|
-| Flat, one colour | @@B_FLAT2@@ | @@N_FLAT2@@ | @@S_FLAT@@ |
-| Flat + velocity ramp | @@B_FLATV@@ | @@N_FLATV@@ | @@S_FLATV@@ |
-| Flat + direction wheel | — | @@N_FLATD@@ | @@S_FLATD@@ |
-
-**The wheel is the expensive lens**, and it is expensive twice over
-for different reasons. On the particle view it costs @@WPART@@
-microseconds in the disc fragment. Two measurements sit either side of
-that: sRGB's exact curve in the same fragment cost about 600 (3,512
-with the three `pow`s against 2,912 without, both minima of runs that
-woke), and what is left after the gamma-two approximation is the
-number above. The first is larger than the second, which is the
-run-to-run spread talking — the honest reading is that the curve cost
-about as much again as the whole wheel does now, not a fraction of it.
-
-On the flat surface the wheel costs @@WFLAT@@, and that is the second
+On the flat surface the wheel costs 1,235, and that is the second
 field's decay and splat, which the particle view does not run. The
 `pow` made no difference there, because the water covers fewer pixels
 than the discs do.
@@ -853,7 +868,9 @@ look looks, so it is Jack's call, not a free win.
   must land round the wheel rather than in a corner of it. Measured
   this machine, 2026-09-02: six sextants on the discs, five on the
   surface. Neither claim is made by the stability test above, and a
-  broken pack or a missing heading field draws colour either way.
+  broken pack or a missing heading field draws colour either way. Each
+  now covers a pipeline of its own, since the wheel was split out of
+  the disc draw and the fill.
 - Every shell path is exercised by the menu; the shell has no test
   target. `FLUID_LOOK` names the look for a console run, which is how
   the measurements below reach a look the menu is not left in.
