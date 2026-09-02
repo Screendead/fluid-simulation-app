@@ -442,11 +442,12 @@ linearly with particle count (per-substep spans 0.55, 1.3, 1.8 to
 particles already rest at 120 Hz on this build; in motion the substep
 count also grows with 1/spacing (CFL), so 16x at 120 Hz is out of
 reach of this GPU by physics, not code. The render side is a fixed
-cost that comes straight out of the particle budget: the surface pass
-is 2.3 to 3.1 ms a frame in every capture, and the fine split puts
-the 131,072-point tracer draw at 1.5 to 2.6 ms of it (the split's own
-tile load and store inflate the upper figure) against ~1.4 ms for the
-liquid-glass fill.
+cost that comes straight out of the particle budget: ~1.2 ms of a
+moving frame and nothing at rest by the draw attribution above, the
+131,072-point tracer draw ~0.5 ms of it and the liquid-glass fill
+hidden behind the following compute. The fine split's 2.3 to 3.1 ms
+surface span, and its 1.5 to 2.6 ms for the tracer draw, were
+overlap.
 
 ### Next, in order
 

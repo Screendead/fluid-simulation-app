@@ -206,8 +206,9 @@ channel.
 profiler measured the A15 pass by pass and found the settled span is
 the governor's clock, that Metal overlaps encoders so per-pass spans
 are upper bounds, and that the solver's thirteen neighbour sweeps
-owned the substep while the surface pass owned a flat 2.3 to 3.1 ms a
-frame. Shipped on the branch, each gate-green and film-guarded: the
+owned the substep; the surface pass's flat 2.3 to 3.1 ms span was
+overlap, the render side ~1.2 ms of a moving frame and nothing at
+rest. Shipped on the branch, each gate-green and film-guarded: the
 clear dispatches deleted and the force step fused; a per-substep
 neighbour list with cached kernel gradients (sweeps 135 to 249 us ->
 24 to 63 us each; the frame holds 120 Hz under handling at three to
