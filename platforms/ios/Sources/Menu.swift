@@ -60,8 +60,8 @@ struct LensChoice: Identifiable {
         LensChoice(code: 3, label: "Proximity", note: "How crowded each drop's neighbours are"),
         LensChoice(
             code: 4, label: "Direction",
-            note: "Which way the water goes, around the colour wheel. Your low colour "
-                + "holds where it barely moves; the high colour goes unused.",
+            note: "Which way the water goes, around the colour wheel. Your colour "
+                + "holds where it barely moves, and the wheel takes over as it speeds up.",
             wheel: true),
     ]
 }

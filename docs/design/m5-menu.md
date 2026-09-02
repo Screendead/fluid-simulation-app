@@ -372,7 +372,8 @@ proximity] (add others if you think they'd be cool; use discernment)."
 
 One colour is the flat look unchanged. Two colours make a ramp across
 one field, low to high, and every field is one the solver already
-carries — so a lens costs no pass of its own.
+carries, so four of the five lenses cost no pass of their own. The
+direction wheel is the exception and pays for the pass it needs.
 
 | Lens | The scalar | Where it comes from |
 |---|---|---|
@@ -398,6 +399,15 @@ neighbour sweep per particle, or a curl of the splatted velocity grid,
 which exists only while the strands run and only at the coarse cell
 size. Worth building when Jack asks; not worth a sweep smuggled in
 behind a colour picker.
+
+The direction wheel moved that price. Its second field is a
+kernel-weighted sum of unit headings over the same footprint the
+thickness uses, and splatting the velocity itself instead of its
+direction would make it a smoothed velocity field, whose curl is one
+texel difference away in the fill. That is vorticity on the flat
+surface for the cost of a subtraction — not on the particle view,
+which builds no field, and not free, because the wheel's own pass is
+what pays for it.
 
 ### Acceleration, and where it comes from
 
@@ -446,8 +456,8 @@ and acceleration come out of one fetch of `velocities[i]`.
 
 **A floor under the span.** A ramp between two ends that are almost
 the same number is a ramp across the solver's own noise. A settled
-pool spans 0.02 m/s of speed and every particle walks the whole of
-that every frame, which paints confetti. Each lens carries the
+pool spans 0.02 m/s of speed, and every particle walks a ninth of
+that from one frame to the next, which paints confetti. Each lens carries the
 narrowest span worth a ramp, and three of the four are the quantity
 one particle spacing of water holds, so they scale with the ladder.
 
@@ -503,8 +513,10 @@ lens, and it ranked the causes in one run.
 The acceleration lens was the flicker, by a factor of nine over the
 next worst. Its raw number is the pressure solve's residual as much as
 the flow: a settled pool reads 20 g on one particle while the pool
-around it reads a tenth of that, and the tail is real — a particle in
-contact with a wall is zeroed and re-accelerated every substep. So
+around it reads a tenth of that. The tail is not a transient: the
+running mean holds it, which points at the wall, where a particle in
+contact is zeroed and re-accelerated every substep. That is inference
+from the numbers, not a measurement of its own. So
 both that lens and pressure now read a running mean over 50 ms, in the
 same `1 - exp(-rate·dt)` form the finger and XSPH use, so the substep
 count cannot change it. The mean costs one `mix` each: `integrate`
@@ -513,11 +525,26 @@ already has both values in registers, and both slots were free —
 written as zero and read by nothing. Two other writers of `velocities`
 had to stop zeroing `w`, which they do by carrying it through.
 
+The device shows the same thing from the other side. A settled pool
+under the glass reports a pressure ceiling of 1,331 Pa on the build
+before this one and 1,101 on this one (reference device, 2026-09-02,
+the same still desk): the raw peak sat a fifth above the field the
+mean paints, and that fifth was arriving on a different particle
+every frame.
+
+**The readout's pressure moved with the lens.** `RenderStats`'
+`pressure_min` and `pressure_max`, and the `p ..Pa` field of the
+console line, now report the running mean rather than the substep's
+raw pressure — one reduction, not two, and the mean is the better
+number for the order-of-magnitude check that field is for. The
+compression pair is untouched and stays raw, and that is the pair
+that watches the solver converge.
+
 Velocity and proximity got noisier, and that is the price of Jack's
 ask: the ramp is tighter now, so the same jitter covers more of it.
 Both stay an order of magnitude under the acceleration lens's old
-number, and velocity's 0.52% is the span floor doing its work — 
-without it the number is 11%.
+number, and velocity's 0.52% is the span floor doing its work: without
+it the number is 11%.
 
 ### The wheel
 
@@ -534,6 +561,11 @@ noise over the whole pool: 1.15% of colour movement a frame on a
 settled pool, against 0.02% squared. It also reads better, because the
 wheel is then saying something about the water that is moving instead
 of tinting everything.
+
+Where the wheel starts is `atan2(v.y, v.x) / TAU + 0.5`, which puts
+red on water running left, cyan on water running right, yellow-green
+on water falling and blue on water rising. One added constant turns
+the whole wheel if Jack wants a different pairing.
 
 The high colour goes unread, and the menu hides its picker for this
 lens.
@@ -568,14 +600,6 @@ more decay draw and one more splat, and it is written only while the
 lens is on. Widening the one field to four channels was the
 alternative and it was rejected: it would tax the glass look, which
 never reads a lens, on every frame.
-
-**The readout's pressure moved with the lens.** `RenderStats`'
-`pressure_min` and `pressure_max`, and the `p ..Pa` field of the
-console line, now report the running mean rather than the substep's
-raw pressure — one reduction, not two, and the mean is the better
-number for the order-of-magnitude check that field is for. The
-compression pair is untouched and stays raw, and that is the pair
-that watches the solver converge.
 
 ### Where the colour is applied
 
