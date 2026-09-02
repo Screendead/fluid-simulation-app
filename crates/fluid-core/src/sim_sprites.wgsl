@@ -18,6 +18,9 @@ struct SimParams {
 const CALM: vec3f = vec3f(0.05, 0.22, 0.55);
 const LIVELY: vec3f = vec3f(0.72, 0.94, 1.0);
 const FULL_SPEED: f32 = 0.9;
+// The charge below which a tracer draws nothing: resting water shows
+// no dots, and the idle gate sleeps only under this.
+const CHARGE_GATE: f32 = 0.05;
 
 struct SpriteVertex {
     @builtin(position) clip: vec4f,
@@ -65,7 +68,7 @@ fn point(@builtin(vertex_index) i: u32) -> PointVertex {
     // of speckling the body, and fast water glints. The square root
     // lifts the gentle end so slow strands still read as threads
     // (Jack's dial, 2026-09-01); full speed is unchanged.
-    let s = clamp((unpack2x16float(t.y).y - 0.05) / FULL_SPEED, 0.0, 1.0);
+    let s = clamp((unpack2x16float(t.y).y - CHARGE_GATE) / FULL_SPEED, 0.0, 1.0);
     out.colour = mix(CALM, LIVELY, s) * (sqrt(s) * 0.9);
     // The record quantises over the box this draw projects with, so the
     // unorm pair is already clip space; the packed z goes unread. A
@@ -82,6 +85,24 @@ fn point(@builtin(vertex_index) i: u32) -> PointVertex {
 @fragment
 fn dot_frag(in: PointVertex) -> @location(0) vec4f {
     return vec4f(in.colour, 0.0);
+}
+
+// The flat look's flecks (M5 record): a charged tracer is one dot of
+// the water colour, so fast water in the air still shows while the
+// screen stays two colours. The colour arrives in linear light.
+var<immediate> water: vec4f;
+
+@vertex
+fn fleck(@builtin(vertex_index) i: u32) -> PointVertex {
+    let t = tracers[i];
+    var out: PointVertex;
+    out.colour = water.rgb;
+    out.clip = select(
+        vec4f(2.0, 2.0, 0.0, 1.0),
+        vec4f(unpack2x16unorm(t.x) * 2.0 - vec2f(1.0), 0.0, 1.0),
+        unpack2x16float(t.y).y > CHARGE_GATE,
+    );
+    return out;
 }
 
 // The liquid body: each solver particle splats its kernel footprint

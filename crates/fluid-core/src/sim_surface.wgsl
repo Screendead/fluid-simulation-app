@@ -21,9 +21,9 @@ struct Optics {
     slab_depth: f32,
     glint_gain: f32,
     h: vec3f,
-    // The look, RGBA8: a nonzero alpha selects the flat colour, zero
-    // the glass.
-    flat: u32,
+    // The flat look: the water colour in linear light, w one; w zero
+    // is the glass.
+    flat: vec4f,
 }
 var<immediate> optics: Optics;
 
@@ -184,9 +184,12 @@ fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     let rel = f.r / optics.field_settled;
     let a = smoothstep(EDGE_LO, EDGE_HI, rel);
 
-    let flat = unpack4x8unorm(optics.flat);
-    if (flat.a > 0.0) {
-        return vec4f(flat.rgb * a, 1.0);
+    // The flat look: two colours and nothing between (Jack,
+    // 2026-09-02), the water where the thickness crosses the band's
+    // midpoint. The flecks of the flat look draw after this pass.
+    if (optics.flat.w > 0.0) {
+        let water = rel >= 0.5 * (EDGE_LO + EDGE_HI);
+        return vec4f(select(vec3f(0.0), optics.flat.rgb, water), 1.0);
     }
 
     // This pixel on the back wall, metres, y up.

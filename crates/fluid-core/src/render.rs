@@ -134,7 +134,7 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         required_features: wgpu::Features::IMMEDIATES | wgpu::Features::SUBGROUP,
         required_limits: wgpu::Limits {
             max_storage_buffers_per_shader_stage: 20,
-            max_immediate_size: 48,
+            max_immediate_size: 64,
             ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
         },
         ..Default::default()
@@ -341,7 +341,10 @@ pub fn film(
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&sim.filter);
             pass.set_bind_group(0, &sim.filter_bind, &[]);
-            pass.set_immediates(0, &pack_optics(force, sim.extent, sim.field_settled, 0));
+            pass.set_immediates(
+                0,
+                &pack_optics(force, sim.extent, sim.field_settled, [0.0; 4]),
+            );
             pass.dispatch_workgroups(sim.filter_groups[0], sim.filter_groups[1], 1);
         }
         {
@@ -359,7 +362,10 @@ pub fn film(
                 ..Default::default()
             });
             pass.set_pipeline(&sim.fill);
-            pass.set_immediates(0, &pack_optics(force, sim.extent, sim.field_settled, 0));
+            pass.set_immediates(
+                0,
+                &pack_optics(force, sim.extent, sim.field_settled, [0.0; 4]),
+            );
             pass.set_bind_group(0, &sim.fill_bind, &[]);
             pass.draw(0..3, 0..1);
             pass.set_pipeline(&sim.points);
@@ -476,11 +482,11 @@ const SUN: f32 = 60.0;
 const GLINT_F0: f32 = 0.02;
 
 /// The Optics immediates block in sim_surface.wgsl: two 16-byte vec3
-/// slots with scalars packed into their tails, and the look's word
-/// (Look::packed) last. The lighting that is uniform across a frame —
-/// world up, the glint half vector, and the folded gain — is computed
+/// slots with scalars packed into their tails, then the flat look
+/// (flat_of) as one vec4. The lighting that is uniform across a frame
+/// — world up, the glint half vector, and the folded gain — is computed
 /// here once instead of per pixel.
-fn pack_optics(force: [f32; 3], extent: [f32; 2], field_settled: f32, flat: u32) -> [u8; 48] {
+fn pack_optics(force: [f32; 3], extent: [f32; 2], field_settled: f32, flat: [f32; 4]) -> [u8; 64] {
     let norm = |v: [f32; 3], floor: f32| -> ([f32; 3], f32) {
         let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(floor);
         ([v[0] / l, v[1] / l, v[2] / l], l)
@@ -508,7 +514,7 @@ fn pack_optics(force: [f32; 3], extent: [f32; 2], field_settled: f32, flat: u32)
     let s = ((up[2] - 0.85) / 0.13).clamp(0.0, 1.0);
     let fade = 1.0 - s * s * (3.0 - 2.0 * s);
     let schlick = GLINT_F0 + (1.0 - GLINT_F0) * (1.0 - h[2]).powi(5);
-    let mut raw = [0u8; 48];
+    let mut raw = [0u8; 64];
     for (slot, v) in [
         up[0],
         up[1],
@@ -527,30 +533,40 @@ fn pack_optics(force: [f32; 3], extent: [f32; 2], field_settled: f32, flat: u32)
     {
         raw[slot * 4..slot * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
-    raw[44..48].copy_from_slice(&flat.to_le_bytes());
+    for (i, v) in flat.into_iter().enumerate() {
+        raw[48 + i * 4..52 + i * 4].copy_from_slice(&v.to_le_bytes());
+    }
     raw
 }
 
 /// How the water is drawn: liquid glass over the dazzle wall (the M4
-/// look), or one flat colour on black with no strands (M5 record).
+/// look), or flat: the colour or black and nothing between, the
+/// charged strands as flecks of the colour (M5 record). The colour is
+/// the picker's, components 0 to 1 as the panel shows them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Look {
     Glass,
     Flat([f32; 3]),
 }
 
-impl Look {
-    /// The look's word in the optics immediates: RGBA8 with alpha 255
-    /// for the flat colour, zero for glass. Eight bits a channel is the
-    /// panel's own depth, so the packing loses nothing.
-    fn packed(self) -> u32 {
-        match self {
-            Look::Glass => 0,
-            Look::Flat(colour) => {
-                let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
-                byte(colour[0]) | byte(colour[1]) << 8 | byte(colour[2]) << 16 | 0xff << 24
-            }
-        }
+/// sRGB's transfer function inverted. The surface is Bgra8UnormSrgb
+/// (the reference device, 2026-09-02): the shaders work in linear
+/// light and the hardware encodes on write, so a picked colour goes
+/// in linear and comes out as the bytes that were picked.
+fn linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// The flat look's immediates: the colour in linear light with a one
+/// in w, or zeros for the glass.
+fn flat_of(look: Look) -> [f32; 4] {
+    match look {
+        Look::Glass => [0.0; 4],
+        Look::Flat(c) => [linear(c[0]), linear(c[1]), linear(c[2]), 1.0],
     }
 }
 
@@ -1008,6 +1024,7 @@ struct Sim {
     resolve: wgpu::ComputePipeline,
     advect: wgpu::ComputePipeline,
     points: wgpu::RenderPipeline,
+    flecks: wgpu::RenderPipeline,
     body: wgpu::RenderPipeline,
     decay: wgpu::RenderPipeline,
     fill: wgpu::RenderPipeline,
@@ -1369,14 +1386,15 @@ impl Sim {
         let fill_bind = field_bind(device, &fill_layout, &filtered, &field_sampler);
         let filter_bind = filter_bind(device, &filter_layout, &field, &filtered);
         let surface_module = module("sim_surface", include_str!("sim_surface.wgsl"));
-        let fill_pl = pipe_layout("sim surface", &fill_layout, 48);
-        let filter_pl = pipe_layout("sim field filter", &filter_layout, 48);
+        let fill_pl = pipe_layout("sim surface", &fill_layout, 64);
+        let filter_pl = pipe_layout("sim field filter", &filter_layout, 64);
         let grid_pl = pipe_layout("sim grid", &grid_layout, 0);
         let scan_pl = pipe_layout("sim scan", &scan_layout, 0);
         let solve_pl = pipe_layout("sim solve", &solve_layout, 48);
         let sprite_pl = pipe_layout("sim sprites", &sprite_layout, 0);
         let tracer_pl = pipe_layout("sim tracers", &tracer_layout, 48);
         let tracer_draw_pl = pipe_layout("sim tracer draw", &tracer_draw_layout, 0);
+        let fleck_pl = pipe_layout("sim flecks", &tracer_draw_layout, 16);
         let pipeline =
             |layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, entry_point: &str| {
                 device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1455,6 +1473,37 @@ impl Sim {
                         format,
                         blend: Some(ADDITIVE),
                         write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            }),
+            // Written opaque, colour only: a fleck over the body is the
+            // body's colour and a fleck in the air is the fleck, so the
+            // screen stays two colours.
+            flecks: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim flecks"),
+                layout: Some(&fleck_pl),
+                vertex: wgpu::VertexState {
+                    module: &sprite_module,
+                    entry_point: Some("fleck"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::PointList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &sprite_module,
+                    entry_point: Some("dot_frag"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::COLOR,
                     })],
                 }),
                 multiview_mask: None,
@@ -2120,7 +2169,7 @@ pub struct Renderer {
     idle: IdleGate,
     idle_frames: u64,
     mode: Mode,
-    look: Look,
+    flat: [f32; 4],
     frames: u64,
     last_frame_ms: f64,
 }
@@ -2160,7 +2209,7 @@ impl Renderer {
             // binds: the solve layout holds eighteen storage buffers.
             required_limits: wgpu::Limits {
                 max_storage_buffers_per_shader_stage: 20,
-                max_immediate_size: 48,
+                max_immediate_size: 64,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
             ..Default::default()
@@ -2258,7 +2307,7 @@ impl Renderer {
             idle: IdleGate::new(),
             idle_frames: 0,
             mode,
-            look: Look::Glass,
+            flat: [0.0; 4],
             frames: 0,
             last_frame_ms: 0.0,
         })
@@ -2305,7 +2354,7 @@ impl Renderer {
     }
 
     pub fn set_look(&mut self, look: Look) {
-        self.look = look;
+        self.flat = flat_of(look);
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -2339,9 +2388,10 @@ impl Renderer {
         let (omega, domega) = self
             .rotation
             .apply(sample.rotation_rate, interval_us / 1_000_000.0);
-        let flat = self.look.packed();
-        // Flat water is one colour: the strands are the glass look's.
-        let strands = flat == 0 && matches!(&self.mode, Mode::Sim(s) if s.tracer_count > 0);
+        let optics = match &self.mode {
+            Mode::Sim(s) => pack_optics(force, s.extent, s.field_settled, self.flat),
+            _ => [0; 64],
+        };
         if let Mode::Sim(s) = &self.mode
             && self.idle.asleep(force, dev, omega, s.stats[6])
         {
@@ -2484,7 +2534,7 @@ impl Renderer {
                     }
                     pass.set_pipeline(&s.reduce_stats);
                     pass.dispatch_workgroups(1, 1, 1);
-                    if strands {
+                    if s.tracer_count > 0 {
                         // The visual layer advects once a frame on the
                         // solved end-of-frame field, with the frame dt.
                         pass.set_bind_group(0, &s.tracer_bind, &[]);
@@ -2544,7 +2594,7 @@ impl Renderer {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&s.filter);
             pass.set_bind_group(0, &s.filter_bind, &[]);
-            pass.set_immediates(0, &pack_optics(force, s.extent, s.field_settled, flat));
+            pass.set_immediates(0, &optics);
             pass.dispatch_workgroups(s.filter_groups[0], s.filter_groups[1], 1);
         }
         {
@@ -2578,14 +2628,21 @@ impl Renderer {
                 }
                 Mode::Sim(s) => {
                     pass.set_pipeline(&s.fill);
-                    pass.set_immediates(0, &pack_optics(force, s.extent, s.field_settled, flat));
+                    pass.set_immediates(0, &optics);
                     pass.set_bind_group(0, &s.fill_bind, &[]);
                     pass.draw(0..3, 0..1);
-                    if strands {
+                    if self.flat[3] > 0.0 {
+                        if s.tracer_count > 0 {
+                            pass.set_pipeline(&s.flecks);
+                            pass.set_immediates(0, &optics[48..64]);
+                            pass.set_bind_group(0, &s.tracer_draw_bind, &[]);
+                            pass.draw(0..s.tracer_count, 0..1);
+                        }
+                    } else if s.tracer_count > 0 {
                         pass.set_pipeline(&s.points);
                         pass.set_bind_group(0, &s.tracer_draw_bind, &[]);
                         pass.draw(0..s.tracer_count, 0..1);
-                    } else if flat == 0 {
+                    } else {
                         pass.set_pipeline(&s.sprites);
                         pass.set_bind_group(0, &s.sprite_bind, &[]);
                         pass.draw(0..4, 0..s.count);
@@ -2823,19 +2880,21 @@ mod tests {
 
     #[test]
     fn optics_immediates_land_at_the_shader_offsets() {
-        let hot_pink = Look::Flat([1.0, 105.0 / 255.0, 180.0 / 255.0]);
         let raw = pack_optics(
             [0.0, -9.81, 0.0],
             [4.0, 5.0],
             FIELD_SETTLED,
-            hot_pink.packed(),
+            [0.25, 0.5, 0.75, 1.0],
         );
         let f = |i: usize| f32::from_le_bytes(raw[i..i + 4].try_into().unwrap());
         assert_eq!([f(0), f(4), f(8)], [0.0, 1.0, 0.0], "up");
         assert_eq!(f(12), FIELD_SETTLED);
         assert_eq!([f(16), f(20)], [4.0, 5.0], "extent");
-        assert_eq!(raw[44..48], [255, 105, 180, 255], "the look, RGBA8");
-        assert_eq!(Look::Glass.packed(), 0);
+        assert_eq!(
+            [f(48), f(52), f(56), f(60)],
+            [0.25, 0.5, 0.75, 1.0],
+            "the flat look"
+        );
         assert_eq!(f(24), sim::SLAB_DEPTH);
         // Upright: up.z = 0, no fade, so the gain is SUN scaled by
         // Schlick at the half vector's z.
@@ -2848,16 +2907,32 @@ mod tests {
         assert!((f(28) - SUN * schlick).abs() < 1e-4, "gain {}", f(28));
         // Face up fades the sun out; face down degenerates h to zero
         // and the gain with it — neither may go NaN.
-        let flat = pack_optics([0.0, 0.0, -9.81], [4.0, 5.0], FIELD_SETTLED, 0);
+        let flat = pack_optics([0.0, 0.0, -9.81], [4.0, 5.0], FIELD_SETTLED, [0.0; 4]);
         assert_eq!(
             f32::from_le_bytes(flat[28..32].try_into().unwrap()),
             0.0,
             "face-up fade"
         );
-        let down = pack_optics([0.0, 0.0, 9.81], [4.0, 5.0], FIELD_SETTLED, 0);
+        let down = pack_optics([0.0, 0.0, 9.81], [4.0, 5.0], FIELD_SETTLED, [0.0; 4]);
         for chunk in down.as_chunks::<4>().0 {
             assert!(f32::from_le_bytes(*chunk).is_finite());
         }
+    }
+
+    // Hot pink's bytes through sRGB's curve: the ends are fixed points,
+    // the middle darkens, and the glass is all zeros.
+    #[test]
+    fn the_flat_colour_is_linearised() {
+        let [r, g, b, w] = flat_of(Look::Flat([1.0, 105.0 / 255.0, 180.0 / 255.0]));
+        assert_eq!((r, w), (1.0, 1.0));
+        assert!((g - 0.1413).abs() < 1e-3, "g {g}");
+        assert!((b - 0.4564).abs() < 1e-3, "b {b}");
+        assert_eq!(linear(0.0), 0.0);
+        assert!(
+            (linear(0.04045) - 0.04045 / 12.92).abs() < 1e-6,
+            "the joint"
+        );
+        assert_eq!(flat_of(Look::Glass), [0.0; 4]);
     }
 
     // The menu's four scales on the reference screen: within 5% of
@@ -3300,7 +3375,7 @@ mod tests {
             pass.set_bind_group(0, &bind, &[]);
             pass.set_immediates(
                 0,
-                &pack_optics([0.0, -9.81, -0.5], sim.extent, sim.field_settled, 0),
+                &pack_optics([0.0, -9.81, -0.5], sim.extent, sim.field_settled, [0.0; 4]),
             );
             let groups = filter_groups([128, 256]);
             pass.dispatch_workgroups(groups[0], groups[1], 1);

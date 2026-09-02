@@ -158,8 +158,9 @@ pub unsafe extern "C" fn fluid_renderer_particles_at(
     unsafe { &*renderer }.0.particles_at(scale)
 }
 
-/// Liquid glass when `flat` is false; otherwise one flat `colour` on
-/// black, components 0 to 1 in the surface's own space.
+/// Liquid glass when `flat` is false; otherwise the flat look in
+/// `colour`, components 0 to 1 as the picker shows them; the core
+/// linearises them for the surface.
 ///
 /// # Safety
 ///

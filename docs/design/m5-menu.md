@@ -30,7 +30,7 @@ everything about the fluid.
 | The menu | `Menu.swift` | Three sections: particles, look, readout. Every choice persists in `UserDefaults` and comes back at the next launch. |
 | The readout | `Readout.swift` | Frame rate, thermal state, and GPU time against the 8.33 ms budget, one line each, updated once a second from the stats call the console line already makes. |
 | The particle scale | `render.rs`, `set_particles` | The spacing that seeds nearest the scale times the shipped count, then a rebuild of the sim. |
-| The look | `render.rs`, `sim_surface.wgsl` | Glass (M4) or flat: one colour on black, no strands. |
+| The look | `render.rs`, `sim_surface.wgsl`, `sim_sprites.wgsl` | Glass (M4) or flat: the colour or black, nothing between, and the charged strands as flecks of the colour. |
 
 Defaults: the button hidden, the readout off, glass, 1x. The GUI-free
 screen of 2026-09-01 is the default state.
@@ -70,17 +70,40 @@ constant and the scaling to 10%.
 
 ## The flat look
 
-The optics immediates had one spare word; it carries the look as
-RGBA8, alpha nonzero for the flat colour and zero for glass. The
-surface shader returns the colour times the edge band before the
-wall lookup, so a flat pixel costs less than an air pixel. The
-tracer compute and the strand draw are skipped: flat water is one
-colour. Returning to glass, the strands regather over the 3 s
-respawn constant.
+Jack, 2026-09-02, verbatim: "When I said "flat colour", I meant
+"flat" - literally only two available colours for the screen: black,
+and the chosen water colour. No blur, no fade, 0 or 1."
 
-The colour passes through in the display's own space: the surface
-is `Bgra8Unorm` on the reference device (logged 2026-09-02), so the
-picker's components are the bytes the panel shows.
+Jack, later the same day, verbatim: "So the binary colour scheme
+means that tiny flecks end up disappearing. While remaining in
+keeping with the binary colour scheme, can we still show the tiny
+flecks of fast-moving water?"
+
+The optics immediates grew from 48 to 64 bytes; the last vec4 is the
+look: the water colour in linear light with a one in w, or zeros for
+the glass. The surface shader returns the colour where the settled
+thickness crosses the edge band's midpoint and black everywhere else,
+before the wall lookup, so a flat pixel costs less than an air pixel.
+There is no edge band: two colours, nothing between. The outline is
+the blurred field's, the same waterline the glass reads; the blur is
+the M4 wavelength filter against particle-footprint ripple, not an
+edge softening.
+
+The flecks are the glass look's strands drawn the binary way: a
+tracer charged past the 0.05 m/s gate is one dot of the water
+colour, written opaque and colour-only, so a dot over the body is the
+body's colour and a dot in the air is a fleck of water in flight. A
+still droplet too small for the threshold stays invisible, as it does
+in the glass look; a moving one shows through its tracers. The tracer
+compute runs in both looks. Rejected: a lower threshold in the flat
+look, which fattens the whole outline to show pairs and still loses a
+lone particle; per-particle discs, which would show every stranded
+particle for ever.
+
+The surface is `Bgra8UnormSrgb` on the reference device (logged
+2026-09-02): the shaders work in linear light and the hardware
+encodes on write. The core linearises the picker's components once,
+at `set_look`, so the panel shows the bytes that were picked.
 
 ## The readout
 
@@ -93,17 +116,54 @@ picker's components are the bytes the panel shows.
 At rest the GPU span reads the governor's clock, not the work
 (optimisation record); the readout shows it as measured.
 
-## Measured (reference device, 2026-09-02)
+## Measured (reference device, 2026-09-02, 11:03 to 11:12)
 
-Filled in by the device session below.
+Jack's hand on the phone through the 1x runs and the menu switches;
+the pinned runs launched with `FLUID_SPACING`. Thermal state nominal
+at the start, fair by the 4x run, serious by the 16x run: the session
+heated the phone. Battery 100%, plugged.
+
+| Build and state | Interval p50 / p99 | GPU p50 | Note |
+|---|---|---|---|
+| master a67522b, 1x glass, handled | 8,334 / 8,334 us | 6.13 to 6.40 ms | the before; 47 windows; 88 MB |
+| m5, 1x glass, handled | 8,334 / 8,334 us | 6.14 to 6.46 ms | the after: the shader edit is neutral; 88 to 92 MB, 100 to 105 MB with the menu or the readout up |
+| m5, 0.25x, pinned, at rest | 8,334 / 8,334 us | 2.26 to 2.28 ms | sleeps after 12 s; 74 MB awake, 64 MB asleep |
+| m5, 4x, pinned, handled | 8,334 / 8,334 us | 6.4 to 6.6 ms | 120 Hz through 20 s of gentle handling; a hard shake dropped it to 40 to 60 Hz (GPU 10 to 25 ms) for 3 s, then it recovered; 88 to 105 MB |
+| m5, 16x, from the menu, thermal fair | 9.3 to 16.7 ms p50 | 11 to 16 ms | the fresh lattice's first seconds; 144 MB at the rebuild, 112 MB after |
+| m5, 16x, pinned, thermal serious | 120 to 163 ms p50 | 118 to 165 ms | six to eight frames a second: the substep basin; 125 MB |
+| m5, 0.25x flat with flecks, handled then at rest (11:23) | 8,334 / 8,334 us | 6.3 to 6.7 ms in the hand, 2.7 ms at rest | slept 20 s in; 82 MB awake, 65 MB asleep |
+
+The rebuild: 24 to 28 ms at every scale, from the menu (the
+console's "sim: rebuilt in" line), pipelines included; Metal's
+shader cache holds the compiled libraries. No pipeline/state split.
+
+The GPU span under the governor: 1x, 4x and 0.25x all read 6.1 to
+6.6 ms in the hand at 120 Hz, while 0.25x at rest reads 2.3 ms. The
+A15 clocks the GPU to the work, so the span is the governor's
+operating point whenever the frame fits, and it climbs past the
+budget only when the work no longer fits. The readout's frame cost
+is that signal: green while the frame fits, red when it does not.
+
+The 16x basin: at 26,880 particles one substep costs about 9 ms, so
+two substeps already overrun the 8.33 ms frame; the longer frame
+floors the substep count at eight, and the frame settles near
+120 ms. Real time at 16x is out of this GPU's reach by physics, as
+the optimisation record said. The menu offers it because Jack asked,
+rated bad.
+
+
+The tap, the button, the menu, the scale switch and its 25 ms
+rebuild, and the two-colour look were exercised by Jack's hand
+during the captures (the fleck request came from his eye on the
+first flat build); the flecks and the readout wait on his eye.
 
 ## Decisions
 
 - This opens M5. The menu is the dropdown of Jack's 2026-08-30
   directive; the lenses land behind it later. Jack can overturn the
   naming.
-- The scale rebuilds the whole sim, pipelines included. Measured
-  below; a pipeline/state split waits on that number.
+- The scale rebuilds the whole sim, pipelines included: 24 to 28 ms
+  measured, so no pipeline/state split.
 - The ratings are static, from the measured ladder. A live rating
   can only rate the scale that is running.
 
@@ -112,8 +172,9 @@ Filled in by the device session below.
 - `the_ladder_seeds_near_its_scales`: each scale seeds within 5% of
   its multiple of 1,620 on the reference screen, and 1x is the
   shipped spacing itself.
-- `optics_immediates_land_at_the_shader_offsets`: the look word lands
-  at byte 44 as RGBA8.
+- `optics_immediates_land_at_the_shader_offsets`: the flat look lands
+  at byte 48; `the_flat_colour_is_linearised`: hot pink through the
+  sRGB curve, the glass all zeros.
 - `the_settled_field_matches_the_calibration`: the plateau at two
   spacings.
 - Every shell path is exercised by the menu; the shell has no test

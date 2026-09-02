@@ -1,6 +1,6 @@
 # Handoff — project state
 
-*Updated 2026-09-01. Audience: the next agent, or Jack. This file is the
+*Updated 2026-09-02. Audience: the next agent, or Jack. This file is the
 state document. It holds what the next stretch of work needs. Update it in
 the same commit that closes a milestone or a task. Git holds the history.*
 
@@ -146,7 +146,7 @@ third of all eddy damping, and shipped XSPH_RATE 6 — retention tau
 at this particle count. Guards green; the recorded cost is ~2 s of
 extra sleep latency after motion.
 
-Test baseline: 32 Rust tests pass, 2026-09-01.
+Test baseline: 34 Rust tests pass, 2026-09-02.
 
 ## M1 measurements (reference device, 2026-08-30, Release)
 
@@ -169,7 +169,35 @@ The stats call costs 102 µs once a second, off the frame path. GPU
 timestamps read real values on this device in M2; the M1 note that the
 adapter lacks `TIMESTAMP_QUERY` did not hold — trust the M2 observation.
 
-## The next task — the optimisation pass's remainder
+## The next task
+
+2026-09-02: the optimisation pass's second stretch merged to master
+on Jack's ruling ("Merge this work"): no-gui, opt-remainder and
+opt-sweeps fast-forwarded as one line, the branches deleted.
+
+The same day, M5 opened with the menu Jack asked for. The M5 record
+(`docs/design/m5-menu.md`) holds the directive verbatim and D6 the
+split: a tap shows a button, the button opens a half-sheet menu with
+the four particle scales (0.25x, 1x, 4x, 16x, rated good, good,
+borderline, bad from the measured ladder), the flat look (two
+colours only, black and the chosen colour, hot pink by default) and
+three readout toggles (frame rate, thermal state, GPU time against
+the 8.33 ms budget). Every choice persists. The core rebuilds the sim
+at a new scale in 25 ms and carries the look in the optics
+immediates' spare word; the settled-field calibration now scales
+with the spacing, pinned by a second plateau test. Measured the same
+day: the shader edit is neutral at 1x, 4x holds 120 Hz in the hand
+and dips to 40 to 60 Hz under a hard shake, 16x sits in the substep
+basin at 120 ms a frame. The lenses of the roadmap's M5 row are
+still to come, behind the same menu.
+
+What remains, in the order the records list it: the M5 lenses; the
+optimisation record's next steps (the tracer draw, the builder
+sweep, the refine chain); the runbook's remainder (the M3 exit
+measurements, budget O2, the battery bound, the frame-latency-1
+experiment). The next one is Jack's pick.
+
+The history of the pass, for the record:
 
 m4-water merged to master 2026-09-01 on Jack's ruling ("yes i can
 see it swirling now - merge it"). The branch carried the whole M4
@@ -199,7 +227,8 @@ the dial history, and the verdict verbatim.
 overlay is deleted (git holds it), the status bar and home indicator
 hide, and the screen is only water. The stats line still prints once
 a second; `devicectl` console capture is now the only measurement
-channel.
+channel. (2026-09-02: the screen is still only water until a tap;
+the menu and the readout are the M5 record's.)
 
 2026-09-01, night: the pass's second stretch, on branch `opt-sweeps`
 (stacked on `opt-remainder` on `no-gui`; none merged). A worktree
@@ -260,7 +289,7 @@ the reference device and `HANDOFF.md` records the measurement.
 | M2 Particles | GPU particle buffer, integration under the body force, box collision, point rendering | Tilt and push the phone; particles behave; particle count at budget recorded |
 | M3 Fluid | The method from O1: neighbour search on the GPU, incompressibility, viscosity | A convincing slosh inside budget; incompressibility measured. Open pending the exit measurements (the closure-rule clause). |
 | M4 Water | The default view: the liquid-glass renderer from the M4 record — thickness from the splatted field, normals, refraction, the dazzle back wall | Looks like water; better than real time; inside budget |
-| M5 Lenses | Field lenses behind a dropdown menu: velocity, density, acceleration, pressure; temperature as an added field | Each lens switches with no frame drop |
+| M5 Lenses | The menu (opened 2026-09-02, M5 record) and, behind it, the field lenses: velocity, density, acceleration, pressure; temperature as an added field | Each lens switches with no frame drop |
 | M6 Headroom | Adaptive substeps, sleep when still, thermal response; power measured | Battery draw recorded against a target |
 | M7 Feel | Sensor-to-frame latency measured and tuned; haptics; rotation landed early (O6, closed 2026-09-01) | Latency number recorded; Jack's hand says it feels right |
 
@@ -284,7 +313,10 @@ CLAUDE.md holds the rules. Three to hold in memory:
 ## Pointers
 
 - `docs/design/decisions.md` — D1 stack, D2 shell, D3 frame and units,
-  D4 dependencies; each amended 2026-08-30 for the web removal.
+  D4 dependencies; each amended 2026-08-30 for the web removal. D5
+  the method, D6 the menu's shell/core split.
+- `docs/design/m5-menu.md` — the menu, the particle ladder, the flat
+  look, the readout, and their device numbers.
 - `scripts/gate.sh` — the whole gate; CI runs the same steps.
 - `platforms/ios/project.yml` — the Xcode project source; never edit the
   generated project.
