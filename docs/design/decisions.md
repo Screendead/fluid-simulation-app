@@ -87,6 +87,22 @@ the negated accelerometer reading is a test.
 its pending sign check are moot: the web target is removed (D1
 amendment). Sensor input is CoreMotion alone.
 
+*Amended 2026-09-02, from Jack's report of inverted inertia.* The formula
+above misencoded the convention. CoreMotion's `user_acceleration` is the
+device's acceleration negated, not the acceleration itself. Three facts fix
+the sign: an accelerometer measures specific force, `a - g`;
+`CMDeviceMotion.h` states that the raw reading is `gravity +
+userAcceleration`; a face-up phone at rest reads `(0, 0, -1)`, which is real
+gravity, so the raw reading is the negated specific force. A face-up phone
+in freefall therefore reads a `user_acceleration` of `(0, 0, 1)`.
+
+The body force is now `g · (gravity + user_acceleration)`, which is that raw
+reading in SI. The "negated proper acceleration" above stands: it was always
+the intent, and only the sign of the second term was wrong. Jack found it on
+the device: a sharp move left piled the water on the left wall first, where
+inertia holds it against the right. The old formula also doubled gravity in
+freefall, which `in_freefall_the_fluid_is_weightless` now pins at zero.
+
 ## D4 — M1 dependencies (2026-08-30)
 
 **Decision.** M1 adds one workspace dependency: wgpu 30.0.1, default

@@ -146,7 +146,7 @@ third of all eddy damping, and shipped XSPH_RATE 6 — retention tau
 at this particle count. Guards green; the recorded cost is ~2 s of
 extra sleep latency after motion.
 
-Test baseline: 36 Rust tests pass, 2026-09-02.
+Test baseline: 38 Rust tests pass, 2026-09-02.
 
 ## M1 measurements (reference device, 2026-08-30, Release)
 
