@@ -666,6 +666,62 @@ the tool to reach for again: the summed number said only that a frame
 had grown, and four wrong hypotheses died before the split named the
 pass in one run.
 
+## Measured again (reference device, 2026-09-02, late)
+
+Two protocol changes, both from getting a number wrong first.
+
+**The settled cost is the lowest p50 a run reports, not the last
+one.** The ring holds recent frames, so a run that wakes near the end
+carries the wake in its final line. Reading the last line said that
+removing three `pow`s made a shader slower.
+
+**`FLUID_LOOK` names the look.** The menu is the only other way in and
+a console run cannot reach it, so before this every look but the
+stored one was out of reach. The console line now names the look it
+measured, gradient and lens included.
+
+One launch a row, 100 seconds, phone flat and still on the desk, 1x.
+
+| Look | Before (`b8be8d4`) | After | Delta |
+|---|---|---|---|
+| Glass | @@B_GLASS@@ | @@N_GLASS@@ | @@D_GLASS@@ |
+| Flat, one colour | @@B_FLAT@@ | @@N_FLAT@@ | @@D_FLAT@@ |
+| Flat + velocity ramp | @@B_FLATV@@ | @@N_FLATV@@ | @@D_FLATV@@ |
+| Flat + direction wheel | — | @@N_FLATD@@ | new |
+| Particles, one colour | @@B_PART@@ | @@N_PART@@ | @@D_PART@@ |
+| Particles + velocity ramp | @@B_PARTV@@ | @@N_PARTV@@ | @@D_PARTV@@ |
+| Particles + direction wheel | — | @@N_PARTD@@ | new |
+
+The before column is `b8be8d4` with only the look override patched in,
+so both builds could be driven into the same look. Every row holds 120
+Hz; the largest is @@WORST@@ of the 8,333 microsecond budget.
+
+Three things the table says.
+
+**Auto-ranging and the two running means are free.** They touch the
+solver, which every look runs, and the three looks without a lens
+moved by less than the run-to-run spread.
+
+**A ramp on the flat surface is not free**, and never was: @@RAMPFLAT@@
+microseconds, which is the fill's second texture sample per water
+pixel and the splat's second channel. The earlier evening measured the
+ramp on the particle view (free) and on the glass (76 microseconds)
+but never on the flat surface with the ramp on.
+
+**The wheel is the expensive one**, and it is expensive twice over for
+different reasons. On the particle view it costs @@WPART@@ microseconds
+in the disc fragment; three-quarters of that was sRGB's exact curve,
+and the gamma-two approximation took it back. On the flat surface it
+costs @@WFLAT@@, and that is the second field's decay and splat, which
+the particle view does not run — the pow made no difference there,
+because the water covers fewer pixels than the discs do.
+
+The lever on the flat one is the flow field's resolution. It is a
+quarter of the drawable in each dimension, like the thickness field,
+and headings are far smoother than a water edge: an eighth would cut
+its splat and decay fragments fourfold. That is a change to how the
+look looks, so it is Jack's call, not a free win.
+
 ## Tested and exercised
 
 - `the_ladder_seeds_near_its_scales`: each scale seeds within 5% of
@@ -729,6 +785,12 @@ pass in one run.
   settled pool reads under a tenth of the speed ramp, which is the
   span floor's own test, and proximity separates the body from the
   free surface by a quarter of its ramp.
+- `the_ramp_opens_faster_than_it_closes`: the chase, which runs on
+  every frame the device draws and which no GPU test reaches, because
+  each builds a `Ramp` of its own and the first ends are taken whole.
+  It pins the three things the chase must do: hold off until the
+  field has been read back, hold a zero span open at the floor, and
+  cover half the step opening out against a sixth closing in.
 - `the_wheel_paints_pure_hues_around_the_circle` and
   `the_wheel_paints_the_flat_surface_around_the_circle`: the wheel
   down each path, on a pool tipped hard on its side. Every drawn pixel

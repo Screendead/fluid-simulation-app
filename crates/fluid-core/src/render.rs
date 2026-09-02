@@ -4599,6 +4599,49 @@ mod tests {
         assert!(seen.len() >= 3, "the ramp painted one colour: {seen:?}");
     }
 
+    // The chase runs on every frame the device draws and no test
+    // reached it: the GPU tests all build a Ramp of their own, which
+    // takes its first ends whole. Three things it must do — hold off
+    // until the field has been read back, hold a zero span open, and
+    // open out faster than it closes in.
+    #[test]
+    fn the_ramp_opens_faster_than_it_closes() {
+        let speeds = |lo: f32, hi: f32| {
+            let mut stats = [0.0; STATS];
+            // Density max is the readback's liveness test.
+            stats[3] = sim::REST_DENSITY;
+            stats[11] = lo;
+            stats[6] = hi;
+            stats
+        };
+        let mut cold = [0.0; STATS];
+        cold[6] = 4.0;
+        assert_eq!(
+            Ramp::new().follow(Lens::Velocity, &cold, SIM_SPACING, 0.0),
+            None
+        );
+
+        let floor = Lens::Velocity.floor(SIM_SPACING);
+        let still = Ramp::new()
+            .follow(Lens::Velocity, &speeds(0.0, 0.0), SIM_SPACING, 0.0)
+            .expect("live");
+        assert_eq!(still, [0.0, floor]);
+
+        let tenth = |from: f32, to: f32| {
+            let mut ramp = Ramp::new();
+            ramp.follow(Lens::Velocity, &speeds(0.0, from), SIM_SPACING, 0.0);
+            ramp.follow(Lens::Velocity, &speeds(0.0, to), SIM_SPACING, 0.1)
+                .expect("live")[1]
+        };
+        // A tenth of a second is two thirds of the opening time
+        // constant and a sixth of the closing one.
+        let opened = (tenth(4.0, 8.0) - 4.0) / 4.0;
+        let closed = (8.0 - tenth(8.0, 4.0)) / 4.0;
+        eprintln!("ramp: opened {opened:.3} of the step, closed {closed:.3}");
+        assert!((opened - 0.487).abs() < 0.01, "opened {opened:.3}");
+        assert!((closed - 0.154).abs() < 0.01, "closed {closed:.3}");
+    }
+
     // Jack, 2026-09-02: "the water is a bit flickery with the gradient
     // on, at near-rest". A ramp between the frame's own two ends puts
     // the solver's own noise on the screen unless the lens's field is

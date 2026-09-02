@@ -146,7 +146,7 @@ third of all eddy damping, and shipped XSPH_RATE 6 — retention tau
 at this particle count. Guards green; the recorded cost is ~2 s of
 extra sleep latency after motion.
 
-Test baseline: 47 Rust tests pass, 2026-09-02.
+Test baseline: 48 Rust tests pass, 2026-09-02.
 
 ## M1 measurements (reference device, 2026-08-30, Release)
 
@@ -217,12 +217,46 @@ passes now carry the ramp in clip z, which has no depth attachment
 to want it. The glass look, measured the same way, pays 76 µs of its
 6,428: the field texture's second channel, written once and read once.
 
+Late the same evening, Jack looked at the lenses and asked for two
+changes. The ramps stopped being derived: every lens now spans the
+lowest and the highest the frame itself holds ("The gradient should
+go from the lowest value *actually present in the sim* to the highest
+*actually present*"), reduced in the solver's own statistics block,
+which grew a second helper and three slots to carry a low-high pair
+per lens. A floor under each span keeps a still pool from stretching
+a ramp across the solver's noise — without it a settled pool strobes
+11% of the speed ramp a frame — and the ends are chased over a sixth
+of a second rather than taken, so one fast particle cannot shift
+every colour at once. The floor is the one absolute number left, and
+it binds only on water that is holding still.
+
+The flicker he reported at near-rest was the acceleration lens: a
+settled particle walked 19.4% of that ramp every frame, nine times
+the next worst. That lens and pressure now read a running mean over
+50 ms, in two `w` slots that were already free, and every lens is
+under 0.6% — measured frame by frame over a settled pool by
+`a_settled_pool_holds_its_colours_still`, which replaces the anchor
+test the auto ramp made vacuous.
+
+Temperature is gone as a lens. Jack: it "doesn't really show anything
+interesting ... it just looks like random dappling", and the
+arithmetic agrees — a settled box spreads 1.5 mK where a float near
+293 K resolves 30 µK, so the lens painted about fifty quantisation
+steps. The direction wheel has its number: hue from the heading,
+taken as far as the square of the water's speed, so a still pool
+keeps the chosen colour and the wheel speaks only for water that
+moves. The discs pack saturation and hue into clip z, hue below the
+point so that a boundary slip wraps a whole turn instead of dropping
+a disc to black; the flat surface splats unit headings into a second
+field, because a mean of angles is wrong at the seam.
+
 What remains, in the order the records list it: the optimisation
 record's next steps (the tracer draw, the builder sweep, the refine
 chain); the runbook's remainder (the M3 exit measurements, budget O2,
-the battery bound, the frame-latency-1 experiment); and Jack's dials
-on the drag and his eye on the five lenses. The next one is Jack's
-pick.
+the battery bound, the frame-latency-1 experiment); the direction
+wheel's own cost, which is the largest unexplained number on the
+branch; and Jack's dials on the drag and his eye on the five lenses.
+The next one is Jack's pick.
 
 The history of the pass, for the record:
 
