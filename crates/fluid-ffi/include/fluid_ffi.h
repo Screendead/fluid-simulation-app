@@ -54,8 +54,10 @@ extern "C" {
  * Builds the renderer on a layer: `particle_count` sprites of
  * `sprite_radius` metres, or, when `bench_sweeps` is nonzero, the M3
  * stage-0 microbench at `bench_spacing` metres. A nonzero `sim_substeps`
- * runs the M3 fluid instead, at that many substeps a frame. Returns null
- * when GPU setup fails, with the reason on stderr.
+ * runs the M3 fluid instead, at that many substeps a frame, with
+ * `particle_scale` times the shipped particle count unless
+ * `bench_spacing` pins the spacing. Returns null when GPU setup fails,
+ * with the reason on stderr.
  *
  * # Safety
  *
@@ -70,7 +72,8 @@ struct FluidRenderer *fluid_renderer_create(void *metal_layer,
                                             uint32_t bench_sweeps,
                                             float bench_spacing,
                                             uint32_t sim_substeps,
-                                            uint32_t tracers);
+                                            uint32_t tracers,
+                                            float particle_scale);
 
 /**
  * One frame: integrate the particles, draw them over the body-force tint,
@@ -87,6 +90,37 @@ uint32_t fluid_renderer_frame(struct FluidRenderer *renderer,
                               struct FluidVec3 user_acceleration,
                               struct FluidVec3 rotation_rate,
                               double now_ms);
+
+/**
+ * Reseeds the fluid at `scale` times the shipped particle count: a
+ * rebuild of the sim, off the frame path, after which a still phone's
+ * water falls and settles again.
+ *
+ * # Safety
+ *
+ * `renderer` must be a live pointer from `fluid_renderer_create`.
+ */
+void fluid_renderer_set_particles(struct FluidRenderer *renderer, float scale);
+
+/**
+ * The particle count `fluid_renderer_set_particles` would seed at
+ * `scale`, for the menu's labels.
+ *
+ * # Safety
+ *
+ * `renderer` must be a live pointer from `fluid_renderer_create`.
+ */
+uint32_t fluid_renderer_particles_at(const struct FluidRenderer *renderer, float scale);
+
+/**
+ * Liquid glass when `flat` is false; otherwise one flat `colour` on
+ * black, components 0 to 1 in the surface's own space.
+ *
+ * # Safety
+ *
+ * `renderer` must be a live pointer from `fluid_renderer_create`.
+ */
+void fluid_renderer_set_look(struct FluidRenderer *renderer, bool flat, struct FluidVec3 colour);
 
 /**
  * # Safety

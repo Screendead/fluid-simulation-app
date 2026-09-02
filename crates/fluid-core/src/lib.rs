@@ -64,4 +64,4 @@ mod render;
 mod sim;
 #[cfg(feature = "film")]
 pub use render::film;
-pub use render::{RenderOptions, RenderStats, Renderer};
+pub use render::{Look, RenderOptions, RenderStats, Renderer};

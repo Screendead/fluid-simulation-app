@@ -59,16 +59,23 @@ pub(crate) fn kernel(r: f32, h: f32) -> f32 {
     }
 }
 
-/// A jittered lattice at spacing `d` filling the slab's lower `fill` of
-/// height, full width and depth, centred; four floats a particle (x, y, z,
-/// then a zero the shader ignores for vec4 alignment).
-pub(crate) fn seed_slab(spacing: f32, extent: [f32; 2], fill: f32) -> Vec<f32> {
+/// The rows, ranks and layers seed_slab fills at `spacing`: whole
+/// steps across the width, up the lower `fill` of the height, and
+/// through the depth, never fewer than one.
+pub(crate) fn lattice_dims(spacing: f32, extent: [f32; 2], fill: f32) -> [u32; 3] {
     let size = [
         2.0 * extent[0] - spacing,
         (2.0 * extent[1] - spacing) * fill,
         SLAB_DEPTH - spacing,
     ];
-    let n: [u32; 3] = std::array::from_fn(|i| ((size[i] / spacing) as u32).max(1));
+    std::array::from_fn(|i| ((size[i] / spacing) as u32).max(1))
+}
+
+/// A jittered lattice at spacing `d` filling the slab's lower `fill` of
+/// height, full width and depth, centred; four floats a particle (x, y, z,
+/// then a zero the shader ignores for vec4 alignment).
+pub(crate) fn seed_slab(spacing: f32, extent: [f32; 2], fill: f32) -> Vec<f32> {
+    let n = lattice_dims(spacing, extent, fill);
     let origin = [
         -0.5 * n[0] as f32 * spacing,
         -extent[1] + 0.5 * spacing,

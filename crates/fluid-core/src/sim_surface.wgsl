@@ -4,7 +4,8 @@
 // gradient sky, Beer-Lambert absorption. The M4 record holds the
 // model. Everything uniform across a frame — world up, the glint half
 // vector and gain — arrives precomputed in the immediates; air pixels
-// take the early return and pay one stripe lookup.
+// take the early return and pay one stripe lookup, and the flat look
+// returns before the wall.
 
 // The fill reads the filtered field: blurred thickness and its raw
 // first and second texel differences, one sample a pixel. field_filter
@@ -20,12 +21,16 @@ struct Optics {
     slab_depth: f32,
     glint_gain: f32,
     h: vec3f,
+    // The look, RGBA8: a nonzero alpha selects the flat colour, zero
+    // the glass.
+    flat: u32,
 }
 var<immediate> optics: Optics;
 
-// The liquid/air edge band, in field units.
-const EDGE_LO: f32 = 0.8;
-const EDGE_HI: f32 = 1.6;
+// The liquid/air edge band, in settled thicknesses: 0.8 and 1.6 field
+// units at the shipped spacing, and the same water at every scale.
+const EDGE_LO: f32 = 0.8 / 5.3;
+const EDGE_HI: f32 = 1.6 / 5.3;
 const ETA: f32 = 1.0 / 1.33;
 const F0: f32 = 0.02;
 // Transmittance one slab depth of path down: red dies first, so the
@@ -176,8 +181,13 @@ fn decay_frag(in: FillVertex) -> @location(0) vec4f {
 @fragment
 fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     let f = textureSampleLevel(field, field_sampler, in.uv, 0.0);
-    let d = f.r;
-    let a = smoothstep(EDGE_LO, EDGE_HI, d);
+    let rel = f.r / optics.field_settled;
+    let a = smoothstep(EDGE_LO, EDGE_HI, rel);
+
+    let flat = unpack4x8unorm(optics.flat);
+    if (flat.a > 0.0) {
+        return vec4f(flat.rgb * a, 1.0);
+    }
 
     // This pixel on the back wall, metres, y up.
     let p = vec2f(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0) * optics.extent;
@@ -188,7 +198,7 @@ fn surface_frag(in: FillVertex) -> @location(0) vec4f {
 
     // Thickness from the calibrated field; the clamp stops an EMA
     // transient from throwing the refraction across the screen.
-    let t = clamp(d / optics.field_settled, 0.0, 1.25) * optics.slab_depth;
+    let t = clamp(rel, 0.0, 1.25) * optics.slab_depth;
 
     // The filtered texel differences over the texel are the thickness
     // gradient and Laplacian. field_filter already ran uv.y against

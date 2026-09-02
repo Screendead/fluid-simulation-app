@@ -40,6 +40,9 @@ JavaScript page that owns permissions and the canvas.
 The deployment target is iOS 17.0. The reference device is CLAUDE.md
 section 5.
 
+*Amended 2026-09-02 (D6).* The shell also owns the settings menu, the
+readout, and their persistence.
+
 *Amended 2026-08-30, Jack's call.* The original text read "There is no
 simulator target: the simulator has no motion sensors." The project now
 builds for the simulator (`aarch64-apple-ios-sim`) as a compile, link and
@@ -145,3 +148,31 @@ spacing; "3D" stands as quasi-3D — z motion and M4 depth exist, z
 eddies do not. 2D remains rejected. Wall boundaries are analytic planar
 kernel integrals, not boundary particles: six flat walls have a closed
 form. This decision closes O1.
+
+## D6 — The menu is the shell's; the fluid is the core's (2026-09-02)
+
+**Decision.** The controls Jack asked for on 2026-09-02 (M5 record)
+are SwiftUI in the shell: the tap, the button, the half-sheet menu,
+the readout, and the choices' persistence in `UserDefaults`. The core
+exposes three calls for them — `set_particles(scale)`,
+`particles_at(scale)`, `set_look(look)` — and computes everything
+about the fluid from them: the spacing behind a scale, the count it
+seeds, the flat colour's shading. The shell computes nothing about
+the fluid; the performance rating beside each scale is a table of
+device measurements, not a computation.
+
+*Amends D2.* D2's shell list gains the settings menu, the readout,
+and their persistence.
+
+**Why.** Native controls, the system colour picker, the thermal state
+and `UserDefaults` are platform work; a menu drawn in wgpu would put
+a UI toolkit inside the platform-free core for no gain. The readout
+rides the once-a-second stats call the console line already makes,
+so it costs the frame nothing new.
+
+**Rejected.** A UI toolkit in the core (egui, or a text pass over
+wgpu): a dependency, a second render path, and no system colour
+picker. Settings in the core: the core has no storage and should not
+gain one. A rating computed live from the running frame: it can only
+rate the scale that is running; the table rates the four before you
+pick.

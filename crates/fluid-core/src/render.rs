@@ -341,7 +341,7 @@ pub fn film(
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&sim.filter);
             pass.set_bind_group(0, &sim.filter_bind, &[]);
-            pass.set_immediates(0, &pack_optics(force, sim.extent));
+            pass.set_immediates(0, &pack_optics(force, sim.extent, sim.field_settled, 0));
             pass.dispatch_workgroups(sim.filter_groups[0], sim.filter_groups[1], 1);
         }
         {
@@ -359,7 +359,7 @@ pub fn film(
                 ..Default::default()
             });
             pass.set_pipeline(&sim.fill);
-            pass.set_immediates(0, &pack_optics(force, sim.extent));
+            pass.set_immediates(0, &pack_optics(force, sim.extent, sim.field_settled, 0));
             pass.set_bind_group(0, &sim.fill_bind, &[]);
             pass.draw(0..3, 0..1);
             pass.set_pipeline(&sim.points);
@@ -456,11 +456,15 @@ fn buffer_entry(
 /// of fog, which looks worse than the flicker it prevents.
 const FIELD_KEEP: f32 = 0.8;
 
-/// The settled interior value of the splatted field, dimensionless.
-/// Measured 5.297 (this machine, 2026-08-31, 600 upright frames).
-/// The surface shader divides by it to turn field into water thickness
-/// (M4 record, "Thickness"); the_settled_field_matches_the_calibration
-/// measures it and pins this constant.
+/// The settled interior value of the splatted field at the shipped
+/// spacing, dimensionless. Measured 5.297 (this machine, 2026-08-31,
+/// 600 upright frames). It is the particle layers per screen area:
+/// the fluid fills the slab depth at rest density, so it scales with
+/// SLAB_DEPTH over the spacing, and each Sim carries its own
+/// FIELD_SETTLED * SIM_SPACING / spacing. The surface shader divides
+/// by it to turn field into water thickness (M4 record, "Thickness");
+/// the_settled_field_matches_the_calibration measures it at two
+/// spacings and pins the constant and the scaling.
 const FIELD_SETTLED: f32 = 5.3;
 
 /// Peak glint output; two percent of it — the Fresnel floor — is what
@@ -472,10 +476,11 @@ const SUN: f32 = 60.0;
 const GLINT_F0: f32 = 0.02;
 
 /// The Optics immediates block in sim_surface.wgsl: two 16-byte vec3
-/// slots with scalars packed into their tails. The lighting that is
-/// uniform across a frame — world up, the glint half vector, and the
-/// folded gain — is computed here once instead of per pixel.
-fn pack_optics(force: [f32; 3], extent: [f32; 2]) -> [u8; 48] {
+/// slots with scalars packed into their tails, and the look's word
+/// (Look::packed) last. The lighting that is uniform across a frame —
+/// world up, the glint half vector, and the folded gain — is computed
+/// here once instead of per pixel.
+fn pack_optics(force: [f32; 3], extent: [f32; 2], field_settled: f32, flat: u32) -> [u8; 48] {
     let norm = |v: [f32; 3], floor: f32| -> ([f32; 3], f32) {
         let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(floor);
         ([v[0] / l, v[1] / l, v[2] / l], l)
@@ -508,7 +513,7 @@ fn pack_optics(force: [f32; 3], extent: [f32; 2]) -> [u8; 48] {
         up[0],
         up[1],
         up[2],
-        FIELD_SETTLED,
+        field_settled,
         extent[0],
         extent[1],
         sim::SLAB_DEPTH,
@@ -522,7 +527,31 @@ fn pack_optics(force: [f32; 3], extent: [f32; 2]) -> [u8; 48] {
     {
         raw[slot * 4..slot * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
+    raw[44..48].copy_from_slice(&flat.to_le_bytes());
     raw
+}
+
+/// How the water is drawn: liquid glass over the dazzle wall (the M4
+/// look), or one flat colour on black with no strands (M5 record).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Look {
+    Glass,
+    Flat([f32; 3]),
+}
+
+impl Look {
+    /// The look's word in the optics immediates: RGBA8 with alpha 255
+    /// for the flat colour, zero for glass. Eight bits a channel is the
+    /// panel's own depth, so the packing loses nothing.
+    fn packed(self) -> u32 {
+        match self {
+            Look::Glass => 0,
+            Look::Flat(colour) => {
+                let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+                byte(colour[0]) | byte(colour[1]) << 8 | byte(colour[2]) << 16 | 0xff << 24
+            }
+        }
+    }
 }
 
 /// Adaptive low-pass on the body force. Accelerometer noise
@@ -919,6 +948,10 @@ pub struct RenderOptions {
     pub bench_spacing: f32,
     pub sim_substeps: u32,
     pub tracers: u32,
+    /// The fluid's particle count as a multiple of the shipped lattice;
+    /// `spacing_for` turns it into a spacing unless `bench_spacing`
+    /// pins one.
+    pub particle_scale: f32,
 }
 
 enum Mode {
@@ -928,8 +961,35 @@ enum Mode {
 }
 
 /// The M3 record's 2.5 mm spacing times the world scale — the same
-/// on-screen resolution at every scale. Used when FLUID_SPACING is unset.
+/// on-screen resolution at every scale. The 1x of the particle ladder.
 const SIM_SPACING: f32 = crate::WORLD_SCALE * 0.0025;
+
+/// The spacing that seeds nearest `scale` times the 1x count. The
+/// lattice quantises in whole rows and layers, so the cube root misses
+/// badly at the ends (0.25x would seed 288 particles, 16x 32,340); the
+/// search walks the FLUID_SPACING clamp range in steps of half a
+/// percent of SIM_SPACING. One count spans a run of spacings, and the
+/// run's spacing nearest the cube root wins, so 1x is SIM_SPACING
+/// itself.
+fn spacing_for(scale: f32, extent: [f32; 2]) -> f32 {
+    let count = |spacing: f32| {
+        sim::lattice_dims(spacing, extent, 0.5)
+            .iter()
+            .product::<u32>()
+    };
+    let target = scale * count(SIM_SPACING) as f32;
+    let ideal = SIM_SPACING / scale.cbrt();
+    let mut best = (f32::INFINITY, f32::INFINITY, SIM_SPACING);
+    for permille in (400..=4000).step_by(5) {
+        let spacing = SIM_SPACING * permille as f32 / 1000.0;
+        let miss = (count(spacing) as f32 / target).ln().abs();
+        let off = (spacing - ideal).abs();
+        if (miss, off) < (best.0, best.1) {
+            best = (miss, off, spacing);
+        }
+    }
+    best.2
+}
 
 struct Sim {
     count_cells: wgpu::ComputePipeline,
@@ -970,6 +1030,7 @@ struct Sim {
     stats_staging: [StagingSlot; 3],
     stats: [f32; 11],
     spacing: f32,
+    field_settled: f32,
     extent: [f32; 2],
     tracer_count: u32,
     count: u32,
@@ -1509,6 +1570,7 @@ impl Sim {
             stats_staging,
             stats: [0.0; 11],
             spacing,
+            field_settled: FIELD_SETTLED * SIM_SPACING / spacing,
             extent,
             tracer_count,
             count,
@@ -2058,6 +2120,7 @@ pub struct Renderer {
     idle: IdleGate,
     idle_frames: u64,
     mode: Mode,
+    look: Look,
     frames: u64,
     last_frame_ms: f64,
 }
@@ -2117,6 +2180,9 @@ impl Renderer {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
+        // The flat look's colour passes through untouched, so the
+        // format says which space the picker's bytes land in.
+        eprintln!("surface: {:?}", config.format);
 
         let extent = [
             width as f32 * 0.5 * METRES_PER_PIXEL,
@@ -2125,13 +2191,14 @@ impl Renderer {
         let mode = if options.bench_sweeps > 0 {
             Mode::Bench(Box::new(Bench::new(&device, extent, &options)))
         } else if options.sim_substeps > 0 {
-            // FLUID_SPACING serves both modes; zero means the default.
+            // FLUID_SPACING pins the spacing for a measurement run;
+            // zero hands the choice to the particle scale.
             let spacing = if options.bench_spacing > 0.0 {
                 options
                     .bench_spacing
                     .clamp(0.4 * SIM_SPACING, 4.0 * SIM_SPACING)
             } else {
-                SIM_SPACING
+                spacing_for(options.particle_scale, extent)
             };
             Mode::Sim(Box::new(Sim::new(
                 &device,
@@ -2191,9 +2258,54 @@ impl Renderer {
             idle: IdleGate::new(),
             idle_frames: 0,
             mode,
+            look: Look::Glass,
             frames: 0,
             last_frame_ms: 0.0,
         })
+    }
+
+    /// Reseeds the fluid at `scale` times the 1x count (spacing_for).
+    /// A rebuild off the frame path: the sim's buffers and pipelines
+    /// are made again, and the idle gate restarts so the fresh lattice
+    /// on a still phone falls and settles before it may sleep.
+    pub fn set_particles(&mut self, scale: f32) {
+        let Mode::Sim(s) = &self.mode else {
+            return;
+        };
+        let spacing = spacing_for(scale, s.extent);
+        if spacing == s.spacing {
+            return;
+        }
+        let (extent, cap, tracers) = (s.extent, s.max_substeps, s.tracer_count);
+        let started = std::time::Instant::now();
+        self.mode = Mode::Sim(Box::new(Sim::new(
+            &self.device,
+            self.config.format,
+            extent,
+            cap,
+            spacing,
+            tracers,
+            [self.config.width, self.config.height],
+        )));
+        self.idle = IdleGate::new();
+        eprintln!(
+            "sim: rebuilt in {:.0} ms",
+            started.elapsed().as_secs_f64() * 1_000.0
+        );
+    }
+
+    /// The count `set_particles(scale)` would seed; zero outside the sim.
+    pub fn particles_at(&self, scale: f32) -> u32 {
+        match &self.mode {
+            Mode::Sim(s) => sim::lattice_dims(spacing_for(scale, s.extent), s.extent, 0.5)
+                .iter()
+                .product(),
+            _ => 0,
+        }
+    }
+
+    pub fn set_look(&mut self, look: Look) {
+        self.look = look;
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -2227,6 +2339,9 @@ impl Renderer {
         let (omega, domega) = self
             .rotation
             .apply(sample.rotation_rate, interval_us / 1_000_000.0);
+        let flat = self.look.packed();
+        // Flat water is one colour: the strands are the glass look's.
+        let strands = flat == 0 && matches!(&self.mode, Mode::Sim(s) if s.tracer_count > 0);
         if let Mode::Sim(s) = &self.mode
             && self.idle.asleep(force, dev, omega, s.stats[6])
         {
@@ -2369,7 +2484,7 @@ impl Renderer {
                     }
                     pass.set_pipeline(&s.reduce_stats);
                     pass.dispatch_workgroups(1, 1, 1);
-                    if s.tracer_count > 0 {
+                    if strands {
                         // The visual layer advects once a frame on the
                         // solved end-of-frame field, with the frame dt.
                         pass.set_bind_group(0, &s.tracer_bind, &[]);
@@ -2429,7 +2544,7 @@ impl Renderer {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&s.filter);
             pass.set_bind_group(0, &s.filter_bind, &[]);
-            pass.set_immediates(0, &pack_optics(force, s.extent));
+            pass.set_immediates(0, &pack_optics(force, s.extent, s.field_settled, flat));
             pass.dispatch_workgroups(s.filter_groups[0], s.filter_groups[1], 1);
         }
         {
@@ -2463,14 +2578,14 @@ impl Renderer {
                 }
                 Mode::Sim(s) => {
                     pass.set_pipeline(&s.fill);
-                    pass.set_immediates(0, &pack_optics(force, s.extent));
+                    pass.set_immediates(0, &pack_optics(force, s.extent, s.field_settled, flat));
                     pass.set_bind_group(0, &s.fill_bind, &[]);
                     pass.draw(0..3, 0..1);
-                    if s.tracer_count > 0 {
+                    if strands {
                         pass.set_pipeline(&s.points);
                         pass.set_bind_group(0, &s.tracer_draw_bind, &[]);
                         pass.draw(0..s.tracer_count, 0..1);
-                    } else {
+                    } else if flat == 0 {
                         pass.set_pipeline(&s.sprites);
                         pass.set_bind_group(0, &s.sprite_bind, &[]);
                         pass.draw(0..4, 0..s.count);
@@ -2708,11 +2823,19 @@ mod tests {
 
     #[test]
     fn optics_immediates_land_at_the_shader_offsets() {
-        let raw = pack_optics([0.0, -9.81, 0.0], [4.0, 5.0]);
+        let hot_pink = Look::Flat([1.0, 105.0 / 255.0, 180.0 / 255.0]);
+        let raw = pack_optics(
+            [0.0, -9.81, 0.0],
+            [4.0, 5.0],
+            FIELD_SETTLED,
+            hot_pink.packed(),
+        );
         let f = |i: usize| f32::from_le_bytes(raw[i..i + 4].try_into().unwrap());
         assert_eq!([f(0), f(4), f(8)], [0.0, 1.0, 0.0], "up");
         assert_eq!(f(12), FIELD_SETTLED);
         assert_eq!([f(16), f(20)], [4.0, 5.0], "extent");
+        assert_eq!(raw[44..48], [255, 105, 180, 255], "the look, RGBA8");
+        assert_eq!(Look::Glass.packed(), 0);
         assert_eq!(f(24), sim::SLAB_DEPTH);
         // Upright: up.z = 0, no fade, so the gain is SUN scaled by
         // Schlick at the half vector's z.
@@ -2725,15 +2848,46 @@ mod tests {
         assert!((f(28) - SUN * schlick).abs() < 1e-4, "gain {}", f(28));
         // Face up fades the sun out; face down degenerates h to zero
         // and the gain with it — neither may go NaN.
-        let flat = pack_optics([0.0, 0.0, -9.81], [4.0, 5.0]);
+        let flat = pack_optics([0.0, 0.0, -9.81], [4.0, 5.0], FIELD_SETTLED, 0);
         assert_eq!(
             f32::from_le_bytes(flat[28..32].try_into().unwrap()),
             0.0,
             "face-up fade"
         );
-        let down = pack_optics([0.0, 0.0, 9.81], [4.0, 5.0]);
+        let down = pack_optics([0.0, 0.0, 9.81], [4.0, 5.0], FIELD_SETTLED, 0);
         for chunk in down.as_chunks::<4>().0 {
             assert!(f32::from_le_bytes(*chunk).is_finite());
+        }
+    }
+
+    // The menu's four scales on the reference screen: within 5% of
+    // their multiples of the 1x count, and 1x is the shipped spacing.
+    #[test]
+    fn the_ladder_seeds_near_its_scales() {
+        let extent = [
+            1284.0 * 0.5 * METRES_PER_PIXEL,
+            2778.0 * 0.5 * METRES_PER_PIXEL,
+        ];
+        let count = |scale| {
+            sim::lattice_dims(spacing_for(scale, extent), extent, 0.5)
+                .iter()
+                .product::<u32>()
+        };
+        assert_eq!(spacing_for(1.0, extent), SIM_SPACING);
+        assert_eq!(count(1.0), 1620);
+        for scale in [0.25, 1.0, 4.0, 16.0] {
+            let spacing = spacing_for(scale, extent);
+            let cells = sim::Grid::new(extent, 2.4 * spacing).cell_count();
+            eprintln!(
+                "{scale}x: spacing {spacing} m, {} particles, {cells} cells",
+                count(scale)
+            );
+            let ratio = count(scale) as f32 / (scale * 1620.0);
+            assert!(
+                (0.95..1.05).contains(&ratio),
+                "{scale}x seeds {}",
+                count(scale)
+            );
         }
     }
 
@@ -2930,6 +3084,7 @@ mod tests {
             bench_spacing: 0.0,
             sim_substeps: 0,
             tracers: 0,
+            particle_scale: 1.0,
         };
         let mut bench = Bench::new(&device, TEST_EXTENT, &options);
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -2968,20 +3123,42 @@ mod tests {
         assert!(f[3] < 2.0 * sim::REST_DENSITY, "rho max {}", f[3]);
     }
 
-    // The surface shader divides the field by FIELD_SETTLED to get
-    // water thickness. This measures the real settled splat — five
-    // upright seconds, then one raw draw (splat constant 1, the EMA's
-    // steady state at rest) — and pins the constant to it. TEST_EXTENT
-    // matches the phone's world within half a percent, and the splat
-    // is a point-sampled continuous field, so the small target reads
-    // the same plateau the phone renders.
-    #[test]
-    fn the_settled_field_matches_the_calibration() {
-        let Some((device, queue, sim)) = headless_sim() else {
-            return;
-        };
-        let f = read_stats(&device, &queue, &sim, 7, 600, [0.0, -9.81, -0.5]);
-        assert!(f[6] < 0.2, "not settled: v_max {}", f[6]);
+    // Field values live in f16's normal range; zero rows decode to
+    // exactly zero through the e == 0 arm, and an overflowed store
+    // decodes to infinity so is_finite can catch it.
+    fn f16(h: u16) -> f32 {
+        let e = u32::from(h >> 10) & 0x1f;
+        if e == 0 {
+            return 0.0;
+        }
+        if e == 31 {
+            return f32::INFINITY;
+        }
+        f32::from_bits(
+            (u32::from(h & 0x8000) << 16) | ((e + 112) << 23) | (u32::from(h & 0x3ff) << 13),
+        )
+    }
+
+    // The interior plateau of a field: the median of the texels at
+    // 60% of the peak or more, with the peak.
+    fn plateau(vals: &[f32]) -> (f32, f32) {
+        let max = vals.iter().copied().fold(0.0, f32::max);
+        let mut interior: Vec<f32> = vals.iter().copied().filter(|v| *v >= 0.6 * max).collect();
+        interior.sort_unstable_by(f32::total_cmp);
+        (interior[interior.len() / 2], max)
+    }
+
+    // One raw draw of the body splat (splat constant 1, the EMA's
+    // steady state at rest) into a 32 x 64 target: the target's view,
+    // for the filter, and its decoded texels. TEST_EXTENT matches the
+    // phone's world within half a percent, and the splat is a
+    // point-sampled continuous field, so the small target reads the
+    // same plateau the phone renders.
+    fn raw_splat(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sim: &Sim,
+    ) -> (wgpu::TextureView, Vec<f32>) {
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("calibration field"),
             size: wgpu::Extent3d {
@@ -3060,21 +3237,6 @@ mod tests {
             })
             .expect("poll");
         let bytes = readback.get_mapped_range(..).expect("mapped");
-        // Field values live in f16's normal range; zero rows decode to
-        // exactly zero through the e == 0 arm, and an overflowed store
-        // decodes to infinity so is_finite can catch it.
-        let f16 = |h: u16| -> f32 {
-            let e = u32::from(h >> 10) & 0x1f;
-            if e == 0 {
-                return 0.0;
-            }
-            if e == 31 {
-                return f32::INFINITY;
-            }
-            f32::from_bits(
-                (u32::from(h & 0x8000) << 16) | ((e + 112) << 23) | (u32::from(h & 0x3ff) << 13),
-            )
-        };
         let mut vals = Vec::new();
         for row in 0..64 {
             let base = row * 256;
@@ -3082,14 +3244,22 @@ mod tests {
                 vals.push(f16(u16::from_le_bytes(*pair)));
             }
         }
-        let max = vals.iter().copied().fold(0.0, f32::max);
-        let mut interior: Vec<f32> = vals.into_iter().filter(|v| *v >= 0.6 * max).collect();
-        interior.sort_unstable_by(f32::total_cmp);
-        let plateau = interior[interior.len() / 2];
-        eprintln!(
-            "settled field: plateau {plateau:.3}, max {max:.3}, interior texels {}",
-            interior.len()
-        );
+        (view, vals)
+    }
+
+    // The surface shader divides the field by FIELD_SETTLED to get
+    // water thickness. This measures the real settled splat — five
+    // upright seconds, then one raw draw — and pins the constant to it.
+    #[test]
+    fn the_settled_field_matches_the_calibration() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let f = read_stats(&device, &queue, &sim, 7, 600, [0.0, -9.81, -0.5]);
+        assert!(f[6] < 0.2, "not settled: v_max {}", f[6]);
+        let (view, vals) = raw_splat(&device, &queue, &sim);
+        let (plateau, max) = plateau(&vals);
+        eprintln!("settled field: plateau {plateau:.3}, max {max:.3}");
         assert!(
             (plateau / FIELD_SETTLED - 1.0).abs() < 0.1,
             "plateau {plateau} vs calibrated {FIELD_SETTLED}"
@@ -3128,7 +3298,10 @@ mod tests {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&sim.filter);
             pass.set_bind_group(0, &bind, &[]);
-            pass.set_immediates(0, &pack_optics([0.0, -9.81, -0.5], sim.extent));
+            pass.set_immediates(
+                0,
+                &pack_optics([0.0, -9.81, -0.5], sim.extent, sim.field_settled, 0),
+            );
             let groups = filter_groups([128, 256]);
             pass.dispatch_workgroups(groups[0], groups[1], 1);
         }
@@ -3208,6 +3381,39 @@ mod tests {
         );
         assert!(drift < 0.03, "stored differences drift {drift}");
         assert!(edge > 0.05, "no waterline to test: {edge}");
+    }
+
+    // The field is the particle layers per screen area, so a finer
+    // lattice settles to a proportionally higher plateau: the scaling
+    // every other scale's thickness and edge band rest on (M5 record).
+    #[test]
+    fn the_settled_field_scales_with_the_spacing() {
+        let Some((device, queue)) = headless_device() else {
+            return;
+        };
+        let spacing = 0.63 * SIM_SPACING;
+        let sim = Sim::new(
+            &device,
+            wgpu::TextureFormat::Bgra8Unorm,
+            TEST_EXTENT,
+            7,
+            spacing,
+            4096,
+            [128, 256],
+        );
+        let f = read_stats(&device, &queue, &sim, 7, 600, [0.0, -9.81, -0.5]);
+        assert!(f[6] < 0.2, "not settled: v_max {}", f[6]);
+        let (_, vals) = raw_splat(&device, &queue, &sim);
+        let (plateau, _) = plateau(&vals);
+        eprintln!(
+            "settled field at {spacing} m: plateau {plateau:.3} vs {:.3}",
+            sim.field_settled
+        );
+        assert!(
+            (plateau / sim.field_settled - 1.0).abs() < 0.1,
+            "plateau {plateau} vs scaled {}",
+            sim.field_settled
+        );
     }
 
     // A second of the solve, phone flat on the desk (gravity into the

@@ -10,12 +10,60 @@ struct FluidApp: App {
 struct ContentView: View {
     @State private var driver = FrameDriver()
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(Settings.particleScaleKey) private var particleScale = Settings.defaultScale
+    @AppStorage(Settings.flatKey) private var flat = false
+    @AppStorage(Settings.flatColourKey) private var flatColour = Settings.hotPink
+    @AppStorage(Settings.showRateKey) private var showRate = false
+    @AppStorage(Settings.showThermalKey) private var showThermal = false
+    @AppStorage(Settings.showCostKey) private var showCost = false
+    // Each tap restarts the button's four seconds.
+    @State private var reveal = 0
+    @State private var buttonShown = false
+    @State private var menuShown = false
 
     var body: some View {
-        FluidSurface(driver: driver)
-            .ignoresSafeArea()
-            .statusBarHidden()
-            .persistentSystemOverlays(.hidden)
-            .onChange(of: scenePhase) { _, phase in driver.paused = phase != .active }
+        ZStack(alignment: .bottomTrailing) {
+            FluidSurface(driver: driver).ignoresSafeArea()
+            if buttonShown {
+                Button { menuShown = true } label: {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.title2)
+                        .foregroundStyle(.white)
+                        .padding(14)
+                        .background(.black.opacity(0.4), in: Circle())
+                }
+                .padding(24)
+                .transition(.opacity)
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if showRate || showThermal || showCost {
+                ReadoutView(readout: driver.readout, rate: showRate, thermal: showThermal, cost: showCost)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            reveal += 1
+            buttonShown = true
+        }
+        .animation(.easeInOut(duration: 0.2), value: buttonShown)
+        .task(id: reveal) {
+            guard reveal > 0 else { return }
+            try? await Task.sleep(for: .seconds(4))
+            if !menuShown && !Task.isCancelled { buttonShown = false }
+        }
+        .sheet(isPresented: $menuShown, onDismiss: { buttonShown = false }) {
+            MenuSheet(
+                particleScale: $particleScale, flat: $flat, flatColour: $flatColour,
+                showRate: $showRate, showThermal: $showThermal, showCost: $showCost,
+                particles: driver.particles(at:))
+            .presentationDetents([.medium, .large])
+        }
+        .statusBarHidden()
+        .persistentSystemOverlays(.hidden)
+        .onChange(of: scenePhase) { _, phase in driver.paused = phase != .active }
+        .onChange(of: particleScale) { _, scale in driver.setParticles(scale) }
+        .onChange(of: flat) { driver.setLook(flat: flat, colour: FluidVec3(hex: flatColour)) }
+        .onChange(of: flatColour) { driver.setLook(flat: flat, colour: FluidVec3(hex: flatColour)) }
     }
 }
