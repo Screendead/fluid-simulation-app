@@ -49,7 +49,7 @@ final class FrameDriver {
         }
         let chosen = Look(env["FLUID_LOOK"])
         setLook(
-            flat: chosen.flat, particles: chosen.particles,
+            flat: chosen.flat, particles: chosen.particles, dapple: chosen.dapple,
             colour: Settings.flatColour, gradient: chosen.gradient,
             high: Settings.highColour, lens: chosen.lens)
         let link = CADisplayLink(target: self, selector: #selector(tick))
@@ -78,12 +78,15 @@ final class FrameDriver {
     }
 
     func setLook(
-        flat: Bool, particles: Bool, colour: FluidVec3,
+        flat: Bool, particles: Bool, dapple: Bool, colour: FluidVec3,
         gradient: Bool, high: FluidVec3, lens: UInt32
     ) {
         guard let renderer else { return }
-        fluid_renderer_set_look(renderer, flat, particles, colour, gradient, high, lens)
-        look = Look(flat: flat, particles: particles, gradient: gradient, lens: lens).name
+        fluid_renderer_set_look(renderer, flat, particles, dapple, colour, gradient, high, lens)
+        look = Look(
+            flat: flat, particles: particles, dapple: dapple,
+            gradient: gradient, lens: lens
+        ).name
     }
 
     @objc private func tick(_ link: CADisplayLink) {

@@ -195,6 +195,10 @@ pub unsafe extern "C" fn fluid_renderer_touch(
 /// way the water goes and reads no `high`. Colour components are 0 to
 /// 1 as the picker shows them; the core linearises them.
 ///
+/// `dapple` dithers the flat look's two levels against an ordered
+/// matrix. `particles` outranks it: the particle view draws no field
+/// for a matrix to break up.
+///
 /// # Safety
 ///
 /// `renderer` must be a live pointer from `fluid_renderer_create`.
@@ -203,6 +207,7 @@ pub unsafe extern "C" fn fluid_renderer_set_look(
     renderer: *mut FluidRenderer,
     flat: bool,
     particles: bool,
+    dapple: bool,
     low: FluidVec3,
     gradient: bool,
     high: FluidVec3,
@@ -223,10 +228,11 @@ pub unsafe extern "C" fn fluid_renderer_set_look(
     } else {
         Paint::Solid(low.into())
     };
-    let look = match (flat, particles) {
-        (false, _) => Look::Glass,
-        (true, false) => Look::Flat(paint),
-        (true, true) => Look::Particles(paint),
+    let look = match (flat, particles, dapple) {
+        (false, ..) => Look::Glass,
+        (true, true, _) => Look::Particles(paint),
+        (true, false, true) => Look::Dapple(paint),
+        (true, false, false) => Look::Flat(paint),
     };
     unsafe { &mut *renderer }.0.set_look(look);
 }

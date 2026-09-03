@@ -6,6 +6,7 @@ enum Settings {
     static let particleScaleKey = "particleScale"
     static let flatKey = "flat"
     static let particleViewKey = "particleView"
+    static let dappleKey = "dapple"
     static let flatColourKey = "flatColour"
     static let gradientKey = "gradient"
     static let highColourKey = "highColour"
@@ -26,6 +27,8 @@ enum Settings {
     @MainActor static var particleView: Bool {
         UserDefaults.standard.bool(forKey: particleViewKey)
     }
+
+    @MainActor static var dapple: Bool { UserDefaults.standard.bool(forKey: dappleKey) }
 
     @MainActor static var flatColour: FluidVec3 {
         FluidVec3(hex: UserDefaults.standard.string(forKey: flatColourKey) ?? hotPink)
@@ -106,6 +109,7 @@ struct MenuSheet: View {
     @Binding var particleScale: Double
     @Binding var flat: Bool
     @Binding var particleView: Bool
+    @Binding var dapple: Bool
     @Binding var flatColour: String
     @Binding var gradient: Bool
     @Binding var highColour: String
@@ -158,6 +162,8 @@ struct MenuSheet: View {
                     .disabled(!flat)
                     Toggle("Particle view", isOn: $particleView)
                         .disabled(!flat)
+                    Toggle("Dapple", isOn: $dapple)
+                        .disabled(!flat || particleView)
                 }
                 Section {
                     Toggle("Gradient", isOn: $gradient)
@@ -219,13 +225,14 @@ extension Color {
 
 /// Which look a run draws. The menu writes the stored one; a
 /// measurement run over the console cannot reach the menu, so
-/// `FLUID_LOOK` names one instead: "glass", "flat" or "particles",
-/// with the lens after a colon where a run wants the gradient on
-/// ("flat:direction"). `name` is what the log line reports, so a
+/// `FLUID_LOOK` names one instead: "glass", "flat", "dapple" or
+/// "particles", with the lens after a colon where a run wants the
+/// gradient on ("flat:direction"). `name` is what the log line reports, so a
 /// number carries the look it was taken in.
 struct Look {
     let flat: Bool
     let particles: Bool
+    let dapple: Bool
     let gradient: Bool
     let lens: UInt32
 
@@ -233,7 +240,8 @@ struct Look {
         guard let parts = spec?.split(separator: ":"), let look = parts.first else {
             self.init(
                 flat: Settings.flat, particles: Settings.particleView,
-                gradient: Settings.gradient, lens: Settings.lens)
+                dapple: Settings.dapple, gradient: Settings.gradient,
+                lens: Settings.lens)
             return
         }
         let lens = parts.dropFirst().first.flatMap { name in
@@ -241,18 +249,20 @@ struct Look {
         }
         self.init(
             flat: look != "glass", particles: look == "particles",
-            gradient: lens != nil, lens: UInt32(lens?.code ?? 0))
+            dapple: look == "dapple", gradient: lens != nil,
+            lens: UInt32(lens?.code ?? 0))
     }
 
-    init(flat: Bool, particles: Bool, gradient: Bool, lens: UInt32) {
+    init(flat: Bool, particles: Bool, dapple: Bool, gradient: Bool, lens: UInt32) {
         self.flat = flat
         self.particles = particles
+        self.dapple = dapple
         self.gradient = gradient
         self.lens = lens
     }
 
     var name: String {
-        let base = flat ? (particles ? "particles" : "flat") : "glass"
+        let base = flat ? (particles ? "particles" : (dapple ? "dapple" : "flat")) : "glass"
         guard flat, gradient,
             let choice = LensChoice.all.first(where: { $0.code == Int(lens) })
         else {

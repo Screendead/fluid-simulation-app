@@ -760,6 +760,10 @@ pub enum Paint {
 pub enum Look {
     Glass,
     Flat(Paint),
+    /// The flat look's two levels, dithered against an ordered matrix
+    /// so a body crossing either breaks into a halftone. Jack,
+    /// 2026-09-03: "proper dappling in a retro computing style".
+    Dapple(Paint),
     Particles(Paint),
 }
 
@@ -821,6 +825,7 @@ impl Painted {
     /// draw: a solid colour, the glass, or a lens whose field has not
     /// been read back yet.
     fn new(look: Look, ends: Option<[f32; 2]>) -> Painted {
+        let mut dapple = 1.0;
         let paint = match look {
             Look::Glass => {
                 return Painted {
@@ -831,11 +836,17 @@ impl Painted {
                 };
             }
             Look::Flat(p) | Look::Particles(p) => p,
+            // Two in the low colour's w is the dapple look, as two in
+            // the high colour's w is the wheel.
+            Look::Dapple(p) => {
+                dapple = 2.0;
+                p
+            }
         };
         let colour = |c: [f32; 3], w: f32| [linear(c[0]), linear(c[1]), linear(c[2]), w];
         match (paint, ends) {
             (Paint::Ramp { low, high, lens }, Some(range)) => Painted {
-                low: colour(low, 1.0),
+                low: colour(low, dapple),
                 // The wheel paints its own colours over the whole
                 // ramp, so the high colour goes unread and its slot
                 // carries the two apart instead.
@@ -844,7 +855,7 @@ impl Painted {
                 range,
             },
             (Paint::Solid(c), _) | (Paint::Ramp { low: c, .. }, None) => Painted {
-                low: colour(c, 1.0),
+                low: colour(c, dapple),
                 high: [0.0; 4],
                 lens: 0,
                 range: [0.0, 1.0],
@@ -3072,7 +3083,9 @@ impl Renderer {
         let ends = match (&self.mode, self.look) {
             (
                 Mode::Sim(s),
-                Look::Flat(Paint::Ramp { lens, .. }) | Look::Particles(Paint::Ramp { lens, .. }),
+                Look::Flat(Paint::Ramp { lens, .. })
+                | Look::Dapple(Paint::Ramp { lens, .. })
+                | Look::Particles(Paint::Ramp { lens, .. }),
             ) => self.ramp.follow(lens, &s.stats, s.spacing, dt),
             _ => None,
         };
@@ -4851,6 +4864,56 @@ mod tests {
                 "no pixel at level {rung}: {levels:?}"
             );
         }
+    }
+
+    /// Two claims the dapple look rests on: the matrix moves a real
+    /// share of the pixels off the level they would take, and it
+    /// leaves the mean alone, so the areas Jack tuned the flat look to
+    /// survive the dither.
+    #[test]
+    fn the_matrix_moves_pixels_and_holds_the_mean() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let pose = [0.0, 0.0, -9.81];
+        read_stats(&device, &queue, &sim, 7, 600, pose, sim::Touches::default());
+        let side = 64u32;
+        let render = |look| {
+            let painted = Painted::new(look, None);
+            draw_surface(
+                &device,
+                &queue,
+                &sim,
+                side,
+                pack_paint(painted.low, painted.high, painted.range, painted.lens, 0.0),
+                pack_optics(
+                    pose,
+                    sim.extent,
+                    sim.field_settled,
+                    painted.low,
+                    painted.high,
+                ),
+            )
+        };
+        let white = Paint::Solid([1.0, 1.0, 1.0]);
+        let (hard, dithered) = (render(Look::Flat(white)), render(Look::Dapple(white)));
+        let moved = hard.iter().zip(&dithered).filter(|(a, b)| a != b).count();
+        let ink = |px: &[[u8; 4]]| px.iter().map(|p| u32::from(p[0])).sum::<u32>();
+        let (was, is) = (ink(&hard), ink(&dithered));
+        eprintln!(
+            "dapple: {moved} of {} pixels moved, ink {was} to {is}",
+            hard.len()
+        );
+        assert!(
+            moved * 10 > hard.len(),
+            "the matrix moved {moved} of {} pixels",
+            hard.len()
+        );
+        let drift = (f64::from(is) - f64::from(was)) / f64::from(was);
+        assert!(
+            drift.abs() < 0.15,
+            "the matrix moved the mean by {drift:.3}"
+        );
     }
 
     // The chase runs on every frame the device draws and no test

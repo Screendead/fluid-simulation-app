@@ -81,9 +81,34 @@ const EDGE_HI: f32 = 1.6 / 5.3;
 // he first saw, 0.4 and 3.0, split it 20/38/42.
 const FLECK: f32 = 1.2;
 const SOLID: f32 = 1.6;
-// Jack's "50% opacity" is half the colour he sees, and the surface
-// encodes sRGB from linear, so a quarter here.
+// Jack asked for "50% opacity" and accepted this on the phone. The
+// surface encodes sRGB from linear, so a quarter here shows as 0.54 —
+// a shade over his half, and the shade he looked at.
 const THIN: f32 = 0.25;
+// The dapple look (Jack, 2026-09-03: "proper dappling in a retro
+// computing style"). The matrix cell is three device pixels, so an
+// 8x8 cell spans 24 of them: a halftone at this screen's density,
+// which is the size he picked over a chunkier one.
+const DAPPLE_PX: f32 = 3.0;
+// How far the matrix moves a threshold, in splat units, full width.
+// FLECK and SOLID stand 0.4 apart, so 0.4 makes the two bands meet
+// and the three tones read as one halftone ramp. The offset has zero
+// mean over the matrix, so the areas the levels cover stay the ones
+// Jack tuned.
+const DAPPLE_BAND: f32 = 0.4;
+// The lens ramp in steps, the matrix choosing between neighbours. The
+// flat look takes 255, which an eight-bit surface cannot show.
+const DAPPLE_STEPS: f32 = 4.0;
+
+// The 8x8 ordered matrix, from the bits of y and x^y interleaved: no
+// texture and no memory, three shifts a level.
+fn bayer(p: vec2u) -> f32 {
+    var v = 0u;
+    for (var i = 0u; i < 3u; i++) {
+        v |= ((((p.x ^ p.y) >> i) & 1u) << (2u * i + 1u)) | (((p.y >> i) & 1u) << (2u * i));
+    }
+    return (f32(v) + 0.5) / 64.0;
+}
 const ETA: f32 = 1.0 / 1.33;
 const F0: f32 = 0.02;
 // Transmittance one slab depth of path down: red dies first, so the
@@ -253,39 +278,59 @@ fn decay_frag(in: FillVertex) -> @location(0) vec4f {
 // took it: 3,847 microseconds with the branch against 3,644 with it
 // folded (reference device, 2026-09-02, the two builds installed one
 // after the other, twice through).
-fn flat_look(uv: vec2f, wheel: bool) -> vec4f {
+fn flat_look(uv: vec2f, px: vec2f, wheel: bool) -> vec4f {
     let s = textureSampleLevel(splat, field_sampler, uv, 0.0);
-    if (s.r < FLECK) {
+    // The dapple look moves both thresholds by the matrix, so a body
+    // crossing one breaks into a halftone instead of stepping. The
+    // flat look moves neither and keeps its two hard edges.
+    var jitter = 0.0;
+    var steps = 255.0;
+    var lens_cell = 0.5;
+    if (optics.flat.w > 1.5) {
+        let cell = bayer(vec2u(px * (1.0 / DAPPLE_PX)));
+        jitter = DAPPLE_BAND * (cell - 0.5);
+        steps = DAPPLE_STEPS;
+        // Half a matrix along, or the lens steps would land on the
+        // thickness steps and the two patterns would lock together.
+        lens_cell = fract(cell + 0.5);
+    }
+    let thickness = s.r + jitter;
+    if (thickness < FLECK) {
         return vec4f(0.0, 0.0, 0.0, 1.0);
     }
     var colour = optics.flat.rgb;
     if (optics.high.w > 0.0) {
-        // FLECK is what makes the divide safe: no pixel reaches here
-        // with a thickness near zero.
-        let t = s.g / s.r;
+        // The threshold above is what makes the divide safe: the
+        // matrix takes at most half a band off, so no pixel reaches
+        // here with s.r under FLECK - DAPPLE_BAND / 2.
+        var f = s.g / s.r;
+        var ink = optics.high.rgb;
         if (wheel) {
             let d = textureSampleLevel(flow, field_sampler, uv, 0.0).rg;
+            ink = hue_colour(atan2(d.y, d.x) / TAU + 0.5);
             // The wheel takes over as the square, as it does on the
-            // discs in sim_sprites.wgsl.
-            colour = mix(optics.flat.rgb, hue_colour(atan2(d.y, d.x) / TAU + 0.5), t * t);
-        } else {
-            colour = mix(optics.flat.rgb, optics.high.rgb, t);
+            // discs in sim_sprites.wgsl. The hue itself never steps:
+            // a stepped angle bands hard at the seam.
+            f = f * f;
         }
+        let q = f * steps;
+        let stepped = (floor(q) + select(0.0, 1.0, fract(q) > lens_cell)) / steps;
+        colour = mix(optics.flat.rgb, ink, stepped);
     }
-    return vec4f(colour * select(THIN, 1.0, s.r >= SOLID), 1.0);
+    return vec4f(colour * select(THIN, 1.0, thickness >= SOLID), 1.0);
 }
 
 // The wheel's own fill. Bound only by a flat look with the direction
 // lens on, so it takes the flat branch without testing for it.
 @fragment
 fn surface_wheel_frag(in: FillVertex) -> @location(0) vec4f {
-    return flat_look(in.uv, true);
+    return flat_look(in.uv, in.clip.xy, true);
 }
 
 @fragment
 fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     if (optics.flat.w > 0.0) {
-        return flat_look(in.uv, false);
+        return flat_look(in.uv, in.clip.xy, false);
     }
 
     let f = textureSampleLevel(field, field_sampler, in.uv, 0.0);

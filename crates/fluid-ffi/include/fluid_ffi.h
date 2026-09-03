@@ -148,6 +148,10 @@ void fluid_renderer_touch(struct FluidRenderer *renderer,
  * way the water goes and reads no `high`. Colour components are 0 to
  * 1 as the picker shows them; the core linearises them.
  *
+ * `dapple` dithers the flat look's two levels against an ordered
+ * matrix. `particles` outranks it: the particle view draws no field
+ * for a matrix to break up.
+ *
  * # Safety
  *
  * `renderer` must be a live pointer from `fluid_renderer_create`.
@@ -155,6 +159,7 @@ void fluid_renderer_touch(struct FluidRenderer *renderer,
 void fluid_renderer_set_look(struct FluidRenderer *renderer,
                              bool flat,
                              bool particles,
+                             bool dapple,
                              struct FluidVec3 low,
                              bool gradient,
                              struct FluidVec3 high,
