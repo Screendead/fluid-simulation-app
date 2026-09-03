@@ -146,7 +146,7 @@ third of all eddy damping, and shipped XSPH_RATE 6 — retention tau
 at this particle count. Guards green; the recorded cost is ~2 s of
 extra sleep latency after motion.
 
-Test baseline: 53 Rust tests pass, 2026-09-03.
+Test baseline: 54 Rust tests pass, 2026-09-03.
 
 ## M1 measurements (reference device, 2026-08-30, Release)
 
@@ -276,21 +276,28 @@ at 4x ("flat and particle look the coolest"), "comfortable" means
 120 Hz through ordinary and brisk handling with a dip only in a hard
 shake, and the work is approved on the laptop alone.
 
-Shipped on the branch, laptop-guarded, device pending: the substep cap
-scales with the particle spacing (4.2 ms at 1x, 2.6 ms at 4x; the 4x
-pool rests and sleeps); a 120 Hz frame that the CFL would put on six
-or seven five-pass substeps runs eight two-pass ones instead (one
-pure function, `substeps_for`, shared by the phone and the film
-harness); and the solver sorts the particle records into cell order
-every substep (the seed-order experiment on the phone priced mixed
-water at 16 to 30% of a substep, and cell order equal to today's row
-order at rest). A fresh-context review followed. The device runbook
-for the branch is in the record: the binding count first (23 storage
-buffers; the laptop is the only proxy so far), then the upright rest
-at 4x, the seed-order experiment with the sort in place, a 1x settled
-pair for the permute's cost, and Jack's hand on a brisk swirl at 4x
-reading eight-substep windows at 120 Hz. REVIEW.md's device blocker
-stands until then; the merge is Jack's.
+Shipped on the branch, and measured on the phone the same day: the
+substep cap scales with the particle spacing (4.2 ms at 1x, 2.6 ms at
+4x); a 120 Hz frame that the CFL would put on six or seven five-pass
+substeps runs eight two-pass ones instead (one pure function,
+`substeps_for`, shared by the phone and the film harness); and the
+solver sorts the particle records into cell order every substep. A
+fresh-context review of two lenses followed, and its four confirmed
+findings are fixed on the branch.
+
+The device session closed the runbook. The 23-buffer solve layout
+launches. Held upright at 4x, the cap turns 4,280 CFL clamps a second
+into none and v_max 0.89 into 0.10, at 120 Hz either way. The sort
+makes a shuffled pool cost 0.5% more than a row-ordered one where it
+cost 13 to 16% before, and it takes 18% off a substep at 4x on a
+settled pool (1,235 to 955 us) while changing nothing at 1x (226
+against 222 us), which is the default setting and so the one that had
+to be safe. Under Jack's hand at 4x, hot, both the flat and particle
+looks hold a median second of 8,334 us, and the longest unbroken dip
+is 2 s on flat and 4 s on particles, where the old dip held 45 to 55
+Hz until the water slowed. Jack on the particle look: "it's
+stunning". REVIEW.md's device blocker is answered; the merge is
+Jack's.
 
 Two protocol facts from the session bind future measurements: a pair
 of installs on the phone drifts 10 to 20% thermally, so a code change
@@ -300,8 +307,8 @@ and the record's film bands are distributions, not lines — the 1x
 shake compression read 0.076 to 0.138% on an unchanged head in one
 day.
 
-What remains, in the order the records list it: the device runbook
-above; the direction wheel's own cost (the second field it splats);
+What remains, in the order the records list it: the direction wheel's
+own cost (the second field it splats);
 the LANES and workgroup retune, which waits on an alternating
 two-pipeline instrument; the tracer draw, which belongs to the glass
 look Jack deprioritised at 4x; the runbook's remainder (the M3 exit
