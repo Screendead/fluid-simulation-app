@@ -4795,6 +4795,7 @@ mod tests {
             0.0,
         );
         let mut seen = std::collections::BTreeSet::new();
+        let mut levels = std::collections::BTreeSet::new();
         let mut air = 0;
         for px in draw_surface(&device, &queue, &sim, side, paint, optics) {
             if px[..3] == [0, 0, 0] {
@@ -4803,10 +4804,14 @@ mod tests {
             }
             let [b, g, r, _] = px;
             assert_eq!(g, 0, "the ramp left its line: {px:?}");
-            assert!(
-                (i32::from(r) + i32::from(b) - 255).abs() <= 1,
-                "the ramp left its line: {px:?}"
-            );
+            // Two levels put the line at full brightness and at
+            // THIN, so the sum lands on one of two rungs, not on one.
+            let sum = i32::from(r) + i32::from(b);
+            let rung = [255, 64]
+                .iter()
+                .position(|rung| (sum - rung).abs() <= 1)
+                .unwrap_or_else(|| panic!("the ramp left its line: {px:?}"));
+            levels.insert(rung);
             seen.insert(r);
         }
         eprintln!(
@@ -4816,6 +4821,7 @@ mod tests {
         );
         assert!(air > 0, "the whole screen read as water");
         assert!(seen.len() >= 3, "the ramp painted one colour: {seen:?}");
+        assert_eq!(levels.len(), 2, "the body drew one level: {levels:?}");
     }
 
     // The chase runs on every frame the device draws and no test
@@ -5405,6 +5411,33 @@ mod tests {
     // The surface shader divides the field by FIELD_SETTLED to get
     // water thickness. This measures the real settled splat — five
     // upright seconds, then one raw draw — and pins the constant to it.
+    /// A pose that lays the fluid one particle deep, which the flat
+    /// look's SOLID takes two of. The number decides where a body
+    /// reads solid, so it is measured, not chosen.
+    #[test]
+    fn a_flat_pose_reads_one_particle_layer() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, 0.0, -9.81],
+            sim::Touches::default(),
+        );
+        assert!(f[6] < 0.3, "not settled: v_max {}", f[6]);
+        let (_, vals) = raw_splat(&device, &queue, &sim);
+        let (layer, _) = plateau(&vals);
+        eprintln!("one layer: {layer:.3}");
+        assert!(
+            (layer - 1.50).abs() < 0.15,
+            "a flat pose reads {layer}, not the one layer SOLID doubles"
+        );
+    }
+
     #[test]
     fn the_settled_field_matches_the_calibration() {
         let Some((device, queue, sim)) = headless_sim() else {

@@ -5,7 +5,7 @@
 // model. Everything uniform across a frame — world up, the glint half
 // vector and gain — arrives precomputed in the immediates; air pixels
 // take the early return and pay one stripe lookup, and the flat look
-// returns before the wall.
+// returns before the field sample.
 
 // The fill reads the filtered field: blurred thickness and its raw
 // first and second texel differences, one sample a pixel. field_filter
@@ -14,10 +14,11 @@
 @group(0) @binding(1) var field_sampler: sampler;
 @group(0) @binding(2) var filtered: texture_storage_2d<rgba16float, write>;
 // The raw splat, which the fill also binds: r the thickness, g that
-// thickness weighted by the lens. The flat look reads the ratio
-// straight, unblurred — a kernel-weighted mean over a 1.5 h footprint
-// is already smooth where the body is, and the blur exists for the
-// caustics, which the flat look never runs.
+// thickness weighted by the lens. The flat look reads both straight,
+// unblurred — a kernel-weighted mean over a 1.5 h footprint is
+// already smooth where the body is, and the blur exists for the
+// caustics, which the flat look never runs. It touches `field` not at
+// all.
 @group(0) @binding(3) var splat: texture_2d<f32>;
 // The direction lens's own field: the kernel-weighted sum of the unit
 // heading vectors, which body_flow in sim_sprites.wgsl writes and only
@@ -65,6 +66,16 @@ var<immediate> optics: Optics;
 // units at the shipped spacing, and the same water at every scale.
 const EDGE_LO: f32 = 0.8 / 5.3;
 const EDGE_HI: f32 = 1.6 / 5.3;
+// The flat look's two levels, in raw splat units, which count
+// particles and do not move with the ladder. A lone particle's kernel
+// peaks at 0.5 and its footprint is 13 field texels across at 4x, so
+// the floor clears the peak, not the sampling. A settled layer reads
+// 1.50, pinned by a_flat_pose_reads_one_particle_layer.
+const FLECK: f32 = 0.4;
+const SOLID: f32 = 3.0;
+// Jack's "50% opacity" is half the colour he sees, and the surface
+// encodes sRGB from linear, so a quarter here.
+const THIN: f32 = 0.25;
 const ETA: f32 = 1.0 / 1.33;
 const F0: f32 = 0.02;
 // Transmittance one slab depth of path down: red dies first, so the
@@ -212,10 +223,20 @@ fn decay_frag(in: FillVertex) -> @location(0) vec4f {
     return vec4f(0.0);
 }
 
-// The flat look: the water where the thickness crosses the band's
-// midpoint, black everywhere else, and a hard edge between them
-// (Jack, 2026-09-02). One chosen colour, or the ramp across the body.
-// The particle view skips this pass entirely.
+// The flat look is stylised where the glass is physical, so it reads
+// the splat in particles where the glass reads water in settled
+// thicknesses. A fleck is one particle at every scale, but the same
+// depth of water is more and thinner layers as the ladder climbs, so
+// a threshold in thicknesses hides a fleck at 4x and hides it harder
+// above (Jack, 2026-09-03, swirling: "the flecks just seem to
+// teleport... they just disappear then reappear on the other side of
+// the screen").
+//
+// Two levels, not the one hard edge of 2026-09-02: full colour
+// through two settled layers, THIN through one, black below a single
+// particle (Jack, 2026-09-03). Flat on a surface the box is one layer
+// deep almost everywhere, which cleared the old midpoint everywhere
+// and painted one dim tint.
 //
 // `wheel` arrives as a literal from each entry point, so the branch
 // folds away at compile time and the wheel's hue arithmetic never
@@ -224,14 +245,16 @@ fn decay_frag(in: FillVertex) -> @location(0) vec4f {
 // took it: 3,847 microseconds with the branch against 3,644 with it
 // folded (reference device, 2026-09-02, the two builds installed one
 // after the other, twice through).
-fn flat_look(uv: vec2f, rel: f32, wheel: bool) -> vec4f {
-    let water = rel >= 0.5 * (EDGE_LO + EDGE_HI);
+fn flat_look(uv: vec2f, wheel: bool) -> vec4f {
+    let s = textureSampleLevel(splat, field_sampler, uv, 0.0);
+    if (s.r < FLECK) {
+        return vec4f(0.0, 0.0, 0.0, 1.0);
+    }
     var colour = optics.flat.rgb;
     if (optics.high.w > 0.0) {
-        // The threshold above is what makes the divide safe: no pixel
-        // reaches here with a thickness near zero.
-        let s = textureSampleLevel(splat, field_sampler, uv, 0.0);
-        let t = s.g / max(s.r, 1e-6);
+        // FLECK is what makes the divide safe: no pixel reaches here
+        // with a thickness near zero.
+        let t = s.g / s.r;
         if (wheel) {
             let d = textureSampleLevel(flow, field_sampler, uv, 0.0).rg;
             // The wheel takes over as the square, as it does on the
@@ -241,26 +264,25 @@ fn flat_look(uv: vec2f, rel: f32, wheel: bool) -> vec4f {
             colour = mix(optics.flat.rgb, optics.high.rgb, t);
         }
     }
-    return vec4f(select(vec3f(0.0), colour, water), 1.0);
+    return vec4f(colour * select(THIN, 1.0, s.r >= SOLID), 1.0);
 }
 
 // The wheel's own fill. Bound only by a flat look with the direction
 // lens on, so it takes the flat branch without testing for it.
 @fragment
 fn surface_wheel_frag(in: FillVertex) -> @location(0) vec4f {
-    let f = textureSampleLevel(field, field_sampler, in.uv, 0.0);
-    return flat_look(in.uv, f.r / optics.field_settled, true);
+    return flat_look(in.uv, true);
 }
 
 @fragment
 fn surface_frag(in: FillVertex) -> @location(0) vec4f {
+    if (optics.flat.w > 0.0) {
+        return flat_look(in.uv, false);
+    }
+
     let f = textureSampleLevel(field, field_sampler, in.uv, 0.0);
     let rel = f.r / optics.field_settled;
     let a = smoothstep(EDGE_LO, EDGE_HI, rel);
-
-    if (optics.flat.w > 0.0) {
-        return flat_look(in.uv, rel, false);
-    }
 
     // This pixel on the back wall, metres, y up.
     let p = vec2f(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0) * optics.extent;
