@@ -80,9 +80,10 @@ fn refine_passes(dt_sub: f32) -> u32 {
 
 const NOMINAL_FRAME: f32 = 1.0 / 120.0;
 
-/// A two-pass substep's cost against a five-pass one: iPhone 13 Pro
-/// Max, 2026-09-02, 4x, a five-pass substep 0.97 to 1.36 ms against
-/// 0.1 ms a refine pass.
+/// A two-pass substep's cost against a five-pass one, cool: 0.65 ms
+/// against about 1.0 (iPhone 13 Pro Max, 2026-09-02, 4x). Cool is the
+/// regime the jump fires in; hot both substeps grow and the ratio
+/// rises to about 0.78, which only makes the guard stricter.
 const CHEAP_RUNG_COST: f32 = 0.65;
 
 // The CFL count, floored by substep_floor, and then the jump: a 120 Hz
