@@ -4864,7 +4864,13 @@ mod tests {
             sim,
             side,
             pack_paint(painted.low, painted.high, painted.range, painted.lens, 0.0),
-            pack_optics(pose, sim.extent, sim.field_settled, painted.low, painted.high),
+            pack_optics(
+                pose,
+                sim.extent,
+                sim.field_settled,
+                painted.low,
+                painted.high,
+            ),
         )
     }
 
@@ -4878,21 +4884,27 @@ mod tests {
             return;
         };
         let white = Paint::Solid([1.0, 1.0, 1.0]);
-        let shades = |pose| {
+        let side = 64usize;
+        let drawn = |pose| {
             read_stats(&device, &queue, &sim, 7, 600, pose, sim::Touches::default());
-            levels_of(&device, &queue, &sim, pose, Look::Flat(white), 64)
-                .iter()
-                .map(|p| p[0])
-                .filter(|v| *v > 0)
-                .collect::<std::collections::BTreeSet<_>>()
+            levels_of(&device, &queue, &sim, pose, Look::Flat(white), side as u32)
         };
-        let sheet = shades([0.0, 0.0, -9.81]);
-        assert_eq!(sheet.len(), 1, "a settled sheet mottled: {sheet:?}");
-        let body = shades([0.0, -9.81, -0.5]);
+        // A mottle is neighbouring water at different shades. A sheet
+        // one particle deep must have almost none: a stray thick spot
+        // is water, a field of them is the dapple look's business.
+        let sheet = drawn([0.0, 0.0, -9.81]);
+        let lit = sheet.iter().filter(|p| p[0] > 0).count();
+        let mottle = (0..side)
+            .flat_map(|y| (1..side).map(move |x| y * side + x))
+            .filter(|i| sheet[*i][0] > 0 && sheet[i - 1][0] > 0 && sheet[*i][0] != sheet[i - 1][0])
+            .count();
+        eprintln!("flat sheet: {mottle} mottled pairs over {lit} lit");
         assert!(
-            body.iter().any(|v| *v >= 254),
-            "no body read solid: {body:?}"
+            mottle * 50 < lit,
+            "a settled sheet mottled: {mottle} pairs over {lit} lit"
         );
+        let body = drawn([0.0, -9.81, -0.5]);
+        assert!(body.iter().any(|p| p[0] >= 254), "no body read solid");
     }
 
     /// The dapple look's contract: where the flat look paints a sheet
@@ -4911,9 +4923,15 @@ mod tests {
         let hard = levels_of(&device, &queue, &sim, pose, Look::Flat(white), side);
         let soft = levels_of(&device, &queue, &sim, pose, Look::Dapple(white), side);
         let shades = |px: &[[u8; 4]]| {
-            px.iter().map(|p| p[0]).collect::<std::collections::BTreeSet<_>>()
+            px.iter()
+                .map(|p| p[0])
+                .collect::<std::collections::BTreeSet<_>>()
         };
-        assert_eq!(shades(&hard).len(), 2, "the flat look drew more than a sheet and air");
+        assert_eq!(
+            shades(&hard).len(),
+            2,
+            "the flat look drew more than a sheet and air"
+        );
         assert_eq!(shades(&soft).len(), 3, "the matrix drew no third shade");
 
         // The tone the same thickness carries, straight from the
@@ -4925,8 +4943,8 @@ mod tests {
             .map(|v| ((v - fleck) / (solid - fleck)).clamp(0.0, 1.0))
             .sum::<f32>()
             / field.len() as f32;
-        let painted: f32 = soft.iter().map(|p| f32::from(p[0]) / 255.0).sum::<f32>()
-            / soft.len() as f32;
+        let painted: f32 =
+            soft.iter().map(|p| f32::from(p[0]) / 255.0).sum::<f32>() / soft.len() as f32;
         eprintln!("dapple: tone {tone:.3}, painted {painted:.3}");
         assert!(
             (painted - tone).abs() < 0.06,

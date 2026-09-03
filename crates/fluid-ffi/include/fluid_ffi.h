@@ -136,34 +136,28 @@ void fluid_renderer_touch(struct FluidRenderer *renderer,
                           bool down);
 
 /**
- * Liquid glass when `flat` is false. Otherwise paint on black: the
- * flat surface, or, when `particles` is also true, the particles
- * alone as discs. `particles` alone does nothing.
+ * `look` names one of four, and they are exclusive: 0 the liquid
+ * glass, 1 the flat colour, 2 the flat colour halftoned against an
+ * ordered matrix, 3 the particles alone as discs. Anything else is
+ * the glass.
  *
- * `low` is the one colour when `gradient` is false. When it is true,
- * the colour runs from `low` to `high` across `lens`, between the
- * lowest and highest the frame itself holds: 0 velocity,
- * 1 acceleration, 2 pressure, 3 proximity, and anything else
- * velocity. 4 is the direction wheel, which takes its hue from which
- * way the water goes and reads no `high`. Colour components are 0 to
- * 1 as the picker shows them; the core linearises them.
- *
- * `dapple` dithers the flat look's two levels against an ordered
- * matrix. `particles` outranks it: the particle view draws no field
- * for a matrix to break up.
+ * `lens` is 0 for one colour, and otherwise the field the colour runs
+ * across from `low` to `high`, between the lowest and the highest the
+ * frame itself holds: 1 velocity, 2 acceleration, 3 pressure,
+ * 4 proximity, and anything else velocity. 5 is the direction wheel,
+ * which takes its hue from which way the water goes and reads no
+ * `high`. Colour components are 0 to 1 as the picker shows them; the
+ * core linearises them. The glass reads no colour at all.
  *
  * # Safety
  *
  * `renderer` must be a live pointer from `fluid_renderer_create`.
  */
 void fluid_renderer_set_look(struct FluidRenderer *renderer,
-                             bool flat,
-                             bool particles,
-                             bool dapple,
+                             uint32_t look,
                              struct FluidVec3 low,
-                             bool gradient,
-                             struct FluidVec3 high,
-                             uint32_t lens);
+                             uint32_t lens,
+                             struct FluidVec3 high);
 
 /**
  * # Safety

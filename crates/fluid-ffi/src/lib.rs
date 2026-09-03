@@ -183,21 +183,18 @@ pub unsafe extern "C" fn fluid_renderer_touch(
     unsafe { &mut *renderer }.0.touch(slot, x, y, down);
 }
 
-/// Liquid glass when `flat` is false. Otherwise paint on black: the
-/// flat surface, or, when `particles` is also true, the particles
-/// alone as discs. `particles` alone does nothing.
+/// `look` names one of four, and they are exclusive: 0 the liquid
+/// glass, 1 the flat colour, 2 the flat colour halftoned against an
+/// ordered matrix, 3 the particles alone as discs. Anything else is
+/// the glass.
 ///
-/// `low` is the one colour when `gradient` is false. When it is true,
-/// the colour runs from `low` to `high` across `lens`, between the
-/// lowest and highest the frame itself holds: 0 velocity,
-/// 1 acceleration, 2 pressure, 3 proximity, and anything else
-/// velocity. 4 is the direction wheel, which takes its hue from which
-/// way the water goes and reads no `high`. Colour components are 0 to
-/// 1 as the picker shows them; the core linearises them.
-///
-/// `dapple` dithers the flat look's two levels against an ordered
-/// matrix. `particles` outranks it: the particle view draws no field
-/// for a matrix to break up.
+/// `lens` is 0 for one colour, and otherwise the field the colour runs
+/// across from `low` to `high`, between the lowest and the highest the
+/// frame itself holds: 1 velocity, 2 acceleration, 3 pressure,
+/// 4 proximity, and anything else velocity. 5 is the direction wheel,
+/// which takes its hue from which way the water goes and reads no
+/// `high`. Colour components are 0 to 1 as the picker shows them; the
+/// core linearises them. The glass reads no colour at all.
 ///
 /// # Safety
 ///
@@ -205,34 +202,30 @@ pub unsafe extern "C" fn fluid_renderer_touch(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fluid_renderer_set_look(
     renderer: *mut FluidRenderer,
-    flat: bool,
-    particles: bool,
-    dapple: bool,
+    look: u32,
     low: FluidVec3,
-    gradient: bool,
-    high: FluidVec3,
     lens: u32,
+    high: FluidVec3,
 ) {
-    let paint = if gradient {
-        Paint::Ramp {
+    let paint = match lens {
+        0 => Paint::Solid(low.into()),
+        code => Paint::Ramp {
             low: low.into(),
             high: high.into(),
-            lens: match lens {
-                1 => Lens::Acceleration,
-                2 => Lens::Pressure,
-                3 => Lens::Proximity,
-                4 => Lens::Direction,
+            lens: match code {
+                2 => Lens::Acceleration,
+                3 => Lens::Pressure,
+                4 => Lens::Proximity,
+                5 => Lens::Direction,
                 _ => Lens::Velocity,
             },
-        }
-    } else {
-        Paint::Solid(low.into())
+        },
     };
-    let look = match (flat, particles, dapple) {
-        (false, ..) => Look::Glass,
-        (true, true, _) => Look::Particles(paint),
-        (true, false, true) => Look::Dapple(paint),
-        (true, false, false) => Look::Flat(paint),
+    let look = match look {
+        1 => Look::Flat(paint),
+        2 => Look::Dapple(paint),
+        3 => Look::Particles(paint),
+        _ => Look::Glass,
     };
     unsafe { &mut *renderer }.0.set_look(look);
 }

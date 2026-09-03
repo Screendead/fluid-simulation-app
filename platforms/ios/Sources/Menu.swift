@@ -4,11 +4,8 @@ import SwiftUI
 /// bind to them, and the driver reads them once at attach.
 enum Settings {
     static let particleScaleKey = "particleScale"
-    static let flatKey = "flat"
-    static let particleViewKey = "particleView"
-    static let dappleKey = "dapple"
+    static let lookKey = "look"
     static let flatColourKey = "flatColour"
-    static let gradientKey = "gradient"
     static let highColourKey = "highColour"
     static let lensKey = "lens"
     static let showRateKey = "showRate"
@@ -22,19 +19,34 @@ enum Settings {
         UserDefaults.standard.object(forKey: particleScaleKey) as? Double ?? defaultScale
     }
 
-    @MainActor static var flat: Bool { UserDefaults.standard.bool(forKey: flatKey) }
-
-    @MainActor static var particleView: Bool {
-        UserDefaults.standard.bool(forKey: particleViewKey)
+    @MainActor static var look: Look {
+        Look(rawValue: UserDefaults.standard.integer(forKey: lookKey)) ?? .glass
     }
 
-    @MainActor static var dapple: Bool { UserDefaults.standard.bool(forKey: dappleKey) }
+    /// The looks were three booleans and the lens had a `gradient`
+    /// toggle beside it until 2026-09-03. Carry a phone's stored
+    /// choices over once, so an update does not reset the look.
+    @MainActor static func migrate() {
+        let store = UserDefaults.standard
+        guard store.object(forKey: lookKey) == nil, store.object(forKey: "flat") != nil else {
+            return
+        }
+        let look: Look =
+            !store.bool(forKey: "flat")
+            ? .glass
+            : store.bool(forKey: "particleView")
+                ? .particles : store.bool(forKey: "dapple") ? .dapple : .flat
+        store.set(look.rawValue, forKey: lookKey)
+        store.set(store.bool(forKey: "gradient") ? store.integer(forKey: lensKey) + 1 : 0,
+                  forKey: lensKey)
+        for old in ["flat", "particleView", "dapple", "gradient"] {
+            store.removeObject(forKey: old)
+        }
+    }
 
     @MainActor static var flatColour: FluidVec3 {
         FluidVec3(hex: UserDefaults.standard.string(forKey: flatColourKey) ?? hotPink)
     }
-
-    @MainActor static var gradient: Bool { UserDefaults.standard.bool(forKey: gradientKey) }
 
     @MainActor static var highColour: FluidVec3 {
         FluidVec3(hex: UserDefaults.standard.string(forKey: highColourKey) ?? paleGold)
@@ -45,10 +57,11 @@ enum Settings {
     }
 }
 
-/// The fields a gradient can colour by. `code` is the core's
-/// numbering, which `fluid_renderer_set_look` documents. The note says
-/// what the colour means, since none of these is obvious from its name
-/// alone. `wheel` picks its own colours and leaves the high one unread.
+/// What the colour runs across, `Solid` for one colour and no run at
+/// all. `code` is the numbering `fluid_renderer_set_look` documents.
+/// The note says what the colour means, since none of these is obvious
+/// from its name alone. `wheel` picks its own colours and leaves the
+/// high one unread.
 struct LensChoice: Identifiable {
     let code: Int
     let label: String
@@ -57,16 +70,20 @@ struct LensChoice: Identifiable {
     var id: Int { code }
 
     static let all = [
-        LensChoice(code: 0, label: "Velocity", note: "How fast the water moves"),
-        LensChoice(code: 1, label: "Acceleration", note: "How hard it is thrown about"),
-        LensChoice(code: 2, label: "Pressure", note: "How hard it is squeezed"),
-        LensChoice(code: 3, label: "Proximity", note: "How crowded each drop's neighbours are"),
+        LensChoice(code: 0, label: "Solid", note: ""),
+        LensChoice(code: 1, label: "Velocity", note: "How fast the water moves"),
+        LensChoice(code: 2, label: "Acceleration", note: "How hard it is thrown about"),
+        LensChoice(code: 3, label: "Pressure", note: "How hard it is squeezed"),
+        LensChoice(code: 4, label: "Proximity", note: "How crowded each drop's neighbours are"),
         LensChoice(
-            code: 4, label: "Direction",
+            code: 5, label: "Direction",
             note: "Which way the water goes, around the colour wheel. Your colour "
                 + "holds where it barely moves, and the wheel takes over as it speeds up.",
             wheel: true),
     ]
+
+    /// One colour, and no second one to pick.
+    var solid: Bool { code == 0 }
 }
 
 /// The four scales, and how the reference device runs each: the M5
@@ -107,11 +124,8 @@ struct Level: Identifiable {
 
 struct MenuSheet: View {
     @Binding var particleScale: Double
-    @Binding var flat: Bool
-    @Binding var particleView: Bool
-    @Binding var dapple: Bool
+    @Binding var look: Int
     @Binding var flatColour: String
-    @Binding var gradient: Bool
     @Binding var highColour: String
     @Binding var lens: Int
     @Binding var showRate: Bool
@@ -128,8 +142,12 @@ struct MenuSheet: View {
         Binding(get: { Color(hex: highColour) }, set: { highColour = $0.hex })
     }
 
-    private var choice: LensChoice? {
-        LensChoice.all.first { $0.code == lens }
+    private var choice: LensChoice {
+        LensChoice.all.first { $0.code == lens } ?? LensChoice.all[0]
+    }
+
+    private var painted: Bool {
+        (Look(rawValue: look) ?? .glass).painted
     }
 
     var body: some View {
@@ -152,36 +170,35 @@ struct MenuSheet: View {
                         .tint(.primary)
                     }
                 }
-                Section("Look") {
-                    Toggle("Flat colour", isOn: $flat)
-                    ColorPicker(
-                        gradient && !(choice?.wheel ?? false) ? "Low" : "Colour",
-                        selection: colour,
-                        supportsOpacity: false
-                    )
-                    .disabled(!flat)
-                    Toggle("Particle view", isOn: $particleView)
-                        .disabled(!flat)
-                    Toggle("Dapple", isOn: $dapple)
-                        .disabled(!flat || particleView)
-                }
                 Section {
-                    Toggle("Gradient", isOn: $gradient)
-                        .disabled(!flat)
-                    if gradient {
-                        if !(choice?.wheel ?? false) {
-                            ColorPicker("High", selection: high, supportsOpacity: false)
-                                .disabled(!flat)
+                    Picker("Look", selection: $look) {
+                        ForEach(Look.allCases) { look in
+                            Text(look.label).tag(look.rawValue)
                         }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    // The glass paints the water itself, so a colour
+                    // would have nothing to colour.
+                    if painted {
+                        ColorPicker(
+                            choice.solid || choice.wheel ? "Colour" : "Low",
+                            selection: colour,
+                            supportsOpacity: false
+                        )
                         Picker("Colour by", selection: $lens) {
                             ForEach(LensChoice.all) { choice in
                                 Text(choice.label).tag(choice.code)
                             }
                         }
-                        .disabled(!flat)
+                        if !choice.solid && !choice.wheel {
+                            ColorPicker("High", selection: high, supportsOpacity: false)
+                        }
                     }
+                } header: {
+                    Text("Look")
                 } footer: {
-                    if gradient, let choice {
+                    if painted && !choice.solid {
                         Text(choice.note)
                     }
                 }
@@ -223,51 +240,45 @@ extension Color {
     }
 }
 
-/// Which look a run draws. The menu writes the stored one; a
-/// measurement run over the console cannot reach the menu, so
-/// `FLUID_LOOK` names one instead: "glass", "flat", "dapple" or
-/// "particles", with the lens after a colon where a run wants the
-/// gradient on ("flat:direction"). `name` is what the log line reports, so a
-/// number carries the look it was taken in.
-struct Look {
-    let flat: Bool
-    let particles: Bool
-    let dapple: Bool
-    let gradient: Bool
-    let lens: UInt32
+/// Which look a run draws, and the numbering
+/// `fluid_renderer_set_look` documents. The menu writes the stored
+/// one; a measurement run over the console cannot reach the menu, so
+/// `FLUID_LOOK` names one instead, with the lens after a colon where a
+/// run wants the colour to run ("flat:direction").
+enum Look: Int, CaseIterable, Identifiable {
+    case glass, flat, dapple, particles
 
-    @MainActor init(_ spec: String?) {
-        guard let parts = spec?.split(separator: ":"), let look = parts.first else {
-            self.init(
-                flat: Settings.flat, particles: Settings.particleView,
-                dapple: Settings.dapple, gradient: Settings.gradient,
-                lens: Settings.lens)
-            return
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .glass: "Glass"
+        case .flat: "Flat"
+        case .dapple: "Dapple"
+        case .particles: "Particles"
         }
+    }
+
+    /// The glass paints the water itself and reads no colour.
+    var painted: Bool { self != .glass }
+
+    @MainActor static func spec(_ spec: String?) -> (look: Look, lens: UInt32) {
+        guard let parts = spec?.split(separator: ":"), let named = parts.first else {
+            return (Settings.look, Settings.lens)
+        }
+        let look = Look.allCases.first { $0.label.lowercased() == named.lowercased() } ?? .glass
         let lens = parts.dropFirst().first.flatMap { name in
             LensChoice.all.first { $0.label.lowercased() == name.lowercased() }
         }
-        self.init(
-            flat: look != "glass", particles: look == "particles",
-            dapple: look == "dapple", gradient: lens != nil,
-            lens: UInt32(lens?.code ?? 0))
+        return (look, UInt32(lens?.code ?? 0))
     }
+}
 
-    init(flat: Bool, particles: Bool, dapple: Bool, gradient: Bool, lens: UInt32) {
-        self.flat = flat
-        self.particles = particles
-        self.dapple = dapple
-        self.gradient = gradient
-        self.lens = lens
+/// What the log line reports, so a number carries the look it was
+/// taken in.
+@MainActor func lookName(_ look: Look, _ lens: UInt32) -> String {
+    guard let choice = LensChoice.all.first(where: { $0.code == Int(lens) }), !choice.solid else {
+        return look.label.lowercased()
     }
-
-    var name: String {
-        let base = flat ? (particles ? "particles" : (dapple ? "dapple" : "flat")) : "glass"
-        guard flat, gradient,
-            let choice = LensChoice.all.first(where: { $0.code == Int(lens) })
-        else {
-            return base
-        }
-        return "\(base)+\(choice.label.lowercased())"
-    }
+    return "\(look.label.lowercased())+\(choice.label.lowercased())"
 }
