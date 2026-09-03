@@ -22,16 +22,6 @@ const METRES_PER_PIXEL: f32 = crate::WORLD_SCALE * 0.0254 / 458.0;
 /// a pause cannot fling the particles.
 const MAX_DT: f32 = 1.0 / 30.0;
 
-// The resting boil is timestep error: the 2026-08-31 convergence
-// ladder (M3 record) halves upright boil twice over by halving the
-// substep (0.42 mm at 4.2 ms, 0.14 at 2.1) while refine depth changes
-// nothing at either length. This and refine_passes key on substep
-// length, not count. 2.2 ms was set 2026-08-31 against resting boil,
-// before the 4x scale landed; re-measured at 4x on 2026-09-01
-// (optimisation record, target 1): 4.2 ms holds every rest, ring,
-// wake, flicker and shake guard, rests 120 Hz at two substeps, and
-// halves the 60 Hz floor that fed the basin. Slightly above
-// 8.334/2 ms, so measured 120 Hz interval jitter stays at two.
 // Mirrors LANES in sim_solve.wgsl: the lane-parallel sweeps run
 // SWEEP_LANES threads per particle, and a mismatch solves only a
 // fraction of the fluid with no validation error to say so.
@@ -45,7 +35,23 @@ const NBR_CAP: u32 = 96;
 /// layouts; the device limit is raised to exactly this.
 const SOLVE_STORAGE_BUFFERS: u32 = 23;
 
-const DT_SUB_MAX: f32 = 0.0042;
+// The resting boil is timestep error, and the error is measured
+// against the particle spacing: the 2026-08-31 convergence ladder (M3
+// record) halves upright boil twice over by halving the substep (0.42
+// mm at 4.2 ms, 0.14 at 2.1) while refine depth changes nothing at
+// either length, so this and refine_passes key on substep length, not
+// count. At the 1x spacing (0.01 m) 4.2 ms holds every rest, ring,
+// wake, flicker and shake guard and rests 120 Hz at two substeps
+// (set 2026-08-31, re-measured at 4x scale 2026-09-01, optimisation
+// record, target 1). The same 4.2 ms at the 4x spacing (0.0062 m)
+// boils for ever: v_max 0.6 to 0.75 m/s, over a thousand CFL clamps
+// a second, flicker 162,000 px/frame against the 12,000 line, and no
+// sleep, where four substeps (2.08 ms) rest at v_max 0.08 with zero
+// clamps and three (2.78 ms) still read 15,000 on the flicker meter
+// (2026-09-02, laptop film harness, and Jack's eye on the phone the
+// same day). So the cap is a length per spacing: 4.2 ms at 1x, 2.6
+// ms at 4x, which floors a 120 Hz frame at four substeps.
+const SUBSTEP_PER_SPACING: f32 = 0.42;
 
 // The substep floor divides the measured frame — a dropped frame
 // integrated at four substeps means 4-8 ms substeps, and the device
@@ -53,8 +59,8 @@ const DT_SUB_MAX: f32 = 0.0042;
 // cap at eight breaks the feedback that railed an uncapped floor at
 // sixteen substeps and 30 Hz: past a doubled frame, more substeps
 // would slow the next frame more than they converge this one.
-fn substep_floor(dt: f32) -> u32 {
-    ((dt / DT_SUB_MAX).ceil() as u32).min(8)
+fn substep_floor(dt: f32, dt_sub_max: f32) -> u32 {
+    ((dt / dt_sub_max).ceil() as u32).min(8)
 }
 
 // Density error scales with dt squared, so short substeps need fewer
@@ -257,7 +263,7 @@ pub fn film(
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32)
-            .max(substep_floor(dt))
+            .max(substep_floor(dt, sim.dt_sub_max))
             .max(n_min)
             .min(cap);
         field_keep = match keep_pin {
@@ -1388,6 +1394,7 @@ struct Sim {
     stats_staging: [StagingSlot; 3],
     stats: [f32; STATS],
     spacing: f32,
+    dt_sub_max: f32,
     field_settled: f32,
     extent: [f32; 2],
     tracer_count: u32,
@@ -2149,6 +2156,7 @@ impl Sim {
             stats_staging,
             stats: [0.0; STATS],
             spacing,
+            dt_sub_max: SUBSTEP_PER_SPACING * spacing,
             field_settled: FIELD_SETTLED * SIM_SPACING / spacing,
             extent,
             tracer_count,
@@ -3055,7 +3063,7 @@ impl Renderer {
             // actually encoded.
             s.substeps_used = if dt > 0.0 {
                 ((dt * s.stats[6] / (0.4 * s.spacing)).ceil() as u32)
-                    .max(substep_floor(dt))
+                    .max(substep_floor(dt, s.dt_sub_max))
                     .min(s.max_substeps)
             } else {
                 0
@@ -3655,6 +3663,15 @@ mod tests {
     }
 
     #[test]
+    fn the_substep_floor_scales_with_the_spacing() {
+        let cap = |spacing: f32| SUBSTEP_PER_SPACING * spacing;
+        assert_eq!(substep_floor(1.0 / 120.0, cap(0.01)), 2);
+        assert_eq!(substep_floor(1.0 / 120.0, cap(0.0062)), 4);
+        assert_eq!(substep_floor(0.033, cap(0.01)), 8);
+        assert_eq!(substep_floor(0.033, cap(0.0062)), 8);
+    }
+
+    #[test]
     fn percentiles_come_from_the_filled_part_only() {
         let mut ring = Ring::new();
         assert_eq!(ring.percentile(0.5), 0.0);
@@ -3832,7 +3849,7 @@ mod tests {
         let v_clamp = if substeps == 0 {
             f32::MAX
         } else {
-            0.4 * SIM_SPACING / dt
+            0.4 * sim.spacing / dt
         };
         let step = sim::pack_step(
             gravity,
