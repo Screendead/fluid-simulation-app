@@ -67,12 +67,20 @@ var<immediate> optics: Optics;
 const EDGE_LO: f32 = 0.8 / 5.3;
 const EDGE_HI: f32 = 1.6 / 5.3;
 // The flat look's two levels, in raw splat units, which count
-// particles and do not move with the ladder. A lone particle's kernel
-// peaks at 0.5 and its footprint is 13 field texels across at 4x, so
-// the floor clears the peak, not the sampling. A settled layer reads
-// 1.50, pinned by a_flat_pose_reads_one_particle_layer.
-const FLECK: f32 = 0.4;
-const SOLID: f32 = 3.0;
+// particles and so do not move with the ladder. The band the old
+// midpoint drew climbed instead — 1.2 splat units at 1x but 1.9 at 4x
+// and 3.0 at 16x — and that climb, not the cutoff itself, is what
+// lost the flecks as the ladder went up. FLECK holds every scale at
+// the sensitivity 1x had.
+//
+// SOLID sits just above the 1.50 a settled layer reads
+// (a_flat_pose_reads_one_particle_layer), so a sheet lying one deep
+// straddles it and paints its own variation rather than one tint.
+// Thrown, the pair splits the screen 34/6/60 between full, THIN and
+// black, against the 33/7/60 Jack asked for on 2026-09-03; the levels
+// he first saw, 0.4 and 3.0, split it 20/38/42.
+const FLECK: f32 = 1.2;
+const SOLID: f32 = 1.6;
 // Jack's "50% opacity" is half the colour he sees, and the surface
 // encodes sRGB from linear, so a quarter here.
 const THIN: f32 = 0.25;
