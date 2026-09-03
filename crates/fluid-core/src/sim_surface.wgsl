@@ -5,7 +5,7 @@
 // model. Everything uniform across a frame — world up, the glint half
 // vector and gain — arrives precomputed in the immediates; air pixels
 // take the early return and pay one stripe lookup, and the flat look
-// returns before the wall.
+// returns before the field sample.
 
 // The fill reads the filtered field: blurred thickness and its raw
 // first and second texel differences, one sample a pixel. field_filter
@@ -14,10 +14,11 @@
 @group(0) @binding(1) var field_sampler: sampler;
 @group(0) @binding(2) var filtered: texture_storage_2d<rgba16float, write>;
 // The raw splat, which the fill also binds: r the thickness, g that
-// thickness weighted by the lens. The flat look reads the ratio
-// straight, unblurred — a kernel-weighted mean over a 1.5 h footprint
-// is already smooth where the body is, and the blur exists for the
-// caustics, which the flat look never runs.
+// thickness weighted by the lens. The flat look reads both straight,
+// unblurred — a kernel-weighted mean over a 1.5 h footprint is
+// already smooth where the body is, and the blur exists for the
+// caustics, which the flat look never runs. It touches `field` not at
+// all.
 @group(0) @binding(3) var splat: texture_2d<f32>;
 // The direction lens's own field: the kernel-weighted sum of the unit
 // heading vectors, which body_flow in sim_sprites.wgsl writes and only
@@ -65,6 +66,47 @@ var<immediate> optics: Optics;
 // units at the shipped spacing, and the same water at every scale.
 const EDGE_LO: f32 = 0.8 / 5.3;
 const EDGE_HI: f32 = 1.6 / 5.3;
+// The flat look's two levels, in raw splat units, which count
+// particles and so do not move with the ladder. The band the old
+// midpoint drew climbed instead — 1.2 splat units at 1x but 1.9 at 4x
+// and 3.0 at 16x — and that climb, not the cutoff itself, is what
+// lost the flecks as the ladder went up. FLECK holds every scale at
+// the sensitivity 1x had.
+//
+// SOLID stands clear of the band a settled layer occupies, which runs
+// to about 1.8 around the 1.50 of
+// a_flat_pose_reads_one_particle_layer. Inside that band the particle
+// lattice straddles the threshold and the sheet breaks into a mottle:
+// headless over a flat pose, 3,372 neighbouring texels take different
+// levels at 1.6 against 6 at 2.0. That mottle is the dapple look's
+// business, so the flat look keeps out of it and paints clean edges.
+// Thrown, the pair splits the screen 30/8/62 between full, THIN and
+// black, against the 33/7/60 Jack asked for on 2026-09-03; the levels
+// he first saw, 0.4 and 3.0, split it 20/38/42.
+const FLECK: f32 = 1.2;
+const SOLID: f32 = 2.0;
+// Jack asked for "50% opacity" and accepted this on the phone. The
+// surface encodes sRGB from linear, so a quarter here shows as 0.54 —
+// a shade over his half, and the shade he looked at.
+const THIN: f32 = 0.25;
+// The dapple look (Jack, 2026-09-03: "proper dappling in a retro
+// computing style"). The matrix cell is three device pixels, so an
+// 8x8 cell spans 24 of them: a halftone at this screen's density,
+// which is the size he picked over a chunkier one.
+const DAPPLE_PX: f32 = 3.0;
+// The lens ramp in steps, the matrix choosing between neighbours. The
+// flat look takes 255, which an eight-bit surface cannot show.
+const DAPPLE_STEPS: f32 = 4.0;
+
+// The 8x8 ordered matrix, from the bits of y and x^y interleaved: no
+// texture and no memory, three shifts a level.
+fn bayer(p: vec2u) -> f32 {
+    var v = 0u;
+    for (var i = 0u; i < 3u; i++) {
+        v |= ((((p.x ^ p.y) >> i) & 1u) << (2u * i + 1u)) | (((p.y >> i) & 1u) << (2u * i));
+    }
+    return (f32(v) + 0.5) / 64.0;
+}
 const ETA: f32 = 1.0 / 1.33;
 const F0: f32 = 0.02;
 // Transmittance one slab depth of path down: red dies first, so the
@@ -212,10 +254,20 @@ fn decay_frag(in: FillVertex) -> @location(0) vec4f {
     return vec4f(0.0);
 }
 
-// The flat look: the water where the thickness crosses the band's
-// midpoint, black everywhere else, and a hard edge between them
-// (Jack, 2026-09-02). One chosen colour, or the ramp across the body.
-// The particle view skips this pass entirely.
+// The flat look is stylised where the glass is physical, so it reads
+// the splat in particles where the glass reads water in settled
+// thicknesses. A fleck is one particle at every scale, but the same
+// depth of water is more and thinner layers as the ladder climbs, so
+// a threshold in thicknesses hides a fleck at 4x and hides it harder
+// above (Jack, 2026-09-03, swirling: "the flecks just seem to
+// teleport... they just disappear then reappear on the other side of
+// the screen").
+//
+// Two levels, not the one hard edge of 2026-09-02: full colour
+// through two settled layers, THIN through one, black below a single
+// particle (Jack, 2026-09-03). Flat on a surface the box is one layer
+// deep almost everywhere, which cleared the old midpoint everywhere
+// and painted one dim tint.
 //
 // `wheel` arrives as a literal from each entry point, so the branch
 // folds away at compile time and the wheel's hue arithmetic never
@@ -224,43 +276,73 @@ fn decay_frag(in: FillVertex) -> @location(0) vec4f {
 // took it: 3,847 microseconds with the branch against 3,644 with it
 // folded (reference device, 2026-09-02, the two builds installed one
 // after the other, twice through).
-fn flat_look(uv: vec2f, rel: f32, wheel: bool) -> vec4f {
-    let water = rel >= 0.5 * (EDGE_LO + EDGE_HI);
+fn flat_look(uv: vec2f, px: vec2f, wheel: bool) -> vec4f {
+    let s = textureSampleLevel(splat, field_sampler, uv, 0.0);
+    if (s.r < FLECK) {
+        return vec4f(0.0, 0.0, 0.0, 1.0);
+    }
+    // The flat look steps: THIN over a sheet, full over a body. The
+    // dapple look reads the same thickness as a tone and halftones it
+    // into the same two inks, so a sheet carries a pattern where the
+    // flat look carries one shade.
+    var level = select(THIN, 1.0, s.r >= SOLID);
+    var steps = 255.0;
+    var lens_cell = 0.5;
+    if (optics.flat.w > 1.5) {
+        let cell = bayer(vec2u(px * (1.0 / DAPPLE_PX)));
+        let tone = clamp((s.r - FLECK) / (SOLID - FLECK), 0.0, 1.0);
+        // Between the pair of inks the tone falls in, the matrix
+        // lights exactly the fraction the tone asks for. Over a cell
+        // the mean is the tone itself, which no offset of the
+        // thresholds can promise: the inks are 0.25 apart below and
+        // 0.75 apart above, so equal traffic each way still brightens.
+        if (tone < THIN) {
+            level = select(0.0, THIN, tone > cell * THIN);
+        } else {
+            level = select(THIN, 1.0, tone - THIN > cell * (1.0 - THIN));
+        }
+        steps = DAPPLE_STEPS;
+        // Half a matrix along, or the lens steps would land on the
+        // thickness steps and the two patterns would lock together.
+        lens_cell = fract(cell + 0.5);
+    }
     var colour = optics.flat.rgb;
     if (optics.high.w > 0.0) {
         // The threshold above is what makes the divide safe: no pixel
-        // reaches here with a thickness near zero.
-        let s = textureSampleLevel(splat, field_sampler, uv, 0.0);
-        let t = s.g / max(s.r, 1e-6);
+        // reaches here with a thickness under FLECK.
+        var f = s.g / s.r;
+        var ink = optics.high.rgb;
         if (wheel) {
             let d = textureSampleLevel(flow, field_sampler, uv, 0.0).rg;
+            ink = hue_colour(atan2(d.y, d.x) / TAU + 0.5);
             // The wheel takes over as the square, as it does on the
-            // discs in sim_sprites.wgsl.
-            colour = mix(optics.flat.rgb, hue_colour(atan2(d.y, d.x) / TAU + 0.5), t * t);
-        } else {
-            colour = mix(optics.flat.rgb, optics.high.rgb, t);
+            // discs in sim_sprites.wgsl. The hue itself never steps:
+            // a stepped angle bands hard at the seam.
+            f = f * f;
         }
+        let q = f * steps;
+        let stepped = (floor(q) + select(0.0, 1.0, fract(q) > lens_cell)) / steps;
+        colour = mix(optics.flat.rgb, ink, stepped);
     }
-    return vec4f(select(vec3f(0.0), colour, water), 1.0);
+    return vec4f(colour * level, 1.0);
 }
 
 // The wheel's own fill. Bound only by a flat look with the direction
 // lens on, so it takes the flat branch without testing for it.
 @fragment
 fn surface_wheel_frag(in: FillVertex) -> @location(0) vec4f {
-    let f = textureSampleLevel(field, field_sampler, in.uv, 0.0);
-    return flat_look(in.uv, f.r / optics.field_settled, true);
+    return flat_look(in.uv, in.clip.xy, true);
 }
 
 @fragment
 fn surface_frag(in: FillVertex) -> @location(0) vec4f {
+    if (optics.flat.w > 0.0) {
+        return flat_look(in.uv, in.clip.xy, false);
+    }
+
     let f = textureSampleLevel(field, field_sampler, in.uv, 0.0);
     let rel = f.r / optics.field_settled;
     let a = smoothstep(EDGE_LO, EDGE_HI, rel);
-
-    if (optics.flat.w > 0.0) {
-        return flat_look(in.uv, rel, false);
-    }
 
     // This pixel on the back wall, metres, y up.
     let p = vec2f(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0) * optics.extent;

@@ -179,7 +179,8 @@ The same day, M5 opened with the menu Jack asked for. The M5 record
 (`docs/design/m5-menu.md`) holds the directive verbatim and D6 the
 split: a tap shows a button, the button opens a half-sheet menu with
 the four particle scales (0.25x, 1x, 4x, 16x, rated good, good,
-borderline, bad from the measured ladder), the flat look (two
+good, bad from the measured ladder; 4x was borderline until the phone
+held 120 Hz at it on 2026-09-03), the flat look (two
 colours only, black and the chosen colour, hot pink by default, with
 a particle view that draws the particles alone as discs, sized by
 how crowded each particle is, and builds no field at all) and three readout toggles (frame rate, thermal
@@ -262,10 +263,9 @@ needed — the settled cost is the lowest p50 a run reports, and
 
 2026-09-02, evening, and 2026-09-03: Jack's question, "is it possible
 to enable this app to run on my iPhone *well* - *comfortably* at the
-4x resolution setting?" The findings and the work are on branch
-`m5-4x`, stacked on `m5-menu` (neither merged; do not rebase `m5-4x`
-onto master without `m5-menu`). The optimisation record's "The 4x
-session" holds it all. In short: a five-pass substep at 4x costs 1.0
+4x resolution setting?" The findings and the work are on master:
+`m5-menu` merged as pull request 1 and `m5-4x` as pull request 2, both
+2026-09-03. The optimisation record's "The 4x session" holds it all. In short: a five-pass substep at 4x costs 1.0
 ms cool and 1.3 hot on the phone, the glass look adds 2.4 ms a frame,
 five substeps still lock 120 Hz and six do not; the 40 to 60 Hz dip
 under a hard shake was two rules reading a slipped frame until the
@@ -276,14 +276,14 @@ at 4x ("flat and particle look the coolest"), "comfortable" means
 120 Hz through ordinary and brisk handling with a dip only in a hard
 shake, and the work is approved on the laptop alone.
 
-Shipped on the branch, and measured on the phone the same day: the
+Shipped, and measured on the phone the same day: the
 substep cap scales with the particle spacing (4.2 ms at 1x, 2.6 ms at
 4x); a 120 Hz frame that the CFL would put on six or seven five-pass
 substeps runs eight two-pass ones instead (one pure function,
 `substeps_for`, shared by the phone and the film harness); and the
 solver sorts the particle records into cell order every substep. A
 fresh-context review of two lenses followed, and its four confirmed
-findings are fixed on the branch.
+findings were fixed before the merge.
 
 The device session closed the runbook. The 23-buffer solve layout
 launches. Held upright at 4x, the cap turns 4,280 CFL clamps a second
@@ -307,10 +307,9 @@ and the record's film bands are distributions, not lines — the 1x
 shake compression read 0.076 to 0.138% on an unchanged head in one
 day.
 
-What remains, in the order the records list it: O7, the flat look's
-two-level occupancy, which Jack wants next and which answers both the
-wash when the phone lies flat and the flecks that teleport under a
-swirl; the direction wheel's own cost (the second field it splats);
+What remains, in the order the records list it: the filter pass,
+which the flat, dapple and particle looks no longer read and which
+still runs for them; the direction wheel's own cost (the second field it splats);
 the LANES and workgroup retune, which waits on an alternating
 two-pipeline instrument (about half an hour to build and five
 minutes on the phone, re-costed 2026-09-03); the tracer draw, which
@@ -399,7 +398,8 @@ to `docs/design/decisions.md`.
 | O3 | The name. "Fluid Box" is a working title; the iOS target is `FluidApp`, bundle `com.screendead.FluidApp`. | Jack |
 | O4 | Moot 2026-08-30: the web target is removed (D1 amendment). | — |
 | O5 | The license. `Cargo.toml` says `UNLICENSED` until Jack chooses. | Jack |
-| O7 | The flat look washes out when the phone lies almost flat: the water spreads to an even thin sheet, every cell renders just above zero, and the box reads as one dim tint. Jack, 2026-09-03: give it two levels instead of a continuous thickness ramp — full colour where both the z-1 and z cells under the pixel are occupied, so a filled body reads solid through, and half opacity where only one of the two is. The same cutoff loses small bodies in motion: Jack, 2026-09-03, swirling at 4x, "the flecks just seem to teleport... they just disappear then reappear on the other side of the screen". The particle view of the same water is clean, so the field path is what loses them, and 4x makes it worse because each particle carries less thickness. First diagnostic: the same swirl at 1x. It moves R, the look's own per-frame work, so it carries a measurement against the 4x budget. | `docs/design/m5-menu.md` |
+| O7 | Closed 2026-09-03 on branch `m5-flat-levels`. The flat look washed out lying flat and lost small bodies in motion, and both were one fault: its cutoff was a settled thickness, which climbs the particle ladder in splat units (1.2 at 1x, 1.9 at 4x, 3.0 at 16x) while a fleck stays one particle. It now reads the raw splat in particle units and paints two levels. Jack accepted the look; the dappling it produces became its own proposal, O8. | `docs/design/m5-menu.md` |
+| O8 | Closed 2026-09-03. The dapple look ships: the flat look's two levels dithered against an 8x8 ordered matrix, three device pixels a cell, the lens stepped in four. It is a fourth look with its own menu row, and it costs nothing measurable against the flat look on the phone. | `docs/design/m5-menu.md` |
 | O6 | Closed 2026-09-01, ahead of M7: the gyro is wired end to end and the fictitious triple runs in the solver (M3 record, "The rotation, missing"). | `docs/design/m3-fluid.md` |
 
 ## Roadmap

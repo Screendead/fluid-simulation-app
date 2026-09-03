@@ -85,6 +85,89 @@ the blurred field's, the same waterline the glass reads; the blur is
 the M4 wavelength filter against particle-footprint ripple, not an
 edge softening.
 
+**Amended 2026-09-03.** Two levels replace the one cutoff, and the
+flat look reads the raw splat, not the blurred field. Jack, verbatim:
+"maybe it should have two colours? a 100% colour for both the z-1 and
+z spots being occupied by particles (or close enough, so filled bodies
+are actually solid all the way through), plus a 50% opacity when only
+1 of the two out of [z-1, z] spots nearby are filled?" The same edit
+answers a second report of his the same day, swirling at 4x: "the
+flecks just seem to teleport... they just disappear then reappear on
+the other side of the screen".
+
+The two are one fault. The old cutoff was a settled thickness, which
+is the same water at every scale but more and thinner layers as the
+particle ladder climbs, so in raw splat units it stood at 1.2 at 1x,
+1.9 at 4x and 3.0 at 16x. A fleck is one particle at every scale, so
+the climb, not the cutoff, is what hid it. Measured the same day on
+the phone, the same swirl at both scales: 1x lost flecks a little
+("manageable, but not ideal"), 4x lost them badly ("much more
+noticeable"). Lying flat the fault reads the other way round: the box
+is one particle deep almost everywhere, every texel cleared the
+cutoff, and it painted one tint.
+
+The levels are therefore in raw splat units, which count particles and
+do not move with the ladder. `FLECK` 1.2 holds every scale at the
+sensitivity 1x had. `SOLID` 1.6 sits just above the 1.50 a settled
+layer reads, so a sheet lying one deep straddles it and paints its own
+variation. `THIN` is 0.25, a quarter in linear light because the
+surface encodes sRGB, which is the half Jack asked to see.
+
+The two numbers were chosen against areas he gave after seeing a first
+pair on the phone: "it was 33% 100% opacity, 33% 50% opacity, 33% 0%
+opacity. it should be more like 33% 100%, 7% 50%, 60% 0%". Measured
+headless over a thrown pose, the shipped pair splits the screen
+34/6/60; the pair he first saw, 0.4 and 3.0, split it 20/38/42.
+`a_flat_pose_reads_one_particle_layer` pins the 1.50 and
+`a_flat_pose_draws_both_levels` pins that both levels reach the
+screen. Measured on the phone the same evening, flat look at 4x: every
+120-frame window locked at 8,334 us through a swirl to v_max 2.40 and
+33 windows flat and still, none over budget.
+
+The flat look now touches the blurred field not at all, which leaves
+`field_filter` dead work whenever it or the particle view is on. That
+saving is not taken here; it is a hot-path change and wants its own
+measurement.
+
+### The dapple look (2026-09-03)
+
+Jack, on seeing the two levels: "i actually really like the almost
+comic book-style dappling. maybe that should be its own mode? like
+proper dappling in a retro computing style?" What he saw was
+incidental — `SOLID` stands at 1.6 and a settled layer reads 1.50, so
+a sheet lying flat straddles the threshold and mottles. A constant
+moved for any other reason would take the effect with it, so the
+mode makes it deliberate.
+
+His three answers, asked as inks, chunk size and what to dither:
+"dither between", "halftone", "both".
+
+The look is the flat look with both thresholds moved by an 8x8 ordered
+matrix, three device pixels to a cell. The matrix offsets the sampled
+thickness rather than softening the threshold: two operations, exact
+at the hard step when the offset is zero, and no NaN where a
+zero-width `smoothstep` would have one. The offset has zero mean over
+the matrix, so the areas Jack tuned survive as an average.
+`the_matrix_moves_pixels_and_holds_the_mean` pins both halves: a third
+of the pixels leave the level they would take, and the ink moves under
+two percent.
+
+The lens is dithered too, in four steps, the matrix picking between
+neighbours half a cell along so the colour steps do not lock onto the
+thickness steps. The direction wheel steps the ramp position, never
+the hue: a stepped angle bands hard at the seam.
+
+Two in the low colour's w carries the look, as two in the high
+colour's w already carries the wheel, so the immediates did not grow.
+The dither is a runtime branch on that word rather than a folded
+literal with pipelines of its own. Measured on the phone
+(2026-09-03, 4x, flat and still, two runs of each look alternated
+against thermal drift, 23 and 19 windows): the flat look reads a GPU
+p50 of 6,619 us and the dapple look 6,609, ranges 6,574..6,641 and
+6,575..6,619. The branch costs nothing measurable, so it stays; the
+four-pipeline fold is not needed. A first reading of 1,120 us against
+it was the direction lens left on, not the dither.
+
 The surface is `Bgra8UnormSrgb` on the reference device (logged
 2026-09-02): the shaders work in linear light and the hardware
 encodes on write. The core linearises the picker's components once,

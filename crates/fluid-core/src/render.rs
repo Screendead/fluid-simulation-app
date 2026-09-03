@@ -760,6 +760,10 @@ pub enum Paint {
 pub enum Look {
     Glass,
     Flat(Paint),
+    /// The flat look's two levels, dithered against an ordered matrix
+    /// so a body crossing either breaks into a halftone. Jack,
+    /// 2026-09-03: "proper dappling in a retro computing style".
+    Dapple(Paint),
     Particles(Paint),
 }
 
@@ -821,6 +825,7 @@ impl Painted {
     /// draw: a solid colour, the glass, or a lens whose field has not
     /// been read back yet.
     fn new(look: Look, ends: Option<[f32; 2]>) -> Painted {
+        let mut dapple = 1.0;
         let paint = match look {
             Look::Glass => {
                 return Painted {
@@ -831,11 +836,17 @@ impl Painted {
                 };
             }
             Look::Flat(p) | Look::Particles(p) => p,
+            // Two in the low colour's w is the dapple look, as two in
+            // the high colour's w is the wheel.
+            Look::Dapple(p) => {
+                dapple = 2.0;
+                p
+            }
         };
         let colour = |c: [f32; 3], w: f32| [linear(c[0]), linear(c[1]), linear(c[2]), w];
         match (paint, ends) {
             (Paint::Ramp { low, high, lens }, Some(range)) => Painted {
-                low: colour(low, 1.0),
+                low: colour(low, dapple),
                 // The wheel paints its own colours over the whole
                 // ramp, so the high colour goes unread and its slot
                 // carries the two apart instead.
@@ -844,7 +855,7 @@ impl Painted {
                 range,
             },
             (Paint::Solid(c), _) | (Paint::Ramp { low: c, .. }, None) => Painted {
-                low: colour(c, 1.0),
+                low: colour(c, dapple),
                 high: [0.0; 4],
                 lens: 0,
                 range: [0.0, 1.0],
@@ -3072,7 +3083,9 @@ impl Renderer {
         let ends = match (&self.mode, self.look) {
             (
                 Mode::Sim(s),
-                Look::Flat(Paint::Ramp { lens, .. }) | Look::Particles(Paint::Ramp { lens, .. }),
+                Look::Flat(Paint::Ramp { lens, .. })
+                | Look::Dapple(Paint::Ramp { lens, .. })
+                | Look::Particles(Paint::Ramp { lens, .. }),
             ) => self.ramp.follow(lens, &s.stats, s.spacing, dt),
             _ => None,
         };
@@ -4803,8 +4816,11 @@ mod tests {
             }
             let [b, g, r, _] = px;
             assert_eq!(g, 0, "the ramp left its line: {px:?}");
+            // Two levels put the line at full brightness and at
+            // THIN, so the sum lands on one of two rungs, not on one.
+            let sum = i32::from(r) + i32::from(b);
             assert!(
-                (i32::from(r) + i32::from(b) - 255).abs() <= 1,
+                [255, 64].iter().any(|rung| (sum - rung).abs() <= 1),
                 "the ramp left its line: {px:?}"
             );
             seen.insert(r);
@@ -4816,6 +4832,124 @@ mod tests {
         );
         assert!(air > 0, "the whole screen read as water");
         assert!(seen.len() >= 3, "the ramp painted one colour: {seen:?}");
+    }
+
+    /// The shader's own constant, read out of its source, so a test
+    /// that depends on one cannot drift from it.
+    fn wgsl_const(name: &str) -> f32 {
+        let head = format!("const {name}: f32 =");
+        include_str!("sim_surface.wgsl")
+            .lines()
+            .find_map(|l| l.trim_start().strip_prefix(&head))
+            .expect("the constant")
+            .trim()
+            .trim_end_matches(';')
+            .parse()
+            .expect("a number")
+    }
+
+    /// White paint through one look, so a pixel's byte is its level.
+    fn levels_of(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sim: &Sim,
+        pose: [f32; 3],
+        look: Look,
+        side: u32,
+    ) -> Vec<[u8; 4]> {
+        let painted = Painted::new(look, None);
+        draw_surface(
+            device,
+            queue,
+            sim,
+            side,
+            pack_paint(painted.low, painted.high, painted.range, painted.lens, 0.0),
+            pack_optics(
+                pose,
+                sim.extent,
+                sim.field_settled,
+                painted.low,
+                painted.high,
+            ),
+        )
+    }
+
+    /// The flat look's contract, and why SOLID stands clear of the
+    /// band a settled layer occupies: a sheet lying one deep reads one
+    /// shade with no mottle in it, and a body reads solid. The mottle
+    /// belongs to the dapple look.
+    #[test]
+    fn a_settled_sheet_reads_one_shade_and_a_body_reads_solid() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let white = Paint::Solid([1.0, 1.0, 1.0]);
+        let side = 64usize;
+        let drawn = |pose| {
+            read_stats(&device, &queue, &sim, 7, 600, pose, sim::Touches::default());
+            levels_of(&device, &queue, &sim, pose, Look::Flat(white), side as u32)
+        };
+        // A mottle is neighbouring water at different shades. A sheet
+        // one particle deep must have almost none: a stray thick spot
+        // is water, a field of them is the dapple look's business.
+        let sheet = drawn([0.0, 0.0, -9.81]);
+        let lit = sheet.iter().filter(|p| p[0] > 0).count();
+        let mottle = (0..side)
+            .flat_map(|y| (1..side).map(move |x| y * side + x))
+            .filter(|i| sheet[*i][0] > 0 && sheet[i - 1][0] > 0 && sheet[*i][0] != sheet[i - 1][0])
+            .count();
+        eprintln!("flat sheet: {mottle} mottled pairs over {lit} lit");
+        assert!(
+            mottle * 50 < lit,
+            "a settled sheet mottled: {mottle} pairs over {lit} lit"
+        );
+        let body = drawn([0.0, -9.81, -0.5]);
+        assert!(body.iter().any(|p| p[0] >= 254), "no body read solid");
+    }
+
+    /// The dapple look's contract: where the flat look paints a sheet
+    /// one shade, the matrix breaks it into both inks and black, and
+    /// the mean it paints is the tone the thickness carries. The
+    /// second half is what an offset of the thresholds cannot do.
+    #[test]
+    fn the_dapple_look_halftones_a_sheet_to_its_tone() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let pose = [0.0, 0.0, -9.81];
+        read_stats(&device, &queue, &sim, 7, 600, pose, sim::Touches::default());
+        let white = Paint::Solid([1.0, 1.0, 1.0]);
+        let side = 64;
+        let hard = levels_of(&device, &queue, &sim, pose, Look::Flat(white), side);
+        let soft = levels_of(&device, &queue, &sim, pose, Look::Dapple(white), side);
+        let shades = |px: &[[u8; 4]]| {
+            px.iter()
+                .map(|p| p[0])
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(
+            shades(&hard).len(),
+            2,
+            "the flat look drew more than a sheet and air"
+        );
+        assert_eq!(shades(&soft).len(), 3, "the matrix drew no third shade");
+
+        // The tone the same thickness carries, straight from the
+        // splat and the shader's own two constants.
+        let (fleck, solid) = (wgsl_const("FLECK"), wgsl_const("SOLID"));
+        let (_, field) = raw_splat(&device, &queue, &sim);
+        let tone: f32 = field
+            .iter()
+            .map(|v| ((v - fleck) / (solid - fleck)).clamp(0.0, 1.0))
+            .sum::<f32>()
+            / field.len() as f32;
+        let painted: f32 =
+            soft.iter().map(|p| f32::from(p[0]) / 255.0).sum::<f32>() / soft.len() as f32;
+        eprintln!("dapple: tone {tone:.3}, painted {painted:.3}");
+        assert!(
+            (painted - tone).abs() < 0.06,
+            "the halftone painted {painted:.3} for a tone of {tone:.3}"
+        );
     }
 
     // The chase runs on every frame the device draws and no test
@@ -5550,6 +5684,33 @@ mod tests {
         );
         assert!(drift < 0.03, "stored differences drift {drift}");
         assert!(edge > 0.05, "no waterline to test: {edge}");
+    }
+
+    /// A pose that lays the fluid one particle deep. The flat look's
+    /// SOLID sits just above what it reads, so the number decides
+    /// where a body stops being a sheet: measured, not chosen.
+    #[test]
+    fn a_flat_pose_reads_one_particle_layer() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, 0.0, -9.81],
+            sim::Touches::default(),
+        );
+        assert!(f[6] < 0.3, "not settled: v_max {}", f[6]);
+        let (_, vals) = raw_splat(&device, &queue, &sim);
+        let (layer, _) = plateau(&vals);
+        eprintln!("one layer: {layer:.3}");
+        assert!(
+            (layer - 1.50).abs() < 0.15,
+            "a flat pose reads {layer}, not the one layer SOLID doubles"
+        );
     }
 
     // The field is the particle layers per screen area, so a finer
