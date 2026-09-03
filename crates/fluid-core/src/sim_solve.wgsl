@@ -56,7 +56,7 @@ var<immediate> step: Step;
 @group(0) @binding(7) var<storage, read_write> alpha: array<f32>;
 @group(0) @binding(8) var<storage, read_write> kd: array<f32>;
 @group(0) @binding(9) var<storage, read_write> pressure: array<f32>;
-@group(0) @binding(10) var<storage, read_write> prev_pressure: array<f32>;
+@group(0) @binding(10) var<storage, read> prev_pressure: array<f32>;
 @group(0) @binding(11) var<storage, read_write> temperature: array<f32>;
 @group(0) @binding(12) var<storage, read_write> stats: array<f32, 14>;
 @group(0) @binding(13) var<storage, read_write> clamp_count: atomic<u32>;
