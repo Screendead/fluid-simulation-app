@@ -94,8 +94,9 @@ const CHEAP_RUNG_COST: f32 = 0.65;
 // refine_passes(dt / n) agrees bit for bit; a slipped frame fails it
 // and keeps the plain count, because from a long frame the same jump
 // grows with the frame and, hot, runs away to the substep cap.
-fn substeps_for(dt: f32, v_max: f32, spacing: f32, cap: u32, dt_sub_max: f32) -> u32 {
-    let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32).max(substep_floor(dt, dt_sub_max));
+fn substeps_for(dt: f32, v_max: f32, spacing: f32, cap: u32) -> u32 {
+    let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32)
+        .max(substep_floor(dt, SUBSTEP_PER_SPACING * spacing));
     let cheap = (NOMINAL_FRAME / REFINE_SHORT_DT).ceil() as u32;
     let jump = refine_passes(dt / cheap as f32) == 2
         && n < cheap
@@ -293,9 +294,7 @@ pub fn film(
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
-        let n = substeps_for(dt, v_max, spacing, cap, sim.dt_sub_max)
-            .max(n_min)
-            .min(cap);
+        let n = substeps_for(dt, v_max, spacing, cap).max(n_min).min(cap);
         field_keep = match keep_pin {
             Some(k) => k,
             None => field_keep + (field_keep_target(v_max) - field_keep) * 0.25,
@@ -1424,7 +1423,6 @@ struct Sim {
     stats_staging: [StagingSlot; 3],
     stats: [f32; STATS],
     spacing: f32,
-    dt_sub_max: f32,
     field_settled: f32,
     extent: [f32; 2],
     tracer_count: u32,
@@ -1649,7 +1647,7 @@ impl Sim {
                 ro(7),
                 ro(8),
                 rw(9),
-                ro(10),
+                rw(10),
                 rw(11),
                 rw(12),
                 rw(13),
@@ -1669,7 +1667,7 @@ impl Sim {
                 rw(7),
                 rw(8),
                 rw(9),
-                rw(10),
+                ro(10),
                 rw(11),
                 rw(12),
                 rw(13),
@@ -2186,7 +2184,6 @@ impl Sim {
             stats_staging,
             stats: [0.0; STATS],
             spacing,
-            dt_sub_max: SUBSTEP_PER_SPACING * spacing,
             field_settled: FIELD_SETTLED * SIM_SPACING / spacing,
             extent,
             tracer_count,
@@ -3091,7 +3088,7 @@ impl Renderer {
             // From the one-frame-stale v_max the stats readback
             // drained; the GPU clamp enforces the dt actually encoded.
             s.substeps_used = if dt > 0.0 {
-                substeps_for(dt, s.stats[6], s.spacing, s.max_substeps, s.dt_sub_max)
+                substeps_for(dt, s.stats[6], s.spacing, s.max_substeps)
             } else {
                 0
             };
@@ -3707,31 +3704,27 @@ mod tests {
     #[test]
     fn a_120hz_frame_jumps_six_or_seven_substeps_to_eight() {
         let counts: Vec<u32> = (5..=9)
-            .map(|k| {
-                substeps_for(
-                    NOMINAL_FRAME,
-                    v_for_cfl(k, NOMINAL_FRAME, 0.01),
-                    0.01,
-                    16,
-                    0.0042,
-                )
-            })
+            .map(|k| substeps_for(NOMINAL_FRAME, v_for_cfl(k, NOMINAL_FRAME, 0.01), 0.01, 16))
             .collect();
         assert_eq!(counts, [5, 8, 8, 8, 9]);
     }
 
     #[test]
+    fn a_120hz_frame_at_4x_floors_at_four_then_jumps_under_handling() {
+        let n = |v| substeps_for(NOMINAL_FRAME, v, 0.0062, 16);
+        assert_eq!(n(v_for_cfl(1, NOMINAL_FRAME, 0.0062)), 4);
+        assert_eq!(n(v_for_cfl(6, NOMINAL_FRAME, 0.0062)), 8);
+    }
+
+    #[test]
     fn a_slipped_frame_keeps_its_cfl_count() {
         let dt = 0.010;
-        assert_eq!(
-            substeps_for(dt, v_for_cfl(7, dt, 0.01), 0.01, 16, 0.0042),
-            7
-        );
+        assert_eq!(substeps_for(dt, v_for_cfl(7, dt, 0.01), 0.01, 16), 7);
     }
 
     #[test]
     fn a_flung_frame_stops_at_the_cap() {
-        assert_eq!(substeps_for(NOMINAL_FRAME, 1.0e6, 0.01, 16, 0.0042), 16);
+        assert_eq!(substeps_for(NOMINAL_FRAME, 1.0e6, 0.01, 16), 16);
     }
 
     #[test]
