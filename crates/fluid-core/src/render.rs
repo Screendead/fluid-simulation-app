@@ -5101,6 +5101,43 @@ mod tests {
         assert_eq!((f[4], f[5], f[6]), (0.0, 0.0, 0.0), "pressure, v_max");
         assert_eq!((f[7], f[8]), (293.15, 293.15), "temperature");
         assert_eq!(f[9], 0.0, "clamp count");
+        // Every sixteenth particle against a brute-force sum over the
+        // working set with the analytic wall fill, the CPU copies of
+        // the shader's integrals. The stats above cannot tell a
+        // stencil walk that read the wrong slot from one that read the
+        // right one; this can.
+        let h = 1.2 * SIM_SPACING;
+        let mass = sim::REST_DENSITY * SIM_SPACING * SIM_SPACING * SIM_SPACING;
+        let half = [TEST_EXTENT[0], TEST_EXTENT[1], 0.5 * sim::SLAB_DEPTH];
+        let working = read_vec4(&device, &queue, &sim.work_positions, sim.count);
+        let density = read_floats(&device, &queue, &sim.density, sim.count);
+        for (p, rho) in working.iter().zip(&density).step_by(16) {
+            let pairs: f32 = working
+                .iter()
+                .map(|q| {
+                    let d2: f32 = (0..3).map(|i| (p[i] - q[i]).powi(2)).sum();
+                    sim::kernel(d2.sqrt(), h)
+                })
+                .sum();
+            let tl: [f32; 3] = std::array::from_fn(|i| (p[i] + half[i]) / h);
+            let th: [f32; 3] = std::array::from_fn(|i| (half[i] - p[i]) / h);
+            let mut fill: f32 = tl.iter().chain(&th).map(|t| sim::wall_density(*t)).sum();
+            for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+                for (ta, tb) in [
+                    (tl[a], tl[b]),
+                    (tl[a], th[b]),
+                    (th[a], tl[b]),
+                    (th[a], th[b]),
+                ] {
+                    fill -= sim::wedge(f64::from(ta), f64::from(tb)) as f32;
+                }
+            }
+            let expect = mass * pairs + sim::REST_DENSITY * fill;
+            assert!(
+                (rho - expect).abs() <= 1e-3 * expect,
+                "rho {rho} against the CPU's {expect}"
+            );
+        }
     }
 
     // One bench frame against the CPU: the scan and the density sweep
