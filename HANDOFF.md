@@ -179,7 +179,8 @@ The same day, M5 opened with the menu Jack asked for. The M5 record
 (`docs/design/m5-menu.md`) holds the directive verbatim and D6 the
 split: a tap shows a button, the button opens a half-sheet menu with
 the four particle scales (0.25x, 1x, 4x, 16x, rated good, good,
-borderline, bad from the measured ladder), the flat look (two
+good, bad from the measured ladder; 4x was borderline until the phone
+held 120 Hz at it on 2026-09-03), the flat look (two
 colours only, black and the chosen colour, hot pink by default, with
 a particle view that draws the particles alone as discs, sized by
 how crowded each particle is, and builds no field at all) and three readout toggles (frame rate, thermal
@@ -262,10 +263,9 @@ needed — the settled cost is the lowest p50 a run reports, and
 
 2026-09-02, evening, and 2026-09-03: Jack's question, "is it possible
 to enable this app to run on my iPhone *well* - *comfortably* at the
-4x resolution setting?" The findings and the work are on branch
-`m5-4x`, stacked on `m5-menu` (neither merged; do not rebase `m5-4x`
-onto master without `m5-menu`). The optimisation record's "The 4x
-session" holds it all. In short: a five-pass substep at 4x costs 1.0
+4x resolution setting?" The findings and the work are on master:
+`m5-menu` merged as pull request 1 and `m5-4x` as pull request 2, both
+2026-09-03. The optimisation record's "The 4x session" holds it all. In short: a five-pass substep at 4x costs 1.0
 ms cool and 1.3 hot on the phone, the glass look adds 2.4 ms a frame,
 five substeps still lock 120 Hz and six do not; the 40 to 60 Hz dip
 under a hard shake was two rules reading a slipped frame until the
@@ -276,14 +276,14 @@ at 4x ("flat and particle look the coolest"), "comfortable" means
 120 Hz through ordinary and brisk handling with a dip only in a hard
 shake, and the work is approved on the laptop alone.
 
-Shipped on the branch, and measured on the phone the same day: the
+Shipped, and measured on the phone the same day: the
 substep cap scales with the particle spacing (4.2 ms at 1x, 2.6 ms at
 4x); a 120 Hz frame that the CFL would put on six or seven five-pass
 substeps runs eight two-pass ones instead (one pure function,
 `substeps_for`, shared by the phone and the film harness); and the
 solver sorts the particle records into cell order every substep. A
 fresh-context review of two lenses followed, and its four confirmed
-findings are fixed on the branch.
+findings were fixed before the merge.
 
 The device session closed the runbook. The 23-buffer solve layout
 launches. Held upright at 4x, the cap turns 4,280 CFL clamps a second
