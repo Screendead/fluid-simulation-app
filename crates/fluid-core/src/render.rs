@@ -41,6 +41,10 @@ const SWEEP_LANES: u32 = 8;
 /// A mismatch sizes the list buffer wrong with no validation error.
 const NBR_CAP: u32 = 96;
 
+/// The storage buffers the solve layout binds, the widest of the sim
+/// layouts; the device limit is raised to exactly this.
+const SOLVE_STORAGE_BUFFERS: u32 = 23;
+
 const DT_SUB_MAX: f32 = 0.0042;
 
 // The substep floor divides the measured frame — a dropped frame
@@ -133,7 +137,7 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         label: None,
         required_features: wgpu::Features::IMMEDIATES | wgpu::Features::SUBGROUP,
         required_limits: wgpu::Limits {
-            max_storage_buffers_per_shader_stage: 21,
+            max_storage_buffers_per_shader_stage: SOLVE_STORAGE_BUFFERS,
             max_immediate_size: sim::STEP_BYTES as u32,
             ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
         },
@@ -1464,7 +1468,6 @@ impl Sim {
         // cell's end as the next cell's start.
         let starts = storage("sim starts", u64::from(cells + 1) * 4, none);
         let cursors = storage("sim cursors", u64::from(cells) * 4, none);
-        let sorted = storage("sim sorted", u64::from(count) * 4, none);
         let density = storage(
             "sim density",
             u64::from(count) * 4,
@@ -1499,6 +1502,17 @@ impl Sim {
             .expect("mapped at creation")
             .copy_from_slice(&warm);
         temperature.unmap();
+        // The working set: the five persistent records in cell order for
+        // one substep, filled by scatter and read back by integrate.
+        let work_positions = storage("sim working positions", u64::from(count) * 16, none);
+        let work_velocities = storage("sim working velocities", u64::from(count) * 16, none);
+        let work_prev_vel = storage(
+            "sim working previous velocities",
+            u64::from(count) * 16,
+            none,
+        );
+        let work_prev_pressure = storage("sim working prev pressure", u64::from(count) * 4, none);
+        let work_temperature = storage("sim working temperature", u64::from(count) * 4, none);
         let vel_grid = storage("sim vel grid", u64::from(cells) * 16, none);
         let vel_flat = storage("sim vel flat", u64::from(cells) * 16, none);
         let tracers = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1568,7 +1582,25 @@ impl Sim {
                 entries,
             })
         };
-        let grid_layout = layout("sim grid", &[uniform(0), ro(1), rw(2), ro(3), rw(4), rw(5)]);
+        let grid_layout = layout(
+            "sim grid",
+            &[
+                uniform(0),
+                ro(1),
+                rw(2),
+                ro(3),
+                rw(4),
+                ro(5),
+                ro(6),
+                ro(7),
+                ro(8),
+                rw(9),
+                rw(10),
+                rw(11),
+                rw(12),
+                rw(13),
+            ],
+        );
         // scan_single never touches block_sums; the gap at 3 stays open.
         let scan_layout = layout("sim scan", &[uniform(0), ro(1), rw(2), rw(4)]);
         let solve_layout = layout(
@@ -1579,7 +1611,6 @@ impl Sim {
                 rw(2),
                 rw(3),
                 ro(4),
-                ro(5),
                 rw(6),
                 rw(7),
                 rw(8),
@@ -1594,6 +1625,11 @@ impl Sim {
                 rw(17),
                 rw(18),
                 rw(19),
+                rw(20),
+                rw(21),
+                rw(22),
+                rw(23),
+                rw(24),
             ],
         );
         let tracer_layout = layout(
@@ -1659,7 +1695,15 @@ impl Sim {
                 entry(2, &counts),
                 entry(3, &starts),
                 entry(4, &cursors),
-                entry(5, &sorted),
+                entry(5, &velocities),
+                entry(6, &prev_vel),
+                entry(7, &prev_pressure),
+                entry(8, &temperature),
+                entry(9, &work_positions),
+                entry(10, &work_velocities),
+                entry(11, &work_prev_vel),
+                entry(12, &work_prev_pressure),
+                entry(13, &work_temperature),
             ],
         );
         let scan_bind = bind(
@@ -1677,17 +1721,16 @@ impl Sim {
             &solve_layout,
             &[
                 entry(0, &params),
-                entry(1, &positions),
-                entry(2, &velocities),
+                entry(1, &work_positions),
+                entry(2, &work_velocities),
                 entry(3, &nbr_over),
                 entry(4, &starts),
-                entry(5, &sorted),
                 entry(6, &density),
                 entry(7, &alpha),
                 entry(8, &kd),
                 entry(9, &pressure),
-                entry(10, &prev_pressure),
-                entry(11, &temperature),
+                entry(10, &work_prev_pressure),
+                entry(11, &work_temperature),
                 entry(12, &stats_src),
                 entry(13, &clamps),
                 entry(14, &accel),
@@ -1695,7 +1738,12 @@ impl Sim {
                 entry(16, &nbr),
                 entry(17, &nbr_n),
                 entry(18, &wall_grad),
-                entry(19, &prev_vel),
+                entry(19, &work_prev_vel),
+                entry(20, &positions),
+                entry(21, &velocities),
+                entry(22, &prev_vel),
+                entry(23, &prev_pressure),
+                entry(24, &temperature),
             ],
         );
         let tracer_bind = bind(
@@ -2327,7 +2375,6 @@ struct Bench {
     add_back: wgpu::ComputePipeline,
     scatter: wgpu::ComputePipeline,
     density_sweep: wgpu::ComputePipeline,
-    grid_bind: wgpu::BindGroup,
     scan_bind: wgpu::BindGroup,
     density_bind: wgpu::BindGroup,
     sweeps: u32,
@@ -2431,9 +2478,11 @@ impl Bench {
                 entries,
             })
         };
-        let grid_layout = layout("grid", &[uniform(0), ro(1), rw(2), ro(3), rw(4), rw(5)]);
         let scan_layout = layout("scan", &[uniform(0), ro(1), rw(2), rw(3), rw(4)]);
-        let density_layout = layout("density", &[uniform(0), ro(1), ro(2), ro(3), ro(4), rw(5)]);
+        let density_layout = layout(
+            "density",
+            &[uniform(0), ro(1), rw(2), ro(3), rw(4), rw(5), rw(6)],
+        );
         fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
             wgpu::BindGroupEntry {
                 binding,
@@ -2447,18 +2496,6 @@ impl Bench {
                 entries,
             })
         };
-        let grid_bind = bind(
-            "grid",
-            &grid_layout,
-            &[
-                entry(0, &params),
-                entry(1, &positions),
-                entry(2, &counts),
-                entry(3, &starts),
-                entry(4, &cursors),
-                entry(5, &sorted),
-            ],
-        );
         let scan_bind = bind(
             "scan",
             &scan_layout,
@@ -2480,6 +2517,7 @@ impl Bench {
                 entry(3, &starts),
                 entry(4, &sorted),
                 entry(5, &density),
+                entry(6, &counts),
             ],
         );
 
@@ -2489,7 +2527,6 @@ impl Bench {
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             })
         };
-        let grid_module = module("sim_grid", include_str!("sim_grid.wgsl"));
         let scan_module = module("sim_scan", include_str!("sim_scan.wgsl"));
         let density_module = module("sim_density", include_str!("sim_density.wgsl"));
         let pipe_layout = |layout: &wgpu::BindGroupLayout| {
@@ -2499,7 +2536,6 @@ impl Bench {
                 immediate_size: 0,
             })
         };
-        let grid_pl = pipe_layout(&grid_layout);
         let scan_pl = pipe_layout(&scan_layout);
         let density_pl = pipe_layout(&density_layout);
         let pipeline =
@@ -2515,13 +2551,12 @@ impl Bench {
             };
 
         Bench {
-            count: pipeline(&grid_pl, &grid_module, "count"),
+            count: pipeline(&density_pl, &density_module, "count"),
             scan_blocks: pipeline(&scan_pl, &scan_module, "scan_blocks"),
             scan_sums: pipeline(&scan_pl, &scan_module, "scan_sums"),
             add_back: pipeline(&scan_pl, &scan_module, "add_back"),
-            scatter: pipeline(&grid_pl, &grid_module, "scatter"),
+            scatter: pipeline(&density_pl, &density_module, "scatter"),
             density_sweep: pipeline(&density_pl, &density_module, "density_sweep"),
-            grid_bind,
             scan_bind,
             density_bind,
             sweeps: options.bench_sweeps,
@@ -2542,7 +2577,7 @@ impl Bench {
     /// Dispatch order is the data dependency; WebGPU orders storage
     /// writes between dispatches in one pass.
     fn encode(&self, pass: &mut wgpu::ComputePass<'_>) {
-        pass.set_bind_group(0, &self.grid_bind, &[]);
+        pass.set_bind_group(0, &self.density_bind, &[]);
         pass.set_pipeline(&self.count);
         pass.dispatch_workgroups(self.particle_groups, 1, 1);
         pass.set_bind_group(0, &self.scan_bind, &[]);
@@ -2552,10 +2587,9 @@ impl Bench {
         pass.dispatch_workgroups(1, 1, 1);
         pass.set_pipeline(&self.add_back);
         pass.dispatch_workgroups(self.cell_groups, 1, 1);
-        pass.set_bind_group(0, &self.grid_bind, &[]);
+        pass.set_bind_group(0, &self.density_bind, &[]);
         pass.set_pipeline(&self.scatter);
         pass.dispatch_workgroups(self.particle_groups, 1, 1);
-        pass.set_bind_group(0, &self.density_bind, &[]);
         pass.set_pipeline(&self.density_sweep);
         for _ in 0..self.sweeps {
             pass.dispatch_workgroups(self.particle_groups, 1, 1);
@@ -2725,9 +2759,9 @@ impl Renderer {
             // WebGPU's default limits overshoot small adapters (the
             // simulator offers 15 inter-stage variables, the default
             // asks 16), so start from downlevel and raise what the code
-            // binds: the solve layout holds eighteen storage buffers.
+            // binds.
             required_limits: wgpu::Limits {
-                max_storage_buffers_per_shader_stage: 21,
+                max_storage_buffers_per_shader_stage: SOLVE_STORAGE_BUFFERS,
                 max_immediate_size: sim::STEP_BYTES as u32,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
@@ -3756,7 +3790,11 @@ mod tests {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        // 120 Hz frames split into substeps like the phone would.
+        // 120 Hz frames split into substeps like the phone would. Zero
+        // substeps runs the rebuild and the density sweep alone: the
+        // working set is then in cell order and the resting set is the
+        // seed, so density lines up with sim.work_positions, not with
+        // sim.positions.
         let dt = 1.0 / 120.0 / substeps.max(1) as f32;
         let v_clamp = if substeps == 0 {
             f32::MAX
@@ -4717,8 +4755,62 @@ mod tests {
         let g = [0.0, -9.81, -0.5];
         read_stats(&device, &queue, &sim, 7, 600, g, sim::Touches::default());
         const FRAMES: usize = 30;
+        // Every rebuild lays the particles out in cell order, so index
+        // i is another particle next frame; a particle is followed by
+        // its position instead, matched to the nearest of the previous
+        // frame across the 27 cells around it. A settled particle moves
+        // a fraction of a millimetre a frame against the 10 mm spacing,
+        // so a match farther than half a spacing is a lost particle.
+        let grid = sim::Grid::new(TEST_EXTENT, 2.0 * (1.2 * SIM_SPACING));
+        let dims = grid.dims;
+        let nearest_last = |now: &[[f32; 4]], was: &[[f32; 4]]| -> Vec<usize> {
+            let mut cells = vec![Vec::new(); grid.cell_count() as usize];
+            for (j, q) in was.iter().enumerate() {
+                cells[grid.cell_of([q[0], q[1], q[2]]) as usize].push(j);
+            }
+            now.iter()
+                .map(|p| {
+                    let c = grid.cell_of([p[0], p[1], p[2]]);
+                    let at = [
+                        c % dims[0],
+                        (c / dims[0]) % dims[1],
+                        c / (dims[0] * dims[1]),
+                    ];
+                    let mut best = (f32::INFINITY, usize::MAX);
+                    for cell in 0..27u32 {
+                        let n: [i64; 3] = std::array::from_fn(|i| {
+                            i64::from(at[i]) + i64::from([cell % 3, (cell / 3) % 3, cell / 9][i])
+                                - 1
+                        });
+                        if n.iter()
+                            .zip(&dims)
+                            .any(|(v, d)| *v < 0 || *v >= i64::from(*d))
+                        {
+                            continue;
+                        }
+                        let linear = (n[2] * i64::from(dims[1]) + n[1]) * i64::from(dims[0]) + n[0];
+                        for &j in &cells[linear as usize] {
+                            let q = was[j];
+                            let d2: f32 = (0..3).map(|i| (p[i] - q[i]).powi(2)).sum();
+                            if d2 < best.0 {
+                                best = (d2, j);
+                            }
+                        }
+                    }
+                    assert!(
+                        best.0.sqrt() < 0.5 * SIM_SPACING,
+                        "a particle lost its match: nearest {} m away",
+                        best.0.sqrt()
+                    );
+                    best.1
+                })
+                .collect()
+        };
         let mut walk = [0.0f64; 5];
-        let mut last: Option<Vec<[f32; 5]>> = None;
+        // A frame's particles: where each one is, then its place on
+        // the five ramps.
+        type Frame = (Vec<[f32; 4]>, Vec<[f32; 5]>);
+        let mut last: Option<Frame> = None;
         let mut ends = [[0.0f32; 2]; 5];
         for _ in 0..FRAMES {
             let f = read_stats(&device, &queue, &sim, 7, 1, g, sim::Touches::default());
@@ -4731,6 +4823,7 @@ mod tests {
                 let [lo, hi] = ends[lens];
                 ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
             };
+            let positions = read_vec4(&device, &queue, &sim.positions, sim.count);
             let velocities = read_vec4(&device, &queue, &sim.velocities, sim.count);
             let smooth_p = read_vec4(&device, &queue, &sim.prev_vel, sim.count);
             let density = read_floats(&device, &queue, &sim.density, sim.count);
@@ -4752,9 +4845,10 @@ mod tests {
                     ]
                 })
                 .collect();
-            if let Some(was) = last.replace(now) {
-                let now = last.as_ref().expect("just replaced");
-                for (a, b) in was.iter().zip(now) {
+            if let Some((was_at, was)) = last.replace((positions, now)) {
+                let (now_at, now) = last.as_ref().expect("just replaced");
+                let pairs = nearest_last(now_at, &was_at).into_iter().map(|j| &was[j]);
+                for (a, b) in pairs.zip(now) {
                     for (lens, step) in walk.iter_mut().enumerate().take(4) {
                         *step += f64::from((b[lens] - a[lens]).abs()) / now.len() as f64;
                     }
