@@ -1406,11 +1406,27 @@ struct Sim {
     #[cfg(test)]
     density: wgpu::Buffer,
     #[cfg(test)]
+    starts: wgpu::Buffer,
+    #[cfg(test)]
     positions: wgpu::Buffer,
     #[cfg(test)]
     velocities: wgpu::Buffer,
     #[cfg(test)]
     prev_vel: wgpu::Buffer,
+    #[cfg(test)]
+    prev_pressure: wgpu::Buffer,
+    #[cfg(test)]
+    temperature: wgpu::Buffer,
+    #[cfg(test)]
+    work_positions: wgpu::Buffer,
+    #[cfg(test)]
+    work_velocities: wgpu::Buffer,
+    #[cfg(test)]
+    work_prev_vel: wgpu::Buffer,
+    #[cfg(test)]
+    work_prev_pressure: wgpu::Buffer,
+    #[cfg(test)]
+    work_temperature: wgpu::Buffer,
 }
 
 impl Sim {
@@ -1466,7 +1482,7 @@ impl Sim {
         let counts = storage("sim counts", u64::from(cells) * 4, none);
         // One slot past the last cell holds the total: a sweep reads a
         // cell's end as the next cell's start.
-        let starts = storage("sim starts", u64::from(cells + 1) * 4, none);
+        let starts = storage("sim starts", u64::from(cells + 1) * 4, readback);
         let cursors = storage("sim cursors", u64::from(cells) * 4, none);
         let density = storage(
             "sim density",
@@ -1476,7 +1492,7 @@ impl Sim {
         let alpha = storage("sim alpha", u64::from(count) * 4, none);
         let kd = storage("sim kappa over density", u64::from(count) * 4, none);
         let pressure = storage("sim pressure", u64::from(count) * 4, none);
-        let prev_pressure = storage("sim prev pressure", u64::from(count) * 4, none);
+        let prev_pressure = storage("sim prev pressure", u64::from(count) * 4, readback);
         let clamps = storage("sim clamps", 4, none);
         let accel = storage("sim accel", u64::from(count) * 16, none);
         let xsph = storage("sim xsph", u64::from(count) * 16, none);
@@ -1490,7 +1506,7 @@ impl Sim {
         let temperature = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim temperature"),
             size: u64::from(count) * 4,
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | readback,
             mapped_at_creation: true,
         });
         let mut warm = Vec::with_capacity(count as usize * 4);
@@ -1504,15 +1520,16 @@ impl Sim {
         temperature.unmap();
         // The working set: the five persistent records in cell order for
         // one substep, filled by scatter and read back by integrate.
-        let work_positions = storage("sim working positions", u64::from(count) * 16, none);
-        let work_velocities = storage("sim working velocities", u64::from(count) * 16, none);
+        let work_positions = storage("sim working positions", u64::from(count) * 16, readback);
+        let work_velocities = storage("sim working velocities", u64::from(count) * 16, readback);
         let work_prev_vel = storage(
             "sim working previous velocities",
             u64::from(count) * 16,
-            none,
+            readback,
         );
-        let work_prev_pressure = storage("sim working prev pressure", u64::from(count) * 4, none);
-        let work_temperature = storage("sim working temperature", u64::from(count) * 4, none);
+        let work_prev_pressure =
+            storage("sim working prev pressure", u64::from(count) * 4, readback);
+        let work_temperature = storage("sim working temperature", u64::from(count) * 4, readback);
         let vel_grid = storage("sim vel grid", u64::from(cells) * 16, none);
         let vel_flat = storage("sim vel flat", u64::from(cells) * 16, none);
         let tracers = device.create_buffer(&wgpu::BufferDescriptor {
@@ -2148,11 +2165,27 @@ impl Sim {
             #[cfg(test)]
             density,
             #[cfg(test)]
+            starts,
+            #[cfg(test)]
             positions,
             #[cfg(test)]
             velocities,
             #[cfg(test)]
             prev_vel,
+            #[cfg(test)]
+            prev_pressure,
+            #[cfg(test)]
+            temperature,
+            #[cfg(test)]
+            work_positions,
+            #[cfg(test)]
+            work_velocities,
+            #[cfg(test)]
+            work_prev_vel,
+            #[cfg(test)]
+            work_prev_pressure,
+            #[cfg(test)]
+            work_temperature,
         }
     }
 }
@@ -4436,6 +4469,20 @@ mod tests {
             .collect()
     }
 
+    fn read_u32(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        buffer: &wgpu::Buffer,
+        count: u32,
+    ) -> Vec<u32> {
+        read_back(device, queue, buffer, u64::from(count) * 4)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| u32::from_le_bytes(*b))
+            .collect()
+    }
+
     fn read_vec4(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -4897,6 +4944,120 @@ mod tests {
         assert!(
             body - fringe > 0.25,
             "the free surface reads as body: {fringe:.2} against {body:.2}"
+        );
+    }
+
+    // The rebuild's whole job: after scatter, working slot k holds one
+    // particle's five records and cell c owns the slots
+    // starts[c]..starts[c + 1]. Checked on the seed, then again once
+    // the records carry histories of their own — the lens means, the
+    // warm-start pressure, the temperature — where a record left
+    // behind by the permutation shows as a mismatch against the
+    // resting set the last integrate wrote.
+    #[test]
+    fn the_rebuild_lands_every_particle_in_cell_order() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let grid = sim::Grid::new(TEST_EXTENT, 2.0 * (1.2 * SIM_SPACING));
+        let cells = grid.cell_count();
+        let xyz = |p: &[f32; 4]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
+        let bits = |p: &[f32; 4]| p.map(f32::to_bits);
+        let in_cell_order = |working: &[[f32; 4]], starts: &[u32]| {
+            assert_eq!(starts[cells as usize], sim.count, "the scan's total");
+            let mut held = vec![0u32; cells as usize];
+            for (k, p) in working.iter().enumerate() {
+                let c = grid.cell_of([p[0], p[1], p[2]]) as usize;
+                held[c] += 1;
+                assert!(
+                    starts[c] as usize <= k && k < starts[c + 1] as usize,
+                    "slot {k} lies outside its cell's {}..{}",
+                    starts[c],
+                    starts[c + 1]
+                );
+            }
+            for (c, n) in held.iter().enumerate() {
+                assert_eq!(*n, starts[c + 1] - starts[c], "cell {c} holds");
+            }
+        };
+        let rebuild = |sim: &Sim| {
+            read_stats(
+                &device,
+                &queue,
+                sim,
+                0,
+                1,
+                [0.0; 3],
+                sim::Touches::default(),
+            );
+            let starts = read_u32(&device, &queue, &sim.starts, cells + 1);
+            let working = read_vec4(&device, &queue, &sim.work_positions, sim.count);
+            in_cell_order(&working, &starts);
+            working
+        };
+        let seed = read_vec4(&device, &queue, &sim.positions, sim.count);
+        let working = rebuild(&sim);
+        let mut seeded: Vec<_> = seed.iter().map(xyz).collect();
+        let mut landed: Vec<_> = working.iter().map(xyz).collect();
+        seeded.sort_unstable();
+        landed.sort_unstable();
+        assert_eq!(
+            seeded, landed,
+            "the rebuild permutes the seed and nothing else"
+        );
+
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            60,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        let resting: std::collections::HashMap<[u32; 3], usize> =
+            read_vec4(&device, &queue, &sim.positions, sim.count)
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (xyz(p), i))
+                .collect();
+        assert_eq!(
+            resting.len(),
+            sim.count as usize,
+            "two particles share a position"
+        );
+        let velocities = read_vec4(&device, &queue, &sim.velocities, sim.count);
+        let prev_vel = read_vec4(&device, &queue, &sim.prev_vel, sim.count);
+        let prev_pressure = read_floats(&device, &queue, &sim.prev_pressure, sim.count);
+        let temperature = read_floats(&device, &queue, &sim.temperature, sim.count);
+        let working = rebuild(&sim);
+        let work_velocities = read_vec4(&device, &queue, &sim.work_velocities, sim.count);
+        let work_prev_vel = read_vec4(&device, &queue, &sim.work_prev_vel, sim.count);
+        let work_prev_pressure = read_floats(&device, &queue, &sim.work_prev_pressure, sim.count);
+        let work_temperature = read_floats(&device, &queue, &sim.work_temperature, sim.count);
+        for (k, p) in working.iter().enumerate() {
+            let i = resting[&xyz(p)];
+            assert_eq!(bits(&velocities[i]), bits(&work_velocities[k]), "velocity");
+            assert_eq!(bits(&prev_vel[i]), bits(&work_prev_vel[k]), "prev_vel");
+            assert_eq!(
+                prev_pressure[i].to_bits(),
+                work_prev_pressure[k].to_bits(),
+                "prev_pressure"
+            );
+            assert_eq!(
+                temperature[i].to_bits(),
+                work_temperature[k].to_bits(),
+                "temperature"
+            );
+        }
+        // The match has teeth only if the histories differ from
+        // particle to particle.
+        let means: std::collections::HashSet<u32> =
+            velocities.iter().map(|v| v[3].to_bits()).collect();
+        assert!(
+            means.len() > sim.count as usize / 2,
+            "{} distinct acceleration means",
+            means.len()
         );
     }
 
