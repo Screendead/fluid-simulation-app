@@ -312,7 +312,9 @@ two-level occupancy, which Jack wants next and which answers both the
 wash when the phone lies flat and the flecks that teleport under a
 swirl; the direction wheel's own cost (the second field it splats);
 the LANES and workgroup retune, which waits on an alternating
-two-pipeline instrument; the tracer draw, which belongs to the glass
+two-pipeline instrument (about half an hour to build and five
+minutes on the phone, re-costed 2026-09-03); the tracer draw, which
+belongs to the glass
 look Jack deprioritised at 4x; the runbook's remainder (the M3 exit
 measurements, budget O2, the battery bound, the frame-latency-1
 experiment); and Jack's dials on the drag and his eye on the five

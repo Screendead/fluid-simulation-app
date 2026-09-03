@@ -254,12 +254,14 @@ stretch over budget is 2 seconds on flat and 4 on particles, against
 the 45 to 55 Hz the old dip held until v_max fell under 1.5 m/s. The
 upright boil is gone with it: no CFL clamp after the first five
 seconds, where the shipped cap clamped 4,280 times a second without
-end. The condition this paragraph set is therefore met, and the 4x
-row's `borderline` rating is open for Jack to reconsider — with one
-fact against promoting it yet, from the same minute: the particle look
-at 4x is "stunning" in his words, and the flat look is not, because
-its flecks "just seem to teleport" (HANDOFF O7, a fault of the field
-path and not of the pacing). Two findings from the same evening
+end. The condition this paragraph set is therefore met, and the
+4x row is rated `good`. Jack's rule for the rating, 2026-09-03: "my
+aesthetic opinion is separate from the objective performance claim; an
+option is green if it holds 120fps on the phone." So the flat look's
+own fault at 4x does not hold the rating down: the particle look at 4x
+is "stunning" in his words and the flat look is not, because its
+flecks "just seem to teleport", and that is the field path's fault,
+not the pacing's (HANDOFF O7). Two findings from the same evening
 bind this record's 4x row: the 4x pool held upright and still boiled
 at the shipped substep cap (Jack: "it absolutely does jitter/boil at
 4x"), and Jack deprioritised the glass look at 4x ("flat and

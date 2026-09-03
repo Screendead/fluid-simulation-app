@@ -97,7 +97,7 @@ struct Level: Identifiable {
     static let ladder = [
         Level(scale: 0.25, label: "0.25x", rating: .good),
         Level(scale: 1, label: "1x", rating: .good),
-        Level(scale: 4, label: "4x", rating: .borderline),
+        Level(scale: 4, label: "4x", rating: .good),
         Level(scale: 16, label: "16x", rating: .bad),
     ]
 }

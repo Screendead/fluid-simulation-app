@@ -641,7 +641,7 @@ to 40 to 60 Hz for 3 s". The two-pass rung is reached only at exactly
 | The cap scaled with the spacing (2.6 ms at 4x, four substeps at rest) | the rest boil; sleep | rest frame 4 x 1.0 + R until the gate sleeps (~14 s) | shipped, below |
 | The cell-ordered layout | 0.16 to 0.3 ms a substep in mixed water; hot particle view with the jump: 8 x 0.75 + 1.15 = 7.2 | 6 to 10 h; five buffers, four bindings | shipped, below |
 | Tracers halved at 4x | 0.4 to 0.8 of glass's 2.4 | a look change | Jack's dial; glass deprioritised 2026-09-02 |
-| LANES / workgroup retune | +-10% | an alternating two-pipeline instrument | deferred |
+| LANES / workgroup retune | +-10% | an alternating two-pipeline instrument | deferred; costed 2026-09-03 |
 | Pre-clamp speed for the CFL | n answers in one frame both ways | none | quality, not cost; open |
 | Interior-only CFL | 2 to 5% | clamps +2 to 47% in motion | dead |
 | Refine mid rung | 14% of sweeps at 1.39 ms with four passes | flicker | dead |
@@ -841,6 +841,17 @@ fixed 1/120 could not have shown this either way, and the jump's whole
 premise is that the division lands there.
 
 REVIEW.md's device-measurement blocker is answered for this branch.
+
+**What the two-pipeline instrument would cost, re-costed 2026-09-03.**
+The 2026-09-02 estimate of two hours was never derived; Jack asked
+why. `LANES` is a plain WGSL `const` (`sim_solve.wgsl`), so the second
+variant is a substitution on the shader source before
+`create_shader_module`, a second set of the six sweep pipelines off
+the second module, and a per-window switch of both the pipeline set
+and the dispatch width, which `SWEEP_LANES` divides. About half an
+hour in a throwaway worktree, then one phone session of five minutes.
+The workgroup size needs the same substitution in three places, since
+`256u / LANES` and the `div_ceil(256)` on the Rust side both name it.
 
 ### The review, and what it changed (2026-09-03)
 
