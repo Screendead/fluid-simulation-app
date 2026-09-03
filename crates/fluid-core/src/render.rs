@@ -42,15 +42,16 @@ const SOLVE_STORAGE_BUFFERS: u32 = 23;
 // either length, so this and refine_passes key on substep length, not
 // count. At the 1x spacing (0.01 m) 4.2 ms holds every rest, ring,
 // wake, flicker and shake guard and rests 120 Hz at two substeps
-// (set 2026-08-31, re-measured at 4x scale 2026-09-01, optimisation
-// record, target 1). The same 4.2 ms at the 4x spacing (0.0062 m)
-// boils for ever: v_max 0.6 to 0.75 m/s, over a thousand CFL clamps
-// a second, flicker 162,000 px/frame against the 12,000 line, and no
-// sleep, where four substeps (2.08 ms) rest at v_max 0.08 with zero
-// clamps and three (2.78 ms) still read 15,000 on the flicker meter
-// (2026-09-02, laptop film harness, and Jack's eye on the phone the
-// same day). So the cap is a length per spacing: 4.2 ms at 1x, 2.6
-// ms at 4x, which floors a 120 Hz frame at four substeps.
+// (set 2026-08-31, re-measured at the 4x world scale 2026-09-01,
+// optimisation record, target 1). The same 4.2 ms at the 4x particle
+// scale (spacing 0.0062 m) boils for ever: v_max 0.6 to 0.75 m/s,
+// over a thousand CFL clamps a second, flicker 162,000 px/frame
+// against the 12,000 line, and no sleep, where four substeps (2.08
+// ms) rest at v_max 0.08 with zero clamps and three (2.78 ms) still
+// read 15,000 on the flicker meter (2026-09-02, laptop film harness,
+// and Jack's eye on the phone the same day). So the cap is a length
+// per spacing: 4.2 ms at the 1x spacing, 2.6 ms at the 4x, which
+// floors a 120 Hz frame at four substeps.
 const SUBSTEP_PER_SPACING: f32 = 0.42;
 
 // The substep floor divides the measured frame — a dropped frame
