@@ -912,6 +912,17 @@ about +1.1 ms GPU at rest on the M3 solver-cost split. The refine
 schedule is saturated at 2.1 ms (16 refines buy nothing over 5), so
 the optimisation pass can cut refines there with the compr guard.
 
+Amended 2026-09-03: the cap is a length per particle spacing, not one
+length. The 2.2 ms here became 4.2 ms at the 4x world scale
+(optimisation record, Target 1, 2026-09-01). At the 4x particle scale
+(spacing 0.0062 m, 6,468 particles) the same 4.2 ms substep boils
+without end and the ladder's verdict above does not hold: eight or
+twelve refine passes rest the pool where five do not, so at that
+count the 4.2 ms substep is a convergence failure as well as a
+timestep one (optimisation record, "The 4x session"). The code now
+carries `SUBSTEP_PER_SPACING`, 0.42 s per metre of spacing: 4.2 ms at
+0.01 m, 2.6 ms at 0.0062 m. The refine rung at 1.05 ms is unchanged.
+
 ### Surface tension, priced and re-landed with wetting (2026-08-31)
 
 The earlier verdict — "the tension able to kill millimetre chop is

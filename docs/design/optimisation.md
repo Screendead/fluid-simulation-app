@@ -451,6 +451,11 @@ overlap.
 
 ### Next, in order
 
+Amended 2026-09-03 by "The 4x session" below: item 2 shipped as the
+cell-ordered layout; item 3's refine cut is dead at 4x too and the
+LANES and workgroup A/B waits on an alternating instrument; item 1
+belongs to the glass look, which Jack deprioritised at 4x.
+
 1. The tracer draw: a compute splat of the dots into a full-resolution
    intensity buffer read by the surface shader (exact for single dots
    a pixel; overlapping dots would take the brighter, a look change
@@ -625,6 +630,94 @@ shake, needs a substep under 0.4 ms, 2.5 to 3x off, and is not on
 the table. Jack's ruling, 2026-09-02: glass deprioritised ("flat and
 particle look the coolest"), the first definition accepted, no more
 phone time that day, the work approved.
+
+### What shipped (branch m5-4x, 2026-09-03; laptop-guarded, device pending)
+
+Jack ruled the evening before: the boil is real on the phone, the
+glass look is deprioritised at 4x, the first definition of comfortable
+is the target, no phone time that day, the work approved. Two agents
+built the three changes in parallel worktrees; a fresh-context review
+followed (below). Every number in this section is Jack's laptop
+(Apple M2 Max), 2026-09-03; the phone has not run this build.
+
+1. **The cap scales with the spacing** (`SUBSTEP_PER_SPACING`, 0.42 s
+   per metre: 4.2 ms at 0.01 m, 2.6 ms at 0.0062 m, so a 120 Hz frame
+   at 4x floors at four substeps). Each `Sim` carries its own cap and
+   `substep_floor` takes it. The refine rung is unchanged and named:
+   `REFINE_SHORT_DT`, 1.05 ms. Films at 4x, natural pacing, before and
+   after: meterup flicker 161,469 and 148,401 -> 11,104 and 10,932
+   px/frame (line 12,000); the wake film slept at frame 1658 where the
+   before never slept; shake compression max 0.198 and 0.168 -> 0.084,
+   0.082 and 0.074%; spin 0.050 -> 0.038%; flat 0.036 -> 0.014%. At
+   1x nothing moves: the cap is the same length and the rest histogram
+   is unchanged (meterup 9,789 and 9,792 -> 9,259 and 10,329).
+2. **The two-pass jump** (`substeps_for`, one pure function that the
+   production frame and the film harness both call): the CFL count
+   floored by `substep_floor`; then, iff eight substeps of this frame
+   land on the two-pass rung (`refine_passes(dt / 8) == 2`, the same
+   division the encoder makes) and the count is six or seven (above
+   `CHEAP_RUNG_COST` 0.65 times eight), eight; then the cap. A
+   slipped frame keeps its count. Over the 4x shake film the 6 and 7
+   bins (30 and 23 frames) emptied into the 8 bin; the jump adds 0.01
+   to 0.02 points of compression max against a no-jump binary (0.071
+   and 0.064%), the two-pass rung's residual, accepted. Four pure
+   tests pin the mapping 5, 6, 7, 8, 9 -> 5, 8, 8, 8, 9 at 1/120 s, a
+   10 ms frame keeping 7, a flung frame at the cap, and the floor at
+   both spacings.
+3. **The cell-ordered layout.** `scatter` copies the five persistent
+   records (positions, velocities with the acceleration mean in w,
+   prev_vel with the pressure mean in w, prev_pressure, temperature)
+   from the resting set into a working set at each particle's
+   cell-ordered slot; the substep's sweeps bind the working set;
+   `density_div` walks `starts[c]..starts[c+1]` with j = k and stores
+   k in the neighbour list; `integrate` writes the resting set back at
+   the same slot; `reduce_stats` and every per-frame reader bind the
+   resting set, which is canonical. The sorted index list is retired.
+   The solve layout binds 23 storage buffers (`SOLVE_STORAGE_BUFFERS`
+   sets the device limit at both creation sites); the binding count
+   has run on the laptop only. The microbench owns its own count and
+   scatter now (about 25 lines beside its old stencil kernel); its
+   fate is still Jack's. Cost: 56 bytes in and out per particle per
+   substep, +362 KB at 4x. Tests: the colours-still test follows a
+   particle by position across the 27 surrounding cells with the 0.01
+   walk bound unchanged (measured walk a frame: velocity 0.0054,
+   acceleration 0.0008, pressure 0.0006, proximity 0.0011, direction
+   0.0002 — the M5 record's numbers); a new test checks the working
+   set's cell order, the scan total and the bit-for-bit travel of all
+   five records after a 60-frame settle; every sixteenth density is
+   pinned to a CPU brute-force sum with the analytic wall fill within
+   1e-3 (a wall-fill mutation every stats assertion passed failed it,
+   814.57 against 796.52). Films, three a side: 1x meterup 9,854 /
+   8,936 / 10,414 -> 9,865 / 10,080 / 9,977; 1x shake 0.138 / 0.088 /
+   0.076 -> 0.057 / 0.119 / 0.067%; 4x at four substeps: meterup
+   11,954 / 10,672 / 11,584 -> 11,072 / 11,704 / 11,253, shake 0.073 /
+   0.070 / 0.061 -> 0.049 / 0.071 / 0.056%, wake sleep at 1814 / 2086 /
+   1777 -> 1855 / 2087 / 1844. No film moved outside its scatter.
+
+The integrated head, gate green, films on the same laptop the same
+day: 4x natural pacing meterup 10,931 and 9,551 px/frame, shake
+0.075 and 0.080%, wake sleep at frame 1855, spin 0.038%, flat 0.014%,
+drag 0.045%; 1x meterup 9,000 and 10,056, shake 0.088 and 0.097%,
+wake sleep at frame 1760. Every 4x guard that failed on the head
+before this branch passes, and every 1x guard sits in its band.
+
+Two bands in earlier sections did not reproduce on the laptop that
+day and are scatter, not shifts: the 1x shake compression read 0.076
+to 0.138% on the unchanged head (the record's 0.03 to 0.06 was one
+session), and the 4x four-substep meterup read 10,672 to 11,954
+against the 10,491 and 10,710 of the day before. Read every film band
+as a distribution.
+
+The device runbook for this branch, in order: (1) the binding count —
+`scripts/run-ios.sh`; the app draws water or fails at `Renderer::new`
+with a pipeline-layout error; (2) the upright rest at 4x with the new
+cap — v, n, clamps, sleep; (3) the seed-order experiment repeated
+with the sort in place (shuffled against row at eight pinned substeps;
+today's 11.1 and 13.1 ms against 9.8 and 11.5); (4) a 1x settled p50
+pair for the permute's own cost (two substeps, still desk); (5) Jack's
+hand on a brisk swirl at 4x, reading n = 8 windows at 120 Hz on the
+flat and particle looks, cool and then hot. REVIEW.md's
+device-measurement blocker stands on the branch until then.
 
 ## The runbook's remainder (waits for a phone session)
 

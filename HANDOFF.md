@@ -1,6 +1,6 @@
 # Handoff — project state
 
-*Updated 2026-09-02. Audience: the next agent, or Jack. This file is the
+*Updated 2026-09-03. Audience: the next agent, or Jack. This file is the
 state document. It holds what the next stretch of work needs. Update it in
 the same commit that closes a milestone or a task. Git holds the history.*
 
@@ -146,7 +146,7 @@ third of all eddy damping, and shipped XSPH_RATE 6 — retention tau
 at this particle count. Guards green; the recorded cost is ~2 s of
 extra sleep latency after motion.
 
-Test baseline: 48 Rust tests pass, 2026-09-02.
+Test baseline: 53 Rust tests pass, 2026-09-03.
 
 ## M1 measurements (reference device, 2026-08-30, Release)
 
@@ -260,13 +260,55 @@ back. The M5 record has the sweep and the protocol it
 needed — the settled cost is the lowest p50 a run reports, and
 `FLUID_LOOK` names the look for a console run.
 
-What remains, in the order the records list it: the optimisation
-record's next steps (the tracer draw, the builder sweep, the refine
-chain); the runbook's remainder (the M3 exit measurements, budget O2,
-the battery bound, the frame-latency-1 experiment); the direction
-wheel's own cost, which is the second field it splats and the only
-lens that pays for a pass; and Jack's dials on the drag and his eye
-on the five lenses. The next one is Jack's pick.
+2026-09-02, evening, and 2026-09-03: Jack's question, "is it possible
+to enable this app to run on my iPhone *well* - *comfortably* at the
+4x resolution setting?" The findings and the work are on branch
+`m5-4x`, stacked on `m5-menu` (neither merged; do not rebase `m5-4x`
+onto master without `m5-menu`). The optimisation record's "The 4x
+session" holds it all. In short: a five-pass substep at 4x costs 1.0
+ms cool and 1.3 hot on the phone, the glass look adds 2.4 ms a frame,
+five substeps still lock 120 Hz and six do not; the 40 to 60 Hz dip
+under a hard shake was two rules reading a slipped frame until the
+substep count railed at the cap; and a 4x pool held upright and still
+boiled at the 4.2 ms substep cap (Jack: "it absolutely does
+jitter/boil at 4x"). Jack's rulings: the glass look is deprioritised
+at 4x ("flat and particle look the coolest"), "comfortable" means
+120 Hz through ordinary and brisk handling with a dip only in a hard
+shake, and the work is approved on the laptop alone.
+
+Shipped on the branch, laptop-guarded, device pending: the substep cap
+scales with the particle spacing (4.2 ms at 1x, 2.6 ms at 4x; the 4x
+pool rests and sleeps); a 120 Hz frame that the CFL would put on six
+or seven five-pass substeps runs eight two-pass ones instead (one
+pure function, `substeps_for`, shared by the phone and the film
+harness); and the solver sorts the particle records into cell order
+every substep (the seed-order experiment on the phone priced mixed
+water at 16 to 30% of a substep, and cell order equal to today's row
+order at rest). A fresh-context review followed. The device runbook
+for the branch is in the record: the binding count first (23 storage
+buffers; the laptop is the only proxy so far), then the upright rest
+at 4x, the seed-order experiment with the sort in place, a 1x settled
+pair for the permute's cost, and Jack's hand on a brisk swirl at 4x
+reading eight-substep windows at 120 Hz. REVIEW.md's device blocker
+stands until then; the merge is Jack's.
+
+Two protocol facts from the session bind future measurements: a pair
+of installs on the phone drifts 10 to 20% thermally, so a code change
+is priced by alternating settings inside one run (the throwaway
+instrument in the session scratchpad, `p4x/patch4x.py`, does that);
+and the record's film bands are distributions, not lines — the 1x
+shake compression read 0.076 to 0.138% on an unchanged head in one
+day.
+
+What remains, in the order the records list it: the device runbook
+above; the direction wheel's own cost (the second field it splats);
+the LANES and workgroup retune, which waits on an alternating
+two-pipeline instrument; the tracer draw, which belongs to the glass
+look Jack deprioritised at 4x; the runbook's remainder (the M3 exit
+measurements, budget O2, the battery bound, the frame-latency-1
+experiment); and Jack's dials on the drag and his eye on the five
+lenses. The microbench's fate (it now carries its own grid kernels)
+is still Jack's call. The next one is Jack's pick.
 
 The history of the pass, for the record:
 
