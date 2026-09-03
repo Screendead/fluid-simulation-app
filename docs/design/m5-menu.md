@@ -129,6 +129,45 @@ The flat look now touches the blurred field not at all, which leaves
 saving is not taken here; it is a hot-path change and wants its own
 measurement.
 
+### The dapple look (2026-09-03)
+
+Jack, on seeing the two levels: "i actually really like the almost
+comic book-style dappling. maybe that should be its own mode? like
+proper dappling in a retro computing style?" What he saw was
+incidental — `SOLID` stands at 1.6 and a settled layer reads 1.50, so
+a sheet lying flat straddles the threshold and mottles. A constant
+moved for any other reason would take the effect with it, so the
+mode makes it deliberate.
+
+His three answers, asked as inks, chunk size and what to dither:
+"dither between", "halftone", "both".
+
+The look is the flat look with both thresholds moved by an 8x8 ordered
+matrix, three device pixels to a cell. The matrix offsets the sampled
+thickness rather than softening the threshold: two operations, exact
+at the hard step when the offset is zero, and no NaN where a
+zero-width `smoothstep` would have one. The offset has zero mean over
+the matrix, so the areas Jack tuned survive as an average.
+`the_matrix_moves_pixels_and_holds_the_mean` pins both halves: a third
+of the pixels leave the level they would take, and the ink moves under
+two percent.
+
+The lens is dithered too, in four steps, the matrix picking between
+neighbours half a cell along so the colour steps do not lock onto the
+thickness steps. The direction wheel steps the ramp position, never
+the hue: a stepped angle bands hard at the seam.
+
+Two in the low colour's w carries the look, as two in the high
+colour's w already carries the wheel, so the immediates did not grow.
+The dither is a runtime branch on that word rather than a folded
+literal with pipelines of its own. Measured on the phone
+(2026-09-03, 4x, flat and still, two runs of each look alternated
+against thermal drift, 23 and 19 windows): the flat look reads a GPU
+p50 of 6,619 us and the dapple look 6,609, ranges 6,574..6,641 and
+6,575..6,619. The branch costs nothing measurable, so it stays; the
+four-pipeline fold is not needed. A first reading of 1,120 us against
+it was the direction lens left on, not the dither.
+
 The surface is `Bgra8UnormSrgb` on the reference device (logged
 2026-09-02): the shaders work in linear light and the hardware
 encodes on write. The core linearises the picker's components once,

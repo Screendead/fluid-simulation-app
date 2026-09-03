@@ -173,7 +173,7 @@ the readout, and the choices' persistence in `UserDefaults`. The core
 exposes three calls for them — `set_particles(scale)`,
 `particles_at(scale)`, `set_look(look)` — and computes everything
 about the fluid from them: the spacing behind a scale, the count it
-seeds, the shading of each of the three looks. The shell computes nothing about
+seeds, the shading of each of the four looks. The shell computes nothing about
 the fluid; the performance rating beside each scale is a table of
 device measurements, not a computation.
 
@@ -199,6 +199,12 @@ computes every range the ramp needs from the box. The shell picks the
 colours and names the lens by number; it computes no range and no
 threshold. `fluid_renderer_set_look` grows the three arguments that
 say so.
+
+*Amended 2026-09-03, from Jack's ask for a dapple mode.* A fourth
+look joins the three: the flat look's two levels dithered against an
+ordered matrix. The shell adds one boolean to `set_look` and the core
+keeps every threshold, band and step; the shell knows only that the
+user asked for it.
 
 *Amended 2026-09-02, from Jack's ask for the ranges.* The ramp's two
 ends are no longer derived from the box. They are the lowest and the

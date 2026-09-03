@@ -307,10 +307,9 @@ and the record's film bands are distributions, not lines — the 1x
 shake compression read 0.076 to 0.138% on an unchanged head in one
 day.
 
-What remains, in the order the records list it: O8, a dappling look
-of its own, which Jack asked for on 2026-09-03 after seeing the two
-levels; the filter pass, which the flat and particle looks no longer
-read and which still runs for them; the direction wheel's own cost (the second field it splats);
+What remains, in the order the records list it: the filter pass,
+which the flat, dapple and particle looks no longer read and which
+still runs for them; the direction wheel's own cost (the second field it splats);
 the LANES and workgroup retune, which waits on an alternating
 two-pipeline instrument (about half an hour to build and five
 minutes on the phone, re-costed 2026-09-03); the tracer draw, which
@@ -400,7 +399,7 @@ to `docs/design/decisions.md`.
 | O4 | Moot 2026-08-30: the web target is removed (D1 amendment). | — |
 | O5 | The license. `Cargo.toml` says `UNLICENSED` until Jack chooses. | Jack |
 | O7 | Closed 2026-09-03 on branch `m5-flat-levels`. The flat look washed out lying flat and lost small bodies in motion, and both were one fault: its cutoff was a settled thickness, which climbs the particle ladder in splat units (1.2 at 1x, 1.9 at 4x, 3.0 at 16x) while a fleck stays one particle. It now reads the raw splat in particle units and paints two levels. Jack accepted the look; the dappling it produces became its own proposal, O8. | `docs/design/m5-menu.md` |
-| O8 | Jack, 2026-09-03, on the two-level flat look: "i actually really like the almost comic book-style dappling. maybe that should be its own mode? like proper dappling in a retro computing style?" The dappling he likes is incidental — the thickness straddling `SOLID` — so it moves whenever that constant moves. A deliberate mode would dither the thickness against a screen-space ordered matrix at a chunky pixel, which is a few ALU a fragment and no new buffer. Not started; it is a new look, so it needs a menu row and Jack's word on how many inks. | `docs/design/m5-menu.md` |
+| O8 | Closed 2026-09-03. The dapple look ships: the flat look's two levels dithered against an 8x8 ordered matrix, three device pixels a cell, the lens stepped in four. It is a fourth look with its own menu row, and it costs nothing measurable against the flat look on the phone. | `docs/design/m5-menu.md` |
 | O6 | Closed 2026-09-01, ahead of M7: the gyro is wired end to end and the fictitious triple runs in the solver (M3 record, "The rotation, missing"). | `docs/design/m3-fluid.md` |
 
 ## Roadmap
