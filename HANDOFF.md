@@ -307,10 +307,10 @@ and the record's film bands are distributions, not lines — the 1x
 shake compression read 0.076 to 0.138% on an unchanged head in one
 day.
 
-What remains, in the order the records list it: O7, the flat look's
-two-level occupancy, which Jack wants next and which answers both the
-wash when the phone lies flat and the flecks that teleport under a
-swirl; the direction wheel's own cost (the second field it splats);
+What remains, in the order the records list it: O8, a dappling look
+of its own, which Jack asked for on 2026-09-03 after seeing the two
+levels; the filter pass, which the flat and particle looks no longer
+read and which still runs for them; the direction wheel's own cost (the second field it splats);
 the LANES and workgroup retune, which waits on an alternating
 two-pipeline instrument (about half an hour to build and five
 minutes on the phone, re-costed 2026-09-03); the tracer draw, which
@@ -399,7 +399,8 @@ to `docs/design/decisions.md`.
 | O3 | The name. "Fluid Box" is a working title; the iOS target is `FluidApp`, bundle `com.screendead.FluidApp`. | Jack |
 | O4 | Moot 2026-08-30: the web target is removed (D1 amendment). | — |
 | O5 | The license. `Cargo.toml` says `UNLICENSED` until Jack chooses. | Jack |
-| O7 | The flat look washes out when the phone lies almost flat: the water spreads to an even thin sheet, every cell renders just above zero, and the box reads as one dim tint. Jack, 2026-09-03: give it two levels instead of a continuous thickness ramp — full colour where both the z-1 and z cells under the pixel are occupied, so a filled body reads solid through, and half opacity where only one of the two is. The same cutoff loses small bodies in motion: Jack, 2026-09-03, swirling at 4x, "the flecks just seem to teleport... they just disappear then reappear on the other side of the screen". The particle view of the same water is clean, so the field path is what loses them, and 4x makes it worse because each particle carries less thickness. First diagnostic: the same swirl at 1x. It moves R, the look's own per-frame work, so it carries a measurement against the 4x budget. | `docs/design/m5-menu.md` |
+| O7 | Closed 2026-09-03 on branch `m5-flat-levels`. The flat look washed out lying flat and lost small bodies in motion, and both were one fault: its cutoff was a settled thickness, which climbs the particle ladder in splat units (1.2 at 1x, 1.9 at 4x, 3.0 at 16x) while a fleck stays one particle. It now reads the raw splat in particle units and paints two levels. Jack accepted the look; the dappling it produces became its own proposal, O8. | `docs/design/m5-menu.md` |
+| O8 | Jack, 2026-09-03, on the two-level flat look: "i actually really like the almost comic book-style dappling. maybe that should be its own mode? like proper dappling in a retro computing style?" The dappling he likes is incidental — the thickness straddling `SOLID` — so it moves whenever that constant moves. A deliberate mode would dither the thickness against a screen-space ordered matrix at a chunky pixel, which is a few ALU a fragment and no new buffer. Not started; it is a new look, so it needs a menu row and Jack's word on how many inks. | `docs/design/m5-menu.md` |
 | O6 | Closed 2026-09-01, ahead of M7: the gyro is wired end to end and the fictitious triple runs in the solver (M3 record, "The rotation, missing"). | `docs/design/m3-fluid.md` |
 
 ## Roadmap
