@@ -63,13 +63,41 @@ fn substep_floor(dt: f32, dt_sub_max: f32) -> u32 {
     ((dt / dt_sub_max).ceil() as u32).min(8)
 }
 
+/// The longest substep the two-pass refine rung covers.
+const REFINE_SHORT_DT: f32 = 0.00105;
+
 // Density error scales with dt squared, so short substeps need fewer
 // refine passes; the film compr guard covers the shallow end. There
 // is no deep branch for long substeps: the convergence ladder showed
 // iterations cannot fix a 4 ms substep (the error is the timestep),
 // and at 60 Hz the extra dispatches were half the solver's cost.
 fn refine_passes(dt_sub: f32) -> u32 {
-    if dt_sub > 0.00105 { 5 } else { 2 }
+    if dt_sub > REFINE_SHORT_DT { 5 } else { 2 }
+}
+
+const NOMINAL_FRAME: f32 = 1.0 / 120.0;
+
+/// A two-pass substep's cost against a five-pass one: iPhone 13 Pro
+/// Max, 2026-09-02, 4x, a five-pass substep 0.97 to 1.36 ms against
+/// 0.1 ms a refine pass.
+const CHEAP_RUNG_COST: f32 = 0.65;
+
+// The CFL count, floored by substep_floor, and then the jump: a 120 Hz
+// frame that the CFL would put on six or seven five-pass substeps
+// runs eight two-pass ones instead, which cost less and fit the frame
+// where six or seven slip it. The condition is that eight substeps of
+// this very frame land on the two-pass rung, so the encoder's
+// refine_passes(dt / n) agrees bit for bit; a slipped frame fails it
+// and keeps the plain count, because from a long frame the same jump
+// grows with the frame and, hot, runs away to the substep cap.
+fn substeps_for(dt: f32, v_max: f32, spacing: f32, cap: u32, dt_sub_max: f32) -> u32 {
+    let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32).max(substep_floor(dt, dt_sub_max));
+    let cheap = (NOMINAL_FRAME / REFINE_SHORT_DT).ceil() as u32;
+    let jump = refine_passes(dt / cheap as f32) == 2
+        && n < cheap
+        && n as f32 > CHEAP_RUNG_COST * cheap as f32;
+    let n = if jump { cheap } else { n };
+    n.min(cap)
 }
 
 struct Ring {
@@ -254,16 +282,14 @@ pub fn film(
             eprintln!("film: wake at frame {f}");
             was_asleep = false;
         }
-        // The production CFL and substep cap, fed by the previous
-        // frame's v_max. NMIN is a diagnostic floor above the cap:
+        // NMIN is a diagnostic floor on the production count:
         // shortening the rest timestep separates timestep-stability
         // noise from model noise.
         let n_min: u32 = std::env::var("NMIN")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
-        let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32)
-            .max(substep_floor(dt, sim.dt_sub_max))
+        let n = substeps_for(dt, v_max, spacing, cap, sim.dt_sub_max)
             .max(n_min)
             .min(cap);
         field_keep = match keep_pin {
@@ -3058,13 +3084,10 @@ impl Renderer {
         // out of the thickness field.
         let wheel = field && paint.high[3] > 1.0;
         if let Mode::Sim(s) = &mut self.mode {
-            // CFL: dt <= 0.4 d / v_max, from the one-frame-stale v_max
-            // the stats readback drained. The GPU clamp enforces the dt
-            // actually encoded.
+            // From the one-frame-stale v_max the stats readback
+            // drained; the GPU clamp enforces the dt actually encoded.
             s.substeps_used = if dt > 0.0 {
-                ((dt * s.stats[6] / (0.4 * s.spacing)).ceil() as u32)
-                    .max(substep_floor(dt, s.dt_sub_max))
-                    .min(s.max_substeps)
+                substeps_for(dt, s.stats[6], s.spacing, s.max_substeps, s.dt_sub_max)
             } else {
                 0
             };
@@ -3662,13 +3685,49 @@ mod tests {
         );
     }
 
+    // v_max that puts the CFL count half a step past `count - 1`, so
+    // the ceiling cannot sit on a rounding ulp.
+    fn v_for_cfl(count: u32, dt: f32, spacing: f32) -> f32 {
+        (count as f32 - 0.5) * 0.4 * spacing / dt
+    }
+
     #[test]
     fn the_substep_floor_scales_with_the_spacing() {
         let cap = |spacing: f32| SUBSTEP_PER_SPACING * spacing;
-        assert_eq!(substep_floor(1.0 / 120.0, cap(0.01)), 2);
-        assert_eq!(substep_floor(1.0 / 120.0, cap(0.0062)), 4);
+        assert_eq!(substep_floor(NOMINAL_FRAME, cap(0.01)), 2);
+        assert_eq!(substep_floor(NOMINAL_FRAME, cap(0.0062)), 4);
         assert_eq!(substep_floor(0.033, cap(0.01)), 8);
         assert_eq!(substep_floor(0.033, cap(0.0062)), 8);
+    }
+
+    #[test]
+    fn a_120hz_frame_jumps_six_or_seven_substeps_to_eight() {
+        let counts: Vec<u32> = (5..=9)
+            .map(|k| {
+                substeps_for(
+                    NOMINAL_FRAME,
+                    v_for_cfl(k, NOMINAL_FRAME, 0.01),
+                    0.01,
+                    16,
+                    0.0042,
+                )
+            })
+            .collect();
+        assert_eq!(counts, [5, 8, 8, 8, 9]);
+    }
+
+    #[test]
+    fn a_slipped_frame_keeps_its_cfl_count() {
+        let dt = 0.010;
+        assert_eq!(
+            substeps_for(dt, v_for_cfl(7, dt, 0.01), 0.01, 16, 0.0042),
+            7
+        );
+    }
+
+    #[test]
+    fn a_flung_frame_stops_at_the_cap() {
+        assert_eq!(substeps_for(NOMINAL_FRAME, 1.0e6, 0.01, 16, 0.0042), 16);
     }
 
     #[test]
