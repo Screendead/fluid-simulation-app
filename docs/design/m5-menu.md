@@ -244,8 +244,22 @@ substep at 4x costs 0.97 to 1.0 ms cool and 1.25 to 1.36 hot, the
 glass look adds 2.4 ms a frame of its own, and five substeps still
 lock 120 Hz; six or seven do not, the frame slips, and the CFL and
 the refine rung both read the slipped frame until the count rails at
-the cap. The rating stays borderline until the changes that record
-holds are measured on the device. Two findings from the same evening
+the cap.
+
+Measured on the device 2026-09-03, on branch `m5-4x` (optimisation
+record, "The device session"): the dip is gone. Jack swirled the phone
+briskly for 70 seconds a look, hot, at 4x. The median second holds
+8,334 us on both the flat and the particle look; the longest unbroken
+stretch over budget is 2 seconds on flat and 4 on particles, against
+the 45 to 55 Hz the old dip held until v_max fell under 1.5 m/s. The
+upright boil is gone with it: no CFL clamp after the first five
+seconds, where the shipped cap clamped 4,280 times a second without
+end. The condition this paragraph set is therefore met, and the 4x
+row's `borderline` rating is open for Jack to reconsider — with one
+fact against promoting it yet, from the same minute: the particle look
+at 4x is "stunning" in his words, and the flat look is not, because
+its flecks "just seem to teleport" (HANDOFF O7, a fault of the field
+path and not of the pacing). Two findings from the same evening
 bind this record's 4x row: the 4x pool held upright and still boiled
 at the shipped substep cap (Jack: "it absolutely does jitter/boil at
 4x"), and Jack deprioritised the glass look at 4x ("flat and

@@ -126,6 +126,18 @@ The substep count is dynamic — n = ceil(dt·v_max / 0.4 d), clamped to
 the FLUID_SIM cap (the knob is now a ceiling, not a count). At rest n
 is 1.
 
+Amended 2026-09-03: the count has two more terms, and one function,
+`substeps_for`, that the phone and the film harness both call. A floor
+divides the measured frame by the substep cap of its own spacing
+(`SUBSTEP_PER_SPACING`, amended below), so at rest n is 2 at the 1x
+spacing and 4 at the 4x, not 1. Then, if and only if eight substeps of
+this frame land on the two-pass refine rung and the CFL asked for six
+or seven, the count is eight: eight cheap substeps cost less than six
+dear ones and fit a 120 Hz frame where six slip it. A frame that has
+already slipped keeps its CFL count, or the same rule would grow with
+the frame and run away to the cap. The device numbers are in the
+optimisation record, "The 4x session".
+
 An unset FLUID_SIM now defaults to a cap of 7, so an icon launch runs
 the solver. Zero selects the M2 demo, by explicit request only. Before
 2026-08-31 the default was zero: every icon launch showed the demo.
