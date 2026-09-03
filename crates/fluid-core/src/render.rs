@@ -4834,85 +4834,103 @@ mod tests {
         assert!(seen.len() >= 3, "the ramp painted one colour: {seen:?}");
     }
 
-    /// A flat pose lies one particle deep almost everywhere, so it is
-    /// where the two levels have to show. One cutoff painted the whole
-    /// box a single tint, which is what Jack asked to be rid of on
-    /// 2026-09-03.
+    /// The shader's own constant, read out of its source, so a test
+    /// that depends on one cannot drift from it.
+    fn wgsl_const(name: &str) -> f32 {
+        let head = format!("const {name}: f32 =");
+        include_str!("sim_surface.wgsl")
+            .lines()
+            .find_map(|l| l.trim_start().strip_prefix(&head))
+            .expect("the constant")
+            .trim()
+            .trim_end_matches(';')
+            .parse()
+            .expect("a number")
+    }
+
+    /// White paint through one look, so a pixel's byte is its level.
+    fn levels_of(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sim: &Sim,
+        pose: [f32; 3],
+        look: Look,
+        side: u32,
+    ) -> Vec<[u8; 4]> {
+        let painted = Painted::new(look, None);
+        draw_surface(
+            device,
+            queue,
+            sim,
+            side,
+            pack_paint(painted.low, painted.high, painted.range, painted.lens, 0.0),
+            pack_optics(pose, sim.extent, sim.field_settled, painted.low, painted.high),
+        )
+    }
+
+    /// The flat look's contract, and why SOLID stands clear of the
+    /// band a settled layer occupies: a sheet lying one deep reads one
+    /// shade with no mottle in it, and a body reads solid. The mottle
+    /// belongs to the dapple look.
     #[test]
-    fn a_flat_pose_draws_both_levels() {
+    fn a_settled_sheet_reads_one_shade_and_a_body_reads_solid() {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        let flat = [0.0, 0.0, -9.81];
-        let f = read_stats(&device, &queue, &sim, 7, 600, flat, sim::Touches::default());
-        let white = [1.0, 1.0, 1.0, 1.0];
-        let optics = pack_optics(flat, sim.extent, sim.field_settled, white, [0.0; 4]);
-        let paint = pack_paint(
-            white,
-            [0.0; 4],
-            Lens::Proximity.ends(&f),
-            Lens::Proximity.code(),
-            0.0,
+        let white = Paint::Solid([1.0, 1.0, 1.0]);
+        let shades = |pose| {
+            read_stats(&device, &queue, &sim, 7, 600, pose, sim::Touches::default());
+            levels_of(&device, &queue, &sim, pose, Look::Flat(white), 64)
+                .iter()
+                .map(|p| p[0])
+                .filter(|v| *v > 0)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let sheet = shades([0.0, 0.0, -9.81]);
+        assert_eq!(sheet.len(), 1, "a settled sheet mottled: {sheet:?}");
+        let body = shades([0.0, -9.81, -0.5]);
+        assert!(
+            body.iter().any(|v| *v >= 254),
+            "no body read solid: {body:?}"
         );
-        let mut levels = std::collections::BTreeSet::new();
-        for px in draw_surface(&device, &queue, &sim, 64, paint, optics) {
-            levels.insert(px[0]);
-        }
-        for rung in [255u8, 64] {
-            assert!(
-                levels.iter().any(|v| v.abs_diff(rung) <= 1),
-                "no pixel at level {rung}: {levels:?}"
-            );
-        }
     }
 
-    /// Two claims the dapple look rests on: the matrix moves a real
-    /// share of the pixels off the level they would take, and it
-    /// leaves the mean alone, so the areas Jack tuned the flat look to
-    /// survive the dither.
+    /// The dapple look's contract: where the flat look paints a sheet
+    /// one shade, the matrix breaks it into both inks and black, and
+    /// the mean it paints is the tone the thickness carries. The
+    /// second half is what an offset of the thresholds cannot do.
     #[test]
-    fn the_matrix_moves_pixels_and_holds_the_mean() {
+    fn the_dapple_look_halftones_a_sheet_to_its_tone() {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
         let pose = [0.0, 0.0, -9.81];
         read_stats(&device, &queue, &sim, 7, 600, pose, sim::Touches::default());
-        let side = 64u32;
-        let render = |look| {
-            let painted = Painted::new(look, None);
-            draw_surface(
-                &device,
-                &queue,
-                &sim,
-                side,
-                pack_paint(painted.low, painted.high, painted.range, painted.lens, 0.0),
-                pack_optics(
-                    pose,
-                    sim.extent,
-                    sim.field_settled,
-                    painted.low,
-                    painted.high,
-                ),
-            )
-        };
         let white = Paint::Solid([1.0, 1.0, 1.0]);
-        let (hard, dithered) = (render(Look::Flat(white)), render(Look::Dapple(white)));
-        let moved = hard.iter().zip(&dithered).filter(|(a, b)| a != b).count();
-        let ink = |px: &[[u8; 4]]| px.iter().map(|p| u32::from(p[0])).sum::<u32>();
-        let (was, is) = (ink(&hard), ink(&dithered));
-        eprintln!(
-            "dapple: {moved} of {} pixels moved, ink {was} to {is}",
-            hard.len()
-        );
+        let side = 64;
+        let hard = levels_of(&device, &queue, &sim, pose, Look::Flat(white), side);
+        let soft = levels_of(&device, &queue, &sim, pose, Look::Dapple(white), side);
+        let shades = |px: &[[u8; 4]]| {
+            px.iter().map(|p| p[0]).collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(shades(&hard).len(), 2, "the flat look drew more than a sheet and air");
+        assert_eq!(shades(&soft).len(), 3, "the matrix drew no third shade");
+
+        // The tone the same thickness carries, straight from the
+        // splat and the shader's own two constants.
+        let (fleck, solid) = (wgsl_const("FLECK"), wgsl_const("SOLID"));
+        let (_, field) = raw_splat(&device, &queue, &sim);
+        let tone: f32 = field
+            .iter()
+            .map(|v| ((v - fleck) / (solid - fleck)).clamp(0.0, 1.0))
+            .sum::<f32>()
+            / field.len() as f32;
+        let painted: f32 = soft.iter().map(|p| f32::from(p[0]) / 255.0).sum::<f32>()
+            / soft.len() as f32;
+        eprintln!("dapple: tone {tone:.3}, painted {painted:.3}");
         assert!(
-            moved * 10 > hard.len(),
-            "the matrix moved {moved} of {} pixels",
-            hard.len()
-        );
-        let drift = (f64::from(is) - f64::from(was)) / f64::from(was);
-        assert!(
-            drift.abs() < 0.15,
-            "the matrix moved the mean by {drift:.3}"
+            (painted - tone).abs() < 0.06,
+            "the halftone painted {painted:.3} for a tone of {tone:.3}"
         );
     }
 

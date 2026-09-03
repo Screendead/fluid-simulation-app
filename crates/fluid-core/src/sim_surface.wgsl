@@ -73,14 +73,18 @@ const EDGE_HI: f32 = 1.6 / 5.3;
 // lost the flecks as the ladder went up. FLECK holds every scale at
 // the sensitivity 1x had.
 //
-// SOLID sits just above the 1.50 a settled layer reads
-// (a_flat_pose_reads_one_particle_layer), so a sheet lying one deep
-// straddles it and paints its own variation rather than one tint.
-// Thrown, the pair splits the screen 34/6/60 between full, THIN and
+// SOLID stands clear of the band a settled layer occupies, which runs
+// to about 1.8 around the 1.50 of
+// a_flat_pose_reads_one_particle_layer. Inside that band the particle
+// lattice straddles the threshold and the sheet breaks into a mottle:
+// headless over a flat pose, 3,372 neighbouring texels take different
+// levels at 1.6 against 6 at 2.0. That mottle is the dapple look's
+// business, so the flat look keeps out of it and paints clean edges.
+// Thrown, the pair splits the screen 30/8/62 between full, THIN and
 // black, against the 33/7/60 Jack asked for on 2026-09-03; the levels
 // he first saw, 0.4 and 3.0, split it 20/38/42.
 const FLECK: f32 = 1.2;
-const SOLID: f32 = 1.6;
+const SOLID: f32 = 2.0;
 // Jack asked for "50% opacity" and accepted this on the phone. The
 // surface encodes sRGB from linear, so a quarter here shows as 0.54 —
 // a shade over his half, and the shade he looked at.
@@ -90,12 +94,6 @@ const THIN: f32 = 0.25;
 // 8x8 cell spans 24 of them: a halftone at this screen's density,
 // which is the size he picked over a chunkier one.
 const DAPPLE_PX: f32 = 3.0;
-// How far the matrix moves a threshold, in splat units, full width.
-// FLECK and SOLID stand 0.4 apart, so 0.4 makes the two bands meet
-// and the three tones read as one halftone ramp. The offset has zero
-// mean over the matrix, so the areas the levels cover stay the ones
-// Jack tuned.
-const DAPPLE_BAND: f32 = 0.4;
 // The lens ramp in steps, the matrix choosing between neighbours. The
 // flat look takes 255, which an eight-bit surface cannot show.
 const DAPPLE_STEPS: f32 = 4.0;
@@ -280,29 +278,38 @@ fn decay_frag(in: FillVertex) -> @location(0) vec4f {
 // after the other, twice through).
 fn flat_look(uv: vec2f, px: vec2f, wheel: bool) -> vec4f {
     let s = textureSampleLevel(splat, field_sampler, uv, 0.0);
-    // The dapple look moves both thresholds by the matrix, so a body
-    // crossing one breaks into a halftone instead of stepping. The
-    // flat look moves neither and keeps its two hard edges.
-    var jitter = 0.0;
+    if (s.r < FLECK) {
+        return vec4f(0.0, 0.0, 0.0, 1.0);
+    }
+    // The flat look steps: THIN over a sheet, full over a body. The
+    // dapple look reads the same thickness as a tone and halftones it
+    // into the same two inks, so a sheet carries a pattern where the
+    // flat look carries one shade.
+    var level = select(THIN, 1.0, s.r >= SOLID);
     var steps = 255.0;
     var lens_cell = 0.5;
     if (optics.flat.w > 1.5) {
         let cell = bayer(vec2u(px * (1.0 / DAPPLE_PX)));
-        jitter = DAPPLE_BAND * (cell - 0.5);
+        let tone = clamp((s.r - FLECK) / (SOLID - FLECK), 0.0, 1.0);
+        // Between the pair of inks the tone falls in, the matrix
+        // lights exactly the fraction the tone asks for. Over a cell
+        // the mean is the tone itself, which no offset of the
+        // thresholds can promise: the inks are 0.25 apart below and
+        // 0.75 apart above, so equal traffic each way still brightens.
+        if (tone < THIN) {
+            level = select(0.0, THIN, tone > cell * THIN);
+        } else {
+            level = select(THIN, 1.0, tone - THIN > cell * (1.0 - THIN));
+        }
         steps = DAPPLE_STEPS;
         // Half a matrix along, or the lens steps would land on the
         // thickness steps and the two patterns would lock together.
         lens_cell = fract(cell + 0.5);
     }
-    let thickness = s.r + jitter;
-    if (thickness < FLECK) {
-        return vec4f(0.0, 0.0, 0.0, 1.0);
-    }
     var colour = optics.flat.rgb;
     if (optics.high.w > 0.0) {
-        // The threshold above is what makes the divide safe: the
-        // matrix takes at most half a band off, so no pixel reaches
-        // here with s.r under FLECK - DAPPLE_BAND / 2.
+        // The threshold above is what makes the divide safe: no pixel
+        // reaches here with a thickness under FLECK.
         var f = s.g / s.r;
         var ink = optics.high.rgb;
         if (wheel) {
@@ -317,7 +324,7 @@ fn flat_look(uv: vec2f, px: vec2f, wheel: bool) -> vec4f {
         let stepped = (floor(q) + select(0.0, 1.0, fract(q) > lens_cell)) / steps;
         colour = mix(optics.flat.rgb, ink, stepped);
     }
-    return vec4f(colour * select(THIN, 1.0, thickness >= SOLID), 1.0);
+    return vec4f(colour * level, 1.0);
 }
 
 // The wheel's own fill. Bound only by a flat look with the direction
