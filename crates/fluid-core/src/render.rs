@@ -22,16 +22,6 @@ const METRES_PER_PIXEL: f32 = crate::WORLD_SCALE * 0.0254 / 458.0;
 /// a pause cannot fling the particles.
 const MAX_DT: f32 = 1.0 / 30.0;
 
-// The resting boil is timestep error: the 2026-08-31 convergence
-// ladder (M3 record) halves upright boil twice over by halving the
-// substep (0.42 mm at 4.2 ms, 0.14 at 2.1) while refine depth changes
-// nothing at either length. This and refine_passes key on substep
-// length, not count. 2.2 ms was set 2026-08-31 against resting boil,
-// before the 4x scale landed; re-measured at 4x on 2026-09-01
-// (optimisation record, target 1): 4.2 ms holds every rest, ring,
-// wake, flicker and shake guard, rests 120 Hz at two substeps, and
-// halves the 60 Hz floor that fed the basin. Slightly above
-// 8.334/2 ms, so measured 120 Hz interval jitter stays at two.
 // Mirrors LANES in sim_solve.wgsl: the lane-parallel sweeps run
 // SWEEP_LANES threads per particle, and a mismatch solves only a
 // fraction of the fluid with no validation error to say so.
@@ -41,7 +31,30 @@ const SWEEP_LANES: u32 = 8;
 /// A mismatch sizes the list buffer wrong with no validation error.
 const NBR_CAP: u32 = 96;
 
-const DT_SUB_MAX: f32 = 0.0042;
+/// The storage buffers the solve layout binds, the widest of the sim
+/// layouts; the device limit is raised to exactly this.
+const SOLVE_STORAGE_BUFFERS: u32 = 23;
+
+// The resting boil is timestep error, and the error is measured
+// against the particle spacing: the 2026-08-31 convergence ladder (M3
+// record) halves upright boil twice over by halving the substep (0.42
+// mm at 4.2 ms, 0.14 at 2.1) while refine depth changes nothing at
+// either length, so this and refine_passes key on substep length, not
+// count. At the 1x spacing (0.01 m) 4.2 ms holds every rest, ring,
+// wake, flicker and shake guard and rests 120 Hz at two substeps
+// (2.2 ms set 2026-08-31 before the 4x scale landed; 4.2 ms decided
+// 2026-09-01 on the film harness, optimisation record, target 1). It
+// sits just above 8.334/2 ms, so measured 120 Hz interval jitter
+// still floors at two. The same 4.2 ms at the 4x particle
+// scale (spacing 0.0062 m) boils for ever: v_max 0.6 to 0.75 m/s,
+// over a thousand CFL clamps a second, flicker 162,000 px/frame
+// against the 12,000 line, and no sleep, where four substeps (2.08
+// ms) rest at v_max 0.08 with zero clamps and three (2.78 ms) still
+// read 15,000 on the flicker meter (2026-09-02, laptop film harness,
+// and Jack's eye on the phone the same day). So the cap is a length
+// per spacing: 4.2 ms at the 1x spacing, 2.6 ms at the 4x, which
+// floors a 120 Hz frame at four substeps.
+const SUBSTEP_PER_SPACING: f32 = 0.42;
 
 // The substep floor divides the measured frame — a dropped frame
 // integrated at four substeps means 4-8 ms substeps, and the device
@@ -49,9 +62,12 @@ const DT_SUB_MAX: f32 = 0.0042;
 // cap at eight breaks the feedback that railed an uncapped floor at
 // sixteen substeps and 30 Hz: past a doubled frame, more substeps
 // would slow the next frame more than they converge this one.
-fn substep_floor(dt: f32) -> u32 {
-    ((dt / DT_SUB_MAX).ceil() as u32).min(8)
+fn substep_floor(dt: f32, dt_sub_max: f32) -> u32 {
+    ((dt / dt_sub_max).ceil() as u32).min(8)
 }
+
+/// The longest substep the two-pass refine rung covers.
+const REFINE_SHORT_DT: f32 = 0.00105;
 
 // Density error scales with dt squared, so short substeps need fewer
 // refine passes; the film compr guard covers the shallow end. There
@@ -59,7 +75,34 @@ fn substep_floor(dt: f32) -> u32 {
 // iterations cannot fix a 4 ms substep (the error is the timestep),
 // and at 60 Hz the extra dispatches were half the solver's cost.
 fn refine_passes(dt_sub: f32) -> u32 {
-    if dt_sub > 0.00105 { 5 } else { 2 }
+    if dt_sub > REFINE_SHORT_DT { 5 } else { 2 }
+}
+
+const NOMINAL_FRAME: f32 = 1.0 / 120.0;
+
+/// A two-pass substep's cost against a five-pass one, cool: 0.65 ms
+/// against about 1.0 (iPhone 13 Pro Max, 2026-09-02, 4x). Cool is the
+/// regime the jump fires in; hot both substeps grow and the ratio
+/// rises to about 0.78, which only makes the guard stricter.
+const CHEAP_RUNG_COST: f32 = 0.65;
+
+// The CFL count, floored by substep_floor, and then the jump: a 120 Hz
+// frame that the CFL would put on six or seven five-pass substeps
+// runs eight two-pass ones instead, which cost less and fit the frame
+// where six or seven slip it. The condition is that eight substeps of
+// this very frame land on the two-pass rung, so the encoder's
+// refine_passes(dt / n) agrees bit for bit; a slipped frame fails it
+// and keeps the plain count, because from a long frame the same jump
+// grows with the frame and, hot, runs away to the substep cap.
+fn substeps_for(dt: f32, v_max: f32, spacing: f32, cap: u32) -> u32 {
+    let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32)
+        .max(substep_floor(dt, SUBSTEP_PER_SPACING * spacing));
+    let cheap = (NOMINAL_FRAME / REFINE_SHORT_DT).ceil() as u32;
+    let jump = refine_passes(dt / cheap as f32) == 2
+        && n < cheap
+        && n as f32 > CHEAP_RUNG_COST * cheap as f32;
+    let n = if jump { cheap } else { n };
+    n.min(cap)
 }
 
 struct Ring {
@@ -133,7 +176,7 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         label: None,
         required_features: wgpu::Features::IMMEDIATES | wgpu::Features::SUBGROUP,
         required_limits: wgpu::Limits {
-            max_storage_buffers_per_shader_stage: 21,
+            max_storage_buffers_per_shader_stage: SOLVE_STORAGE_BUFFERS,
             max_immediate_size: sim::STEP_BYTES as u32,
             ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
         },
@@ -244,18 +287,14 @@ pub fn film(
             eprintln!("film: wake at frame {f}");
             was_asleep = false;
         }
-        // The production CFL and substep cap, fed by the previous
-        // frame's v_max. NMIN is a diagnostic floor above the cap:
+        // NMIN is a diagnostic floor on the production count:
         // shortening the rest timestep separates timestep-stability
         // noise from model noise.
         let n_min: u32 = std::env::var("NMIN")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
-        let n = ((dt * v_max / (0.4 * spacing)).ceil() as u32)
-            .max(substep_floor(dt))
-            .max(n_min)
-            .min(cap);
+        let n = substeps_for(dt, v_max, spacing, cap).max(n_min).min(cap);
         field_keep = match keep_pin {
             Some(k) => k,
             None => field_keep + (field_keep_target(v_max) - field_keep) * 0.25,
@@ -1402,11 +1441,27 @@ struct Sim {
     #[cfg(test)]
     density: wgpu::Buffer,
     #[cfg(test)]
+    starts: wgpu::Buffer,
+    #[cfg(test)]
     positions: wgpu::Buffer,
     #[cfg(test)]
     velocities: wgpu::Buffer,
     #[cfg(test)]
     prev_vel: wgpu::Buffer,
+    #[cfg(test)]
+    prev_pressure: wgpu::Buffer,
+    #[cfg(test)]
+    temperature: wgpu::Buffer,
+    #[cfg(test)]
+    work_positions: wgpu::Buffer,
+    #[cfg(test)]
+    work_velocities: wgpu::Buffer,
+    #[cfg(test)]
+    work_prev_vel: wgpu::Buffer,
+    #[cfg(test)]
+    work_prev_pressure: wgpu::Buffer,
+    #[cfg(test)]
+    work_temperature: wgpu::Buffer,
 }
 
 impl Sim {
@@ -1462,9 +1517,8 @@ impl Sim {
         let counts = storage("sim counts", u64::from(cells) * 4, none);
         // One slot past the last cell holds the total: a sweep reads a
         // cell's end as the next cell's start.
-        let starts = storage("sim starts", u64::from(cells + 1) * 4, none);
+        let starts = storage("sim starts", u64::from(cells + 1) * 4, readback);
         let cursors = storage("sim cursors", u64::from(cells) * 4, none);
-        let sorted = storage("sim sorted", u64::from(count) * 4, none);
         let density = storage(
             "sim density",
             u64::from(count) * 4,
@@ -1473,7 +1527,7 @@ impl Sim {
         let alpha = storage("sim alpha", u64::from(count) * 4, none);
         let kd = storage("sim kappa over density", u64::from(count) * 4, none);
         let pressure = storage("sim pressure", u64::from(count) * 4, none);
-        let prev_pressure = storage("sim prev pressure", u64::from(count) * 4, none);
+        let prev_pressure = storage("sim prev pressure", u64::from(count) * 4, readback);
         let clamps = storage("sim clamps", 4, none);
         let accel = storage("sim accel", u64::from(count) * 16, none);
         let xsph = storage("sim xsph", u64::from(count) * 16, none);
@@ -1487,7 +1541,7 @@ impl Sim {
         let temperature = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim temperature"),
             size: u64::from(count) * 4,
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | readback,
             mapped_at_creation: true,
         });
         let mut warm = Vec::with_capacity(count as usize * 4);
@@ -1499,6 +1553,18 @@ impl Sim {
             .expect("mapped at creation")
             .copy_from_slice(&warm);
         temperature.unmap();
+        // The working set: the five persistent records in cell order for
+        // one substep, filled by scatter and read back by integrate.
+        let work_positions = storage("sim working positions", u64::from(count) * 16, readback);
+        let work_velocities = storage("sim working velocities", u64::from(count) * 16, readback);
+        let work_prev_vel = storage(
+            "sim working previous velocities",
+            u64::from(count) * 16,
+            readback,
+        );
+        let work_prev_pressure =
+            storage("sim working prev pressure", u64::from(count) * 4, readback);
+        let work_temperature = storage("sim working temperature", u64::from(count) * 4, readback);
         let vel_grid = storage("sim vel grid", u64::from(cells) * 16, none);
         let vel_flat = storage("sim vel flat", u64::from(cells) * 16, none);
         let tracers = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1568,7 +1634,25 @@ impl Sim {
                 entries,
             })
         };
-        let grid_layout = layout("sim grid", &[uniform(0), ro(1), rw(2), ro(3), rw(4), rw(5)]);
+        let grid_layout = layout(
+            "sim grid",
+            &[
+                uniform(0),
+                ro(1),
+                rw(2),
+                ro(3),
+                rw(4),
+                ro(5),
+                ro(6),
+                ro(7),
+                ro(8),
+                rw(9),
+                rw(10),
+                rw(11),
+                rw(12),
+                rw(13),
+            ],
+        );
         // scan_single never touches block_sums; the gap at 3 stays open.
         let scan_layout = layout("sim scan", &[uniform(0), ro(1), rw(2), rw(4)]);
         let solve_layout = layout(
@@ -1579,12 +1663,11 @@ impl Sim {
                 rw(2),
                 rw(3),
                 ro(4),
-                ro(5),
                 rw(6),
                 rw(7),
                 rw(8),
                 rw(9),
-                rw(10),
+                ro(10),
                 rw(11),
                 rw(12),
                 rw(13),
@@ -1594,6 +1677,11 @@ impl Sim {
                 rw(17),
                 rw(18),
                 rw(19),
+                rw(20),
+                rw(21),
+                rw(22),
+                rw(23),
+                rw(24),
             ],
         );
         let tracer_layout = layout(
@@ -1659,7 +1747,15 @@ impl Sim {
                 entry(2, &counts),
                 entry(3, &starts),
                 entry(4, &cursors),
-                entry(5, &sorted),
+                entry(5, &velocities),
+                entry(6, &prev_vel),
+                entry(7, &prev_pressure),
+                entry(8, &temperature),
+                entry(9, &work_positions),
+                entry(10, &work_velocities),
+                entry(11, &work_prev_vel),
+                entry(12, &work_prev_pressure),
+                entry(13, &work_temperature),
             ],
         );
         let scan_bind = bind(
@@ -1677,17 +1773,16 @@ impl Sim {
             &solve_layout,
             &[
                 entry(0, &params),
-                entry(1, &positions),
-                entry(2, &velocities),
+                entry(1, &work_positions),
+                entry(2, &work_velocities),
                 entry(3, &nbr_over),
                 entry(4, &starts),
-                entry(5, &sorted),
                 entry(6, &density),
                 entry(7, &alpha),
                 entry(8, &kd),
                 entry(9, &pressure),
-                entry(10, &prev_pressure),
-                entry(11, &temperature),
+                entry(10, &work_prev_pressure),
+                entry(11, &work_temperature),
                 entry(12, &stats_src),
                 entry(13, &clamps),
                 entry(14, &accel),
@@ -1695,7 +1790,12 @@ impl Sim {
                 entry(16, &nbr),
                 entry(17, &nbr_n),
                 entry(18, &wall_grad),
-                entry(19, &prev_vel),
+                entry(19, &work_prev_vel),
+                entry(20, &positions),
+                entry(21, &velocities),
+                entry(22, &prev_vel),
+                entry(23, &prev_pressure),
+                entry(24, &temperature),
             ],
         );
         let tracer_bind = bind(
@@ -2100,11 +2200,27 @@ impl Sim {
             #[cfg(test)]
             density,
             #[cfg(test)]
+            starts,
+            #[cfg(test)]
             positions,
             #[cfg(test)]
             velocities,
             #[cfg(test)]
             prev_vel,
+            #[cfg(test)]
+            prev_pressure,
+            #[cfg(test)]
+            temperature,
+            #[cfg(test)]
+            work_positions,
+            #[cfg(test)]
+            work_velocities,
+            #[cfg(test)]
+            work_prev_vel,
+            #[cfg(test)]
+            work_prev_pressure,
+            #[cfg(test)]
+            work_temperature,
         }
     }
 }
@@ -2327,7 +2443,6 @@ struct Bench {
     add_back: wgpu::ComputePipeline,
     scatter: wgpu::ComputePipeline,
     density_sweep: wgpu::ComputePipeline,
-    grid_bind: wgpu::BindGroup,
     scan_bind: wgpu::BindGroup,
     density_bind: wgpu::BindGroup,
     sweeps: u32,
@@ -2431,9 +2546,11 @@ impl Bench {
                 entries,
             })
         };
-        let grid_layout = layout("grid", &[uniform(0), ro(1), rw(2), ro(3), rw(4), rw(5)]);
         let scan_layout = layout("scan", &[uniform(0), ro(1), rw(2), rw(3), rw(4)]);
-        let density_layout = layout("density", &[uniform(0), ro(1), ro(2), ro(3), ro(4), rw(5)]);
+        let density_layout = layout(
+            "density",
+            &[uniform(0), ro(1), rw(2), ro(3), rw(4), rw(5), rw(6)],
+        );
         fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
             wgpu::BindGroupEntry {
                 binding,
@@ -2447,18 +2564,6 @@ impl Bench {
                 entries,
             })
         };
-        let grid_bind = bind(
-            "grid",
-            &grid_layout,
-            &[
-                entry(0, &params),
-                entry(1, &positions),
-                entry(2, &counts),
-                entry(3, &starts),
-                entry(4, &cursors),
-                entry(5, &sorted),
-            ],
-        );
         let scan_bind = bind(
             "scan",
             &scan_layout,
@@ -2480,6 +2585,7 @@ impl Bench {
                 entry(3, &starts),
                 entry(4, &sorted),
                 entry(5, &density),
+                entry(6, &counts),
             ],
         );
 
@@ -2489,7 +2595,6 @@ impl Bench {
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             })
         };
-        let grid_module = module("sim_grid", include_str!("sim_grid.wgsl"));
         let scan_module = module("sim_scan", include_str!("sim_scan.wgsl"));
         let density_module = module("sim_density", include_str!("sim_density.wgsl"));
         let pipe_layout = |layout: &wgpu::BindGroupLayout| {
@@ -2499,7 +2604,6 @@ impl Bench {
                 immediate_size: 0,
             })
         };
-        let grid_pl = pipe_layout(&grid_layout);
         let scan_pl = pipe_layout(&scan_layout);
         let density_pl = pipe_layout(&density_layout);
         let pipeline =
@@ -2515,13 +2619,12 @@ impl Bench {
             };
 
         Bench {
-            count: pipeline(&grid_pl, &grid_module, "count"),
+            count: pipeline(&density_pl, &density_module, "count"),
             scan_blocks: pipeline(&scan_pl, &scan_module, "scan_blocks"),
             scan_sums: pipeline(&scan_pl, &scan_module, "scan_sums"),
             add_back: pipeline(&scan_pl, &scan_module, "add_back"),
-            scatter: pipeline(&grid_pl, &grid_module, "scatter"),
+            scatter: pipeline(&density_pl, &density_module, "scatter"),
             density_sweep: pipeline(&density_pl, &density_module, "density_sweep"),
-            grid_bind,
             scan_bind,
             density_bind,
             sweeps: options.bench_sweeps,
@@ -2542,7 +2645,7 @@ impl Bench {
     /// Dispatch order is the data dependency; WebGPU orders storage
     /// writes between dispatches in one pass.
     fn encode(&self, pass: &mut wgpu::ComputePass<'_>) {
-        pass.set_bind_group(0, &self.grid_bind, &[]);
+        pass.set_bind_group(0, &self.density_bind, &[]);
         pass.set_pipeline(&self.count);
         pass.dispatch_workgroups(self.particle_groups, 1, 1);
         pass.set_bind_group(0, &self.scan_bind, &[]);
@@ -2552,10 +2655,9 @@ impl Bench {
         pass.dispatch_workgroups(1, 1, 1);
         pass.set_pipeline(&self.add_back);
         pass.dispatch_workgroups(self.cell_groups, 1, 1);
-        pass.set_bind_group(0, &self.grid_bind, &[]);
+        pass.set_bind_group(0, &self.density_bind, &[]);
         pass.set_pipeline(&self.scatter);
         pass.dispatch_workgroups(self.particle_groups, 1, 1);
-        pass.set_bind_group(0, &self.density_bind, &[]);
         pass.set_pipeline(&self.density_sweep);
         for _ in 0..self.sweeps {
             pass.dispatch_workgroups(self.particle_groups, 1, 1);
@@ -2725,9 +2827,9 @@ impl Renderer {
             // WebGPU's default limits overshoot small adapters (the
             // simulator offers 15 inter-stage variables, the default
             // asks 16), so start from downlevel and raise what the code
-            // binds: the solve layout holds eighteen storage buffers.
+            // binds.
             required_limits: wgpu::Limits {
-                max_storage_buffers_per_shader_stage: 21,
+                max_storage_buffers_per_shader_stage: SOLVE_STORAGE_BUFFERS,
                 max_immediate_size: sim::STEP_BYTES as u32,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
@@ -2983,13 +3085,10 @@ impl Renderer {
         // out of the thickness field.
         let wheel = field && paint.high[3] > 1.0;
         if let Mode::Sim(s) = &mut self.mode {
-            // CFL: dt <= 0.4 d / v_max, from the one-frame-stale v_max
-            // the stats readback drained. The GPU clamp enforces the dt
-            // actually encoded.
+            // From the one-frame-stale v_max the stats readback
+            // drained; the GPU clamp enforces the dt actually encoded.
             s.substeps_used = if dt > 0.0 {
-                ((dt * s.stats[6] / (0.4 * s.spacing)).ceil() as u32)
-                    .max(substep_floor(dt))
-                    .min(s.max_substeps)
+                substeps_for(dt, s.stats[6], s.spacing, s.max_substeps)
             } else {
                 0
             };
@@ -3587,6 +3686,47 @@ mod tests {
         );
     }
 
+    // v_max that puts the CFL count half a step past `count - 1`, so
+    // the ceiling cannot sit on a rounding ulp.
+    fn v_for_cfl(count: u32, dt: f32, spacing: f32) -> f32 {
+        (count as f32 - 0.5) * 0.4 * spacing / dt
+    }
+
+    #[test]
+    fn the_substep_floor_scales_with_the_spacing() {
+        let cap = |spacing: f32| SUBSTEP_PER_SPACING * spacing;
+        assert_eq!(substep_floor(NOMINAL_FRAME, cap(0.01)), 2);
+        assert_eq!(substep_floor(NOMINAL_FRAME, cap(0.0062)), 4);
+        assert_eq!(substep_floor(0.033, cap(0.01)), 8);
+        assert_eq!(substep_floor(0.033, cap(0.0062)), 8);
+    }
+
+    #[test]
+    fn a_120hz_frame_jumps_six_or_seven_substeps_to_eight() {
+        let counts: Vec<u32> = (5..=9)
+            .map(|k| substeps_for(NOMINAL_FRAME, v_for_cfl(k, NOMINAL_FRAME, 0.01), 0.01, 16))
+            .collect();
+        assert_eq!(counts, [5, 8, 8, 8, 9]);
+    }
+
+    #[test]
+    fn a_120hz_frame_at_4x_floors_at_four_then_jumps_under_handling() {
+        let n = |v| substeps_for(NOMINAL_FRAME, v, 0.0062, 16);
+        assert_eq!(n(v_for_cfl(1, NOMINAL_FRAME, 0.0062)), 4);
+        assert_eq!(n(v_for_cfl(6, NOMINAL_FRAME, 0.0062)), 8);
+    }
+
+    #[test]
+    fn a_slipped_frame_keeps_its_cfl_count() {
+        let dt = 0.010;
+        assert_eq!(substeps_for(dt, v_for_cfl(7, dt, 0.01), 0.01, 16), 7);
+    }
+
+    #[test]
+    fn a_flung_frame_stops_at_the_cap() {
+        assert_eq!(substeps_for(NOMINAL_FRAME, 1.0e6, 0.01, 16), 16);
+    }
+
     #[test]
     fn percentiles_come_from_the_filled_part_only() {
         let mut ring = Ring::new();
@@ -3756,12 +3896,16 @@ mod tests {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        // 120 Hz frames split into substeps like the phone would.
+        // 120 Hz frames split into substeps like the phone would. Zero
+        // substeps runs the rebuild and the density sweep alone: the
+        // working set is then in cell order and the resting set is the
+        // seed, so density lines up with sim.work_positions, not with
+        // sim.positions.
         let dt = 1.0 / 120.0 / substeps.max(1) as f32;
         let v_clamp = if substeps == 0 {
             f32::MAX
         } else {
-            0.4 * SIM_SPACING / dt
+            0.4 * sim.spacing / dt
         };
         let step = sim::pack_step(
             gravity,
@@ -4398,6 +4542,20 @@ mod tests {
             .collect()
     }
 
+    fn read_u32(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        buffer: &wgpu::Buffer,
+        count: u32,
+    ) -> Vec<u32> {
+        read_back(device, queue, buffer, u64::from(count) * 4)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| u32::from_le_bytes(*b))
+            .collect()
+    }
+
     fn read_vec4(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -4717,8 +4875,62 @@ mod tests {
         let g = [0.0, -9.81, -0.5];
         read_stats(&device, &queue, &sim, 7, 600, g, sim::Touches::default());
         const FRAMES: usize = 30;
+        // Every rebuild lays the particles out in cell order, so index
+        // i is another particle next frame; a particle is followed by
+        // its position instead, matched to the nearest of the previous
+        // frame across the 27 cells around it. A settled particle moves
+        // a fraction of a millimetre a frame against the 10 mm spacing,
+        // so a match farther than half a spacing is a lost particle.
+        let grid = sim::Grid::new(TEST_EXTENT, 2.0 * (1.2 * SIM_SPACING));
+        let dims = grid.dims;
+        let nearest_last = |now: &[[f32; 4]], was: &[[f32; 4]]| -> Vec<usize> {
+            let mut cells = vec![Vec::new(); grid.cell_count() as usize];
+            for (j, q) in was.iter().enumerate() {
+                cells[grid.cell_of([q[0], q[1], q[2]]) as usize].push(j);
+            }
+            now.iter()
+                .map(|p| {
+                    let c = grid.cell_of([p[0], p[1], p[2]]);
+                    let at = [
+                        c % dims[0],
+                        (c / dims[0]) % dims[1],
+                        c / (dims[0] * dims[1]),
+                    ];
+                    let mut best = (f32::INFINITY, usize::MAX);
+                    for cell in 0..27u32 {
+                        let n: [i64; 3] = std::array::from_fn(|i| {
+                            i64::from(at[i]) + i64::from([cell % 3, (cell / 3) % 3, cell / 9][i])
+                                - 1
+                        });
+                        if n.iter()
+                            .zip(&dims)
+                            .any(|(v, d)| *v < 0 || *v >= i64::from(*d))
+                        {
+                            continue;
+                        }
+                        let linear = (n[2] * i64::from(dims[1]) + n[1]) * i64::from(dims[0]) + n[0];
+                        for &j in &cells[linear as usize] {
+                            let q = was[j];
+                            let d2: f32 = (0..3).map(|i| (p[i] - q[i]).powi(2)).sum();
+                            if d2 < best.0 {
+                                best = (d2, j);
+                            }
+                        }
+                    }
+                    assert!(
+                        best.0.sqrt() < 0.5 * SIM_SPACING,
+                        "a particle lost its match: nearest {} m away",
+                        best.0.sqrt()
+                    );
+                    best.1
+                })
+                .collect()
+        };
         let mut walk = [0.0f64; 5];
-        let mut last: Option<Vec<[f32; 5]>> = None;
+        // A frame's particles: where each one is, then its place on
+        // the five ramps.
+        type Frame = (Vec<[f32; 4]>, Vec<[f32; 5]>);
+        let mut last: Option<Frame> = None;
         let mut ends = [[0.0f32; 2]; 5];
         for _ in 0..FRAMES {
             let f = read_stats(&device, &queue, &sim, 7, 1, g, sim::Touches::default());
@@ -4731,6 +4943,7 @@ mod tests {
                 let [lo, hi] = ends[lens];
                 ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
             };
+            let positions = read_vec4(&device, &queue, &sim.positions, sim.count);
             let velocities = read_vec4(&device, &queue, &sim.velocities, sim.count);
             let smooth_p = read_vec4(&device, &queue, &sim.prev_vel, sim.count);
             let density = read_floats(&device, &queue, &sim.density, sim.count);
@@ -4752,9 +4965,10 @@ mod tests {
                     ]
                 })
                 .collect();
-            if let Some(was) = last.replace(now) {
-                let now = last.as_ref().expect("just replaced");
-                for (a, b) in was.iter().zip(now) {
+            if let Some((was_at, was)) = last.replace((positions, now)) {
+                let (now_at, now) = last.as_ref().expect("just replaced");
+                let pairs = nearest_last(now_at, &was_at).into_iter().map(|j| &was[j]);
+                for (a, b) in pairs.zip(now) {
                     for (lens, step) in walk.iter_mut().enumerate().take(4) {
                         *step += f64::from((b[lens] - a[lens]).abs()) / now.len() as f64;
                     }
@@ -4806,6 +5020,120 @@ mod tests {
         );
     }
 
+    // The rebuild's whole job: after scatter, working slot k holds one
+    // particle's five records and cell c owns the slots
+    // starts[c]..starts[c + 1]. Checked on the seed, then again once
+    // the records carry histories of their own — the lens means, the
+    // warm-start pressure, the temperature — where a record left
+    // behind by the permutation shows as a mismatch against the
+    // resting set the last integrate wrote.
+    #[test]
+    fn the_rebuild_lands_every_particle_in_cell_order() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let grid = sim::Grid::new(TEST_EXTENT, 2.0 * (1.2 * SIM_SPACING));
+        let cells = grid.cell_count();
+        let xyz = |p: &[f32; 4]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
+        let bits = |p: &[f32; 4]| p.map(f32::to_bits);
+        let in_cell_order = |working: &[[f32; 4]], starts: &[u32]| {
+            assert_eq!(starts[cells as usize], sim.count, "the scan's total");
+            let mut held = vec![0u32; cells as usize];
+            for (k, p) in working.iter().enumerate() {
+                let c = grid.cell_of([p[0], p[1], p[2]]) as usize;
+                held[c] += 1;
+                assert!(
+                    starts[c] as usize <= k && k < starts[c + 1] as usize,
+                    "slot {k} lies outside its cell's {}..{}",
+                    starts[c],
+                    starts[c + 1]
+                );
+            }
+            for (c, n) in held.iter().enumerate() {
+                assert_eq!(*n, starts[c + 1] - starts[c], "cell {c} holds");
+            }
+        };
+        let rebuild = |sim: &Sim| {
+            read_stats(
+                &device,
+                &queue,
+                sim,
+                0,
+                1,
+                [0.0; 3],
+                sim::Touches::default(),
+            );
+            let starts = read_u32(&device, &queue, &sim.starts, cells + 1);
+            let working = read_vec4(&device, &queue, &sim.work_positions, sim.count);
+            in_cell_order(&working, &starts);
+            working
+        };
+        let seed = read_vec4(&device, &queue, &sim.positions, sim.count);
+        let working = rebuild(&sim);
+        let mut seeded: Vec<_> = seed.iter().map(xyz).collect();
+        let mut landed: Vec<_> = working.iter().map(xyz).collect();
+        seeded.sort_unstable();
+        landed.sort_unstable();
+        assert_eq!(
+            seeded, landed,
+            "the rebuild permutes the seed and nothing else"
+        );
+
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            60,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        let resting: std::collections::HashMap<[u32; 3], usize> =
+            read_vec4(&device, &queue, &sim.positions, sim.count)
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (xyz(p), i))
+                .collect();
+        assert_eq!(
+            resting.len(),
+            sim.count as usize,
+            "two particles share a position"
+        );
+        let velocities = read_vec4(&device, &queue, &sim.velocities, sim.count);
+        let prev_vel = read_vec4(&device, &queue, &sim.prev_vel, sim.count);
+        let prev_pressure = read_floats(&device, &queue, &sim.prev_pressure, sim.count);
+        let temperature = read_floats(&device, &queue, &sim.temperature, sim.count);
+        let working = rebuild(&sim);
+        let work_velocities = read_vec4(&device, &queue, &sim.work_velocities, sim.count);
+        let work_prev_vel = read_vec4(&device, &queue, &sim.work_prev_vel, sim.count);
+        let work_prev_pressure = read_floats(&device, &queue, &sim.work_prev_pressure, sim.count);
+        let work_temperature = read_floats(&device, &queue, &sim.work_temperature, sim.count);
+        for (k, p) in working.iter().enumerate() {
+            let i = resting[&xyz(p)];
+            assert_eq!(bits(&velocities[i]), bits(&work_velocities[k]), "velocity");
+            assert_eq!(bits(&prev_vel[i]), bits(&work_prev_vel[k]), "prev_vel");
+            assert_eq!(
+                prev_pressure[i].to_bits(),
+                work_prev_pressure[k].to_bits(),
+                "prev_pressure"
+            );
+            assert_eq!(
+                temperature[i].to_bits(),
+                work_temperature[k].to_bits(),
+                "temperature"
+            );
+        }
+        // The match has teeth only if the histories differ from
+        // particle to particle.
+        let means: std::collections::HashSet<u32> =
+            velocities.iter().map(|v| v[3].to_bits()).collect();
+        assert!(
+            means.len() > sim.count as usize / 2,
+            "{} distinct acceleration means",
+            means.len()
+        );
+    }
+
     // Seeds the real lattice, runs one rebuild and density sweep, and
     // reads the stats back: the whole solver chain, not just its
     // compilation.
@@ -4846,6 +5174,43 @@ mod tests {
         assert_eq!((f[4], f[5], f[6]), (0.0, 0.0, 0.0), "pressure, v_max");
         assert_eq!((f[7], f[8]), (293.15, 293.15), "temperature");
         assert_eq!(f[9], 0.0, "clamp count");
+        // Every sixteenth particle against a brute-force sum over the
+        // working set with the analytic wall fill, the CPU copies of
+        // the shader's integrals. The stats above cannot tell a
+        // stencil walk that read the wrong slot from one that read the
+        // right one; this can.
+        let h = 1.2 * SIM_SPACING;
+        let mass = sim::REST_DENSITY * SIM_SPACING * SIM_SPACING * SIM_SPACING;
+        let half = [TEST_EXTENT[0], TEST_EXTENT[1], 0.5 * sim::SLAB_DEPTH];
+        let working = read_vec4(&device, &queue, &sim.work_positions, sim.count);
+        let density = read_floats(&device, &queue, &sim.density, sim.count);
+        for (p, rho) in working.iter().zip(&density).step_by(16) {
+            let pairs: f32 = working
+                .iter()
+                .map(|q| {
+                    let d2: f32 = (0..3).map(|i| (p[i] - q[i]).powi(2)).sum();
+                    sim::kernel(d2.sqrt(), h)
+                })
+                .sum();
+            let tl: [f32; 3] = std::array::from_fn(|i| (p[i] + half[i]) / h);
+            let th: [f32; 3] = std::array::from_fn(|i| (half[i] - p[i]) / h);
+            let mut fill: f32 = tl.iter().chain(&th).map(|t| sim::wall_density(*t)).sum();
+            for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+                for (ta, tb) in [
+                    (tl[a], tl[b]),
+                    (tl[a], th[b]),
+                    (th[a], tl[b]),
+                    (th[a], th[b]),
+                ] {
+                    fill -= sim::wedge(f64::from(ta), f64::from(tb)) as f32;
+                }
+            }
+            let expect = mass * pairs + sim::REST_DENSITY * fill;
+            assert!(
+                (rho - expect).abs() <= 1e-3 * expect,
+                "rho {rho} against the CPU's {expect}"
+            );
+        }
     }
 
     // One bench frame against the CPU: the scan and the density sweep

@@ -42,16 +42,21 @@ struct Step {
 
 var<immediate> step: Step;
 
+// The five records that persist across substeps come in two sets.
+// The sweeps run on the working set (the plain names), which scatter
+// in sim_grid.wgsl lays out in cell order every substep; integrate
+// writes the substep's result to the resting set at the same slot,
+// and the resting set is what every per-frame reader binds. Binding
+// 5 stays open.
 @group(0) @binding(0) var<uniform> params: SimParams;
 @group(0) @binding(1) var<storage, read_write> positions: array<vec4f>;
 @group(0) @binding(2) var<storage, read_write> velocities: array<vec4f>;
 @group(0) @binding(4) var<storage, read> starts: array<u32>;
-@group(0) @binding(5) var<storage, read> sorted: array<u32>;
 @group(0) @binding(6) var<storage, read_write> density: array<f32>;
 @group(0) @binding(7) var<storage, read_write> alpha: array<f32>;
 @group(0) @binding(8) var<storage, read_write> kd: array<f32>;
 @group(0) @binding(9) var<storage, read_write> pressure: array<f32>;
-@group(0) @binding(10) var<storage, read_write> prev_pressure: array<f32>;
+@group(0) @binding(10) var<storage, read> prev_pressure: array<f32>;
 @group(0) @binding(11) var<storage, read_write> temperature: array<f32>;
 @group(0) @binding(12) var<storage, read_write> stats: array<f32, 14>;
 @group(0) @binding(13) var<storage, read_write> clamp_count: atomic<u32>;
@@ -62,6 +67,11 @@ var<immediate> step: Step;
 @group(0) @binding(17) var<storage, read_write> nbr_n: array<u32>;
 @group(0) @binding(18) var<storage, read_write> wall_grad: array<vec4f>;
 @group(0) @binding(19) var<storage, read_write> prev_vel: array<vec4f>;
+@group(0) @binding(20) var<storage, read_write> rest_positions: array<vec4f>;
+@group(0) @binding(21) var<storage, read_write> rest_velocities: array<vec4f>;
+@group(0) @binding(22) var<storage, read_write> rest_prev_vel: array<vec4f>;
+@group(0) @binding(23) var<storage, read_write> rest_prev_pressure: array<f32>;
+@group(0) @binding(24) var<storage, read_write> rest_temperature: array<f32>;
 
 // XSPH velocity blending as a per-second rate, not a per-substep
 // fraction: the substep count follows the pacing policy, so a fixed
@@ -433,11 +443,10 @@ fn density_div(
                 + u32(coord.x);
             let end = starts[c + 1u];
             for (var k = starts[c]; k < end; k++) {
-                let j = sorted[k];
-                if j == p {
+                if k == p {
                     continue;
                 }
-                let x = pos - positions[j].xyz;
+                let x = pos - positions[k].xyz;
                 let r2 = dot(x, x);
                 if r2 >= params.support_sq {
                     continue;
@@ -450,10 +459,10 @@ fn density_div(
                 let gw = grad_q(x, r, q);
                 grad_sum += gw;
                 grad_sq += dot(gw, gw);
-                drho += dot(vel - velocities[j].xyz, gw);
+                drho += dot(vel - velocities[k].xyz, gw);
                 let slot = atomicAdd(&nbr_fill[lp], 1u);
                 if slot < NBR_CAP {
-                    nbr[slot_base + slot] = vec4f(gw, f32(j));
+                    nbr[slot_base + slot] = vec4f(gw, f32(k));
                 }
             }
         }
@@ -490,10 +499,11 @@ fn density_div(
         wall_grad[p] = vec4f(wg, 0.0);
         grad_sum += wg;
         density[p] = rho;
-        // The w lane is dead outside this window: integrate re-zeroes it
-        // after forces_eval consumes it, and each invocation writes only
-        // its own .w word while neighbours read .xyz — disjoint 4-byte
-        // words, no race.
+        // The w lane is dead outside this window: forces_eval consumes
+        // it, integrate writes the resting record with a zero w and the
+        // next scatter copies that back over it. Each invocation writes
+        // only its own .w word while neighbours read .xyz — disjoint
+        // 4-byte words, no race.
         positions[p].w = rho_near;
         let a = rho / max(dot(grad_sum, grad_sum) + grad_sq, 1e-4);
         alpha[p] = a;
@@ -695,6 +705,7 @@ fn den_apply(@builtin(global_invocation_id) gid: vec3u) {
 // Close the substep: CFL clamp (counted, never silent), position
 // update, inelastic walls, the acceleration the lens reads, and the
 // temperature's pressure work from this substep's pressure delta.
+// Reads the working set, writes the resting set at the same slot.
 @compute @workgroup_size(256)
 fn integrate(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= params.count {
@@ -733,15 +744,15 @@ fn integrate(@builtin(global_invocation_id) id: vec3u) {
     let hi = -lo;
     let clamped = clamp(p, lo, hi);
     v = select(v, vec3f(0.0), clamped != p);
-    positions[id.x] = vec4f(clamped, 0.0);
-    velocities[id.x] = vec4f(v, mix(was.w, accel, chase));
+    rest_positions[id.x] = vec4f(clamped, 0.0);
+    rest_velocities[id.x] = vec4f(v, mix(was.w, accel, chase));
     // w carries the pressure lens's own running mean; the solve never
     // reads it, and prev_vel has no other reader.
-    prev_vel[id.x] = vec4f(v, mix(prev_vel[id.x].w, pressure[id.x], chase));
+    rest_prev_vel[id.x] = vec4f(v, mix(prev_vel[id.x].w, pressure[id.x], chase));
     let dp = pressure[id.x] - prev_pressure[id.x];
-    prev_pressure[id.x] = pressure[id.x];
-    temperature[id.x] += temperature[id.x] * EXPANSION
-        / (density[id.x] * HEAT_CAPACITY) * dp;
+    rest_prev_pressure[id.x] = pressure[id.x];
+    let t = temperature[id.x];
+    rest_temperature[id.x] = t + t * EXPANSION / (density[id.x] * HEAT_CAPACITY) * dp;
 }
 
 var<workgroup> red_a: array<f32, 256>;
@@ -784,7 +795,8 @@ const HUGE: f32 = 1e30;
 // compression avg/max with rho min/max, speed and acceleration min/max,
 // then pressure and temperature min/max. Every min/max pair but the
 // compression is a lens's ramp. stats[9] mirrors the cumulative clamp
-// counter.
+// counter. Runs after the last integrate, so it reads the resting set;
+// density is the last sweep's, written in the same order.
 @compute @workgroup_size(256)
 fn reduce_stats(@builtin(local_invocation_id) local: vec3u) {
     let l = local.x;
@@ -816,7 +828,7 @@ fn reduce_stats(@builtin(local_invocation_id) local: vec3u) {
     var a_lo = HUGE;
     var a_hi = -HUGE;
     for (var i = l; i < params.count; i += 256u) {
-        let q = velocities[i];
+        let q = rest_velocities[i];
         let speed = length(q.xyz);
         v_lo = min(v_lo, speed);
         v_hi = max(v_hi, speed);
@@ -840,11 +852,11 @@ fn reduce_stats(@builtin(local_invocation_id) local: vec3u) {
     var t_lo = HUGE;
     var t_hi = -HUGE;
     for (var i = l; i < params.count; i += 256u) {
-        let p = prev_vel[i].w;
+        let p = rest_prev_vel[i].w;
         p_lo = min(p_lo, p);
         p_hi = max(p_hi, p);
-        t_lo = min(t_lo, temperature[i]);
-        t_hi = max(t_hi, temperature[i]);
+        t_lo = min(t_lo, rest_temperature[i]);
+        t_hi = max(t_hi, rest_temperature[i]);
     }
     red_a[l] = p_lo;
     red_b[l] = p_hi;

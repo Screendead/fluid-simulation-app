@@ -236,6 +236,37 @@ floors the substep count at eight, and the frame settles near
 the optimisation record said. The menu offers it because Jack asked,
 rated bad.
 
+The 4x dip, explained (2026-09-02, evening): the "hard shake dropped
+it to 40 to 60 Hz for 3 s" in the 4x row is a pacing feedback, not the
+GPU's limit. Measured the same evening with a same-run alternating
+instrument (optimisation record, "The 4x session"): a five-pass
+substep at 4x costs 0.97 to 1.0 ms cool and 1.25 to 1.36 hot, the
+glass look adds 2.4 ms a frame of its own, and five substeps still
+lock 120 Hz; six or seven do not, the frame slips, and the CFL and
+the refine rung both read the slipped frame until the count rails at
+the cap.
+
+Measured on the device 2026-09-03, on branch `m5-4x` (optimisation
+record, "The device session"): the dip is gone. Jack swirled the phone
+briskly for 70 seconds a look, hot, at 4x. The median second holds
+8,334 us on both the flat and the particle look; the longest unbroken
+stretch over budget is 2 seconds on flat and 4 on particles, against
+the 45 to 55 Hz the old dip held until v_max fell under 1.5 m/s. The
+upright boil is gone with it: no CFL clamp after the first five
+seconds, where the shipped cap clamped 4,280 times a second without
+end. The condition this paragraph set is therefore met, and the
+4x row is rated `good`. Jack's rule for the rating, 2026-09-03: "my
+aesthetic opinion is separate from the objective performance claim; an
+option is green if it holds 120fps on the phone." So the flat look's
+own fault at 4x does not hold the rating down: the particle look at 4x
+is "stunning" in his words and the flat look is not, because its
+flecks "just seem to teleport", and that is the field path's fault,
+not the pacing's (HANDOFF O7). Two findings from the same evening
+bind this record's 4x row: the 4x pool held upright and still boiled
+at the shipped substep cap (Jack: "it absolutely does jitter/boil at
+4x"), and Jack deprioritised the glass look at 4x ("flat and
+particle look the coolest").
+
 
 The tap, the button, the menu, the scale switch and its 25 ms
 rebuild, and the two-colour surface were exercised by Jack's hand

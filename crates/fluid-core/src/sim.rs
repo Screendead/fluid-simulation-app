@@ -288,6 +288,33 @@ pub(crate) fn wall_gradient(t: f32) -> f32 {
     }
 }
 
+/// The kernel's integral over the quarter-space behind two
+/// perpendicular walls, in t = d/h for each wall: the region the
+/// per-wall fill counts twice. Copies the shader's wedge polynomial;
+/// a drifted edit to either side fails the quadrature test.
+#[cfg(test)]
+pub(crate) fn wedge(t1: f64, t2: f64) -> f64 {
+    if t1 * t1 + t2 * t2 >= 4.0 {
+        return 0.0;
+    }
+    (2.5005807e-01
+        + t2 * (-3.4681153e-01
+            + t2 * (-4.0986882e-02
+                + t2 * (3.0301620e-01
+                    + t2 * (-1.9202736e-01 + t2 * (4.6947582e-02 + t2 * (-3.8543515e-03)))))))
+        + t1 * ((-3.4681153e-01
+            + t2 * (4.8587248e-01
+                + t2 * (1.0092180e-02
+                    + t2 * (-2.9978363e-01 + t2 * (1.5320335e-01 + t2 * (-2.2544282e-02))))))
+            + t1 * ((-4.0986882e-02
+                + t2 * (1.0092180e-02
+                    + t2 * (-5.4145610e-02 + t2 * (7.9597369e-02 + t2 * (-2.3350373e-02)))))
+                + t1 * ((3.0301620e-01
+                    + t2 * (-2.9978363e-01 + t2 * (7.9597369e-02 + t2 * (-8.2431946e-03))))
+                    + t1 * ((-1.9202736e-01 + t2 * (1.5320335e-01 + t2 * (-2.3350373e-02)))
+                        + t1 * ((4.6947582e-02 + t2 * (-2.2544282e-02)) + t1 * (-3.8543515e-03))))))
+}
+
 fn hash(x: u32) -> u32 {
     let mut h = x.wrapping_mul(0x9E37_79B9);
     h ^= h >> 16;
@@ -539,31 +566,8 @@ mod tests {
         assert_eq!(&raw[60..64], &[0u8; 4]);
     }
 
-    // Copies the shader's wedge polynomials; a drifted edit to either
-    // side fails here.
-    fn wedge_fit(t1: f64, t2: f64) -> f64 {
-        if t1 * t1 + t2 * t2 >= 4.0 {
-            return 0.0;
-        }
-        (2.5005807e-01
-            + t2 * (-3.4681153e-01
-                + t2 * (-4.0986882e-02
-                    + t2 * (3.0301620e-01
-                        + t2 * (-1.9202736e-01 + t2 * (4.6947582e-02 + t2 * (-3.8543515e-03)))))))
-            + t1 * ((-3.4681153e-01
-                + t2 * (4.8587248e-01
-                    + t2 * (1.0092180e-02
-                        + t2 * (-2.9978363e-01 + t2 * (1.5320335e-01 + t2 * (-2.2544282e-02))))))
-                + t1 * ((-4.0986882e-02
-                    + t2 * (1.0092180e-02
-                        + t2 * (-5.4145610e-02 + t2 * (7.9597369e-02 + t2 * (-2.3350373e-02)))))
-                    + t1 * ((3.0301620e-01
-                        + t2 * (-2.9978363e-01 + t2 * (7.9597369e-02 + t2 * (-8.2431946e-03))))
-                        + t1 * ((-1.9202736e-01 + t2 * (1.5320335e-01 + t2 * (-2.3350373e-02)))
-                            + t1 * ((4.6947582e-02 + t2 * (-2.2544282e-02))
-                                + t1 * (-3.8543515e-03))))))
-    }
-
+    // Copies the shader's wedge_d polynomial, as wedge above copies
+    // wedge; a drifted edit to either side fails here.
     fn wedge_d_fit(t1: f64, t2: f64) -> f64 {
         if t1 * t1 + t2 * t2 >= 4.0 {
             return 0.0;
@@ -644,9 +648,9 @@ mod tests {
                     }
                 }
                 assert!(
-                    (wedge_fit(a, b) - i2).abs() < 1.5e-3,
+                    (wedge(a, b) - i2).abs() < 1.5e-3,
                     "I2({a},{b}): fit {} quad {i2}",
-                    wedge_fit(a, b)
+                    wedge(a, b)
                 );
                 assert!(
                     (wedge_d_fit(a, b) - d2).abs() < 8e-3,
@@ -685,7 +689,7 @@ mod tests {
             // +8.6% without the wedge term and +3.4% with it, and the
             // residual is the pristine-lattice bias, not geometry.
             let fill = wall_density(x0 / h) + wall_density(y0 / h)
-                - wedge_fit((x0 / h) as f64, (y0 / h) as f64) as f32;
+                - wedge((x0 / h) as f64, (y0 / h) as f64) as f32;
             let err = (quarter + REST_DENSITY * fill - bulk) / bulk;
             assert!(err.abs() < 0.06, "layers ({lx},{ly}): err {err}");
         }

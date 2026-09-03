@@ -1,6 +1,6 @@
 # Handoff — project state
 
-*Updated 2026-09-02. Audience: the next agent, or Jack. This file is the
+*Updated 2026-09-03. Audience: the next agent, or Jack. This file is the
 state document. It holds what the next stretch of work needs. Update it in
 the same commit that closes a milestone or a task. Git holds the history.*
 
@@ -146,7 +146,7 @@ third of all eddy damping, and shipped XSPH_RATE 6 — retention tau
 at this particle count. Guards green; the recorded cost is ~2 s of
 extra sleep latency after motion.
 
-Test baseline: 48 Rust tests pass, 2026-09-02.
+Test baseline: 54 Rust tests pass, 2026-09-03.
 
 ## M1 measurements (reference device, 2026-08-30, Release)
 
@@ -260,13 +260,66 @@ back. The M5 record has the sweep and the protocol it
 needed — the settled cost is the lowest p50 a run reports, and
 `FLUID_LOOK` names the look for a console run.
 
-What remains, in the order the records list it: the optimisation
-record's next steps (the tracer draw, the builder sweep, the refine
-chain); the runbook's remainder (the M3 exit measurements, budget O2,
-the battery bound, the frame-latency-1 experiment); the direction
-wheel's own cost, which is the second field it splats and the only
-lens that pays for a pass; and Jack's dials on the drag and his eye
-on the five lenses. The next one is Jack's pick.
+2026-09-02, evening, and 2026-09-03: Jack's question, "is it possible
+to enable this app to run on my iPhone *well* - *comfortably* at the
+4x resolution setting?" The findings and the work are on branch
+`m5-4x`, stacked on `m5-menu` (neither merged; do not rebase `m5-4x`
+onto master without `m5-menu`). The optimisation record's "The 4x
+session" holds it all. In short: a five-pass substep at 4x costs 1.0
+ms cool and 1.3 hot on the phone, the glass look adds 2.4 ms a frame,
+five substeps still lock 120 Hz and six do not; the 40 to 60 Hz dip
+under a hard shake was two rules reading a slipped frame until the
+substep count railed at the cap; and a 4x pool held upright and still
+boiled at the 4.2 ms substep cap (Jack: "it absolutely does
+jitter/boil at 4x"). Jack's rulings: the glass look is deprioritised
+at 4x ("flat and particle look the coolest"), "comfortable" means
+120 Hz through ordinary and brisk handling with a dip only in a hard
+shake, and the work is approved on the laptop alone.
+
+Shipped on the branch, and measured on the phone the same day: the
+substep cap scales with the particle spacing (4.2 ms at 1x, 2.6 ms at
+4x); a 120 Hz frame that the CFL would put on six or seven five-pass
+substeps runs eight two-pass ones instead (one pure function,
+`substeps_for`, shared by the phone and the film harness); and the
+solver sorts the particle records into cell order every substep. A
+fresh-context review of two lenses followed, and its four confirmed
+findings are fixed on the branch.
+
+The device session closed the runbook. The 23-buffer solve layout
+launches. Held upright at 4x, the cap turns 4,280 CFL clamps a second
+into none and v_max 0.89 into 0.10, at 120 Hz either way. The sort
+makes a shuffled pool cost 0.5% more than a row-ordered one where it
+cost 13 to 16% before, and it takes 18% off a substep at 4x on a
+settled pool (1,235 to 955 us) while changing nothing at 1x (226
+against 222 us), which is the default setting and so the one that had
+to be safe. Under Jack's hand at 4x, hot, both the flat and particle
+looks hold a median second of 8,334 us, and the longest unbroken dip
+is 2 s on flat and 4 s on particles, where the old dip held 45 to 55
+Hz until the water slowed. Jack on the particle look: "it's
+stunning". REVIEW.md's device blocker is answered; the merge is
+Jack's.
+
+Two protocol facts from the session bind future measurements: a pair
+of installs on the phone drifts 10 to 20% thermally, so a code change
+is priced by alternating settings inside one run (the throwaway
+instrument in the session scratchpad, `p4x/patch4x.py`, does that);
+and the record's film bands are distributions, not lines — the 1x
+shake compression read 0.076 to 0.138% on an unchanged head in one
+day.
+
+What remains, in the order the records list it: O7, the flat look's
+two-level occupancy, which Jack wants next and which answers both the
+wash when the phone lies flat and the flecks that teleport under a
+swirl; the direction wheel's own cost (the second field it splats);
+the LANES and workgroup retune, which waits on an alternating
+two-pipeline instrument (about half an hour to build and five
+minutes on the phone, re-costed 2026-09-03); the tracer draw, which
+belongs to the glass
+look Jack deprioritised at 4x; the runbook's remainder (the M3 exit
+measurements, budget O2, the battery bound, the frame-latency-1
+experiment); and Jack's dials on the drag and his eye on the five
+lenses. The microbench's fate (it now carries its own grid kernels)
+is still Jack's call. The next one is Jack's pick.
 
 The history of the pass, for the record:
 
@@ -346,6 +399,7 @@ to `docs/design/decisions.md`.
 | O3 | The name. "Fluid Box" is a working title; the iOS target is `FluidApp`, bundle `com.screendead.FluidApp`. | Jack |
 | O4 | Moot 2026-08-30: the web target is removed (D1 amendment). | — |
 | O5 | The license. `Cargo.toml` says `UNLICENSED` until Jack chooses. | Jack |
+| O7 | The flat look washes out when the phone lies almost flat: the water spreads to an even thin sheet, every cell renders just above zero, and the box reads as one dim tint. Jack, 2026-09-03: give it two levels instead of a continuous thickness ramp — full colour where both the z-1 and z cells under the pixel are occupied, so a filled body reads solid through, and half opacity where only one of the two is. The same cutoff loses small bodies in motion: Jack, 2026-09-03, swirling at 4x, "the flecks just seem to teleport... they just disappear then reappear on the other side of the screen". The particle view of the same water is clean, so the field path is what loses them, and 4x makes it worse because each particle carries less thickness. First diagnostic: the same swirl at 1x. It moves R, the look's own per-frame work, so it carries a measurement against the 4x budget. | `docs/design/m5-menu.md` |
 | O6 | Closed 2026-09-01, ahead of M7: the gyro is wired end to end and the fictitious triple runs in the solver (M3 record, "The rotation, missing"). | `docs/design/m3-fluid.md` |
 
 ## Roadmap

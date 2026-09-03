@@ -12,6 +12,23 @@ battery bound, and closes the M3 "inside budget" clause. Every
 performance number carries the device and the date. A laptop film
 proves safety only; benefit is proved on the reference device.
 
+## Where the device numbers were taken (amended 2026-09-03)
+
+Every device number in this record comes from one place. Jack's words,
+2026-09-03: the phone lies "mostly flat" beside him on a bed, "as flat
+as i can get it", on the cable. He moves, and so does the bed. Some
+runs he handled on purpose, "swirling it and so on". Sections that say
+"the desk" or "hands off" mean this bed, and mean the water read
+still, not that nobody touched the phone.
+
+Two consequences bind every measurement here. A bed sheds no heat, so
+the phone throttles sooner and further than a hard surface would: read
+an absolute millisecond as an upper bound. A perturbation raises
+v_max, which raises the substep count, so a 120-frame window is pooled
+by the count it actually ran and a window the pin does not own is
+dropped. A cost taken from a difference inside one run survives both
+effects. A cost taken from two separate runs survives neither.
+
 ## Targets
 
 | # | Target | Source |
@@ -451,6 +468,11 @@ overlap.
 
 ### Next, in order
 
+Amended 2026-09-03 by "The 4x session" below: item 2 shipped as the
+cell-ordered layout; item 3's refine cut is dead at 4x too and the
+LANES and workgroup A/B waits on an alternating instrument; item 1
+belongs to the glass look, which Jack deprioritised at 4x.
+
 1. The tracer draw: a compute splat of the dots into a full-resolution
    intensity buffer read by the surface shader (exact for single dots
    a pixel; overlapping dots would take the brighter, a look change
@@ -464,6 +486,413 @@ overlap.
    meter before any device build; LANES 4/8/16 and workgroup 64/256
    as one-constant device A/Bs now that the folds are barrier-free.
 4. The runbook items below still stand.
+
+## The 4x session (2026-09-02, evening)
+
+Jack's question, verbatim: "is it possible to enable this app to run
+on my iPhone *well* - *comfortably* at the 4x resolution setting?"
+The session priced it: the phone under a throwaway instrument for the
+cost, the laptop film harness for the physics, three read-only or
+film-only agents for the levers. Nothing here changed the code; the
+section after this one records what shipped.
+
+### The instrument, and a protocol rule it forced
+
+The instrument is a scratchpad patch on the head (`p4x/patch4x.py`,
+never in the repository): `FLUID_IDLE=0` turns the gate off,
+`FLUID_NMIN` pins the substep count, `FLUID_REFINE` pins the refine
+pass count, and a cadence line prints the mean frame interval of every
+120-frame window. The meter is the cadence line of a window that is
+over budget; a window that fits locks at 8,334 us and says nothing,
+and the stats line's GPU span is the governor's clock whenever the
+frame fits (the M5 record).
+
+**Alternate inside one run; never pair installs.** The same build
+installed twice at eight pinned substeps read 12.2 then 11.3 ms a
+frame, and two one-constant builds swapped order between the halves
+of a mirrored chain (LANES 4: 12.0 then 9.9; workgroup 128: 9.8 then
+11.4). The thermal state climbs from nominal to serious within two
+minutes of over-budget frames, and every cost rises 25 to 35% with
+it. So `FLUID_NMIN=6,8` and `FLUID_REFINE=5,2` take comma lists and
+switch every 120 frames, and a pair read inside one run cancels the
+drift. Two caveats of the instrument: the cadence line stamps each
+window with the *next* window's refine pin (the substep stamp is
+right), and the stats line's GPU p50 spans two windows.
+
+The 2026-09-03 instrument moved the cadence line after the substep
+selection, which shifted the substep stamp too: there the window's
+own count is the one stamped a window later. The two builds therefore
+read their stamps differently, and a run is mined against the pin list
+it was launched with, never against the stamp alone. The check that
+catches a wrong mapping: more substeps must cost more.
+
+### The frame at 4x (reference device, 2026-09-02, glass unless named)
+
+Frame = n x S + R: n substeps from the CFL (n = ceil(3.36 x v_max) at
+120 Hz and the 4x spacing), S the cost of one substep, R the look's
+own work each frame.
+
+| Quantity | Cool (nominal) | Hot (serious) | Method |
+|---|---|---|---|
+| S, five refine passes | 0.97 to 1.0 ms | 1.25 to 1.36 ms | alternating pairs 6/8, 7/8, 5/7; four-point fits |
+| one refine pass | ~0.1 ms a substep | ~0.1 | n = 8, five against two passes: 11.7 against 9.2 ms |
+| S, two passes | ~0.65 (inferred: the cool S less a hot pass cost) | ~1.0 | |
+| R glass | — | 2.4 ms | four-point fit, intercept |
+| R flat surface | — | 1.6 | |
+| R particle view | — | 1.15 | |
+| R direction wheel | — | flat + ~0.7 | one pair, inside the drift |
+
+The four-point fits (one run each, n = 6, 7, 8, 9 alternating, five
+passes, phone hot): glass 10.5 / 11.9 / 13.2 / 14.6 ms; flat 9.1 /
+10.3 / 11.6 / 12.9; particles 8.9 / 10.0 / 11.4 / 12.8. Each is a
+line to within the window scatter.
+
+The pinned ladder, cool, gate off, phone flat and still: two, three,
+four and five substeps lock 8,334 us (five at GPU p50 7.8 ms; four
+still locks at thermal serious); six reads 8,576 (a frame dropped
+every 35); seven reads 10.3 to 10.4 ms; eight at five passes 10.4
+cool and 11.6 to 13.2 hot; eight at two passes 9.2 hot. Eight on the
+natural schedule is bistable at 8,334 or 10,400: when the frame fits,
+the substep is 1.04 ms and gets two passes; when it slips, the
+substep passes 1.05 ms and gets five.
+
+Every look sleeps lying flat at 4x (gate on, 100 s a look): glass,
+flat, particles and the wheel all settle at GPU p50 5.5 to 6.8 ms, the
+governor's clock, and the idle counter climbs. Lying flat is the pose
+in which gravity leaves the slab; see the boil below.
+
+### The mechanism of the dip
+
+At 120 Hz, six or seven substeps at five passes cost 8.6 to 10.4 ms
+and do not fit. The frame slips. Two rules then read the measured
+frame and feed each other: the CFL reads the measured dt and asks for
+more substeps, and the refine rung reads the measured substep (1.47
+ms at n = 7 and a 10.3 ms frame, above the 1.05 ms boundary) and
+stays at five passes. Clamped water reads back exactly the clamp
+speed, and `ceil` splits that tie, so the count climbs one step a
+frame to the cap: 16 x 1.0 to 1.3 + 2.4 = 18 to 23 ms, 45 to 55 Hz,
+until v_max falls under about 1.5 m/s. That is the M5 record's "dips
+to 40 to 60 Hz for 3 s". The two-pass rung is reached only at exactly
+120 Hz with eight or more substeps, which the slip prevents.
+
+### What the films found (Jack's laptop, 2026-09-02, SPACING=0.0062)
+
+1. **The 4x pool boils at rest, upright.** At natural pacing (two
+   substeps of 4.17 ms) a 15 s upright hold reads v_max 0.60 to 0.75
+   m/s every second, 1,000 to 1,700 CFL clamps a second, compression
+   max 0.16 to 0.19%, flicker 162,016 and 162,114 px/frame against
+   the 12,000 line — every tracer dot in the body moving — and the
+   WAKE film never sleeps (v_max 0.05 against V_SLEEP 0.04 at 20 s).
+   Pinned at four substeps (2.08 ms) it rests: v_max 0.08, zero
+   clamps, compression 0.03%, flicker 10,491 and 10,710, sleep at
+   frame 1652. At three substeps (2.78 ms) five passes read 14,599
+   and 15,464; eight passes 9,396 and 10,751. Eight passes at 4.17 ms
+   also rest it (v 0.12, flicker 10,613 and 10,793, sleep at frame
+   2084) with 2,800 clamps in the settled 3 s and compression 0.08%:
+   cheaper a frame (40 sweeps against 56) and dirtier. The flat pose
+   settles at every setting, which is why the desk never showed it.
+   Jack confirmed the boil on the phone the same evening: "it
+   absolutely does jitter/boil at 4x". The M3 convergence ladder
+   ("refine depth changes nothing at either length") was 1,620
+   particles; at 6,468 the 4.2 ms substep is a convergence failure
+   as well as a timestep one.
+2. **The refine mid rung is dead at 4x as at 1x.** At 2.08 ms
+   substeps five passes are required (four: 11,048 and 11,271, under
+   the line but outside the five-pass pair's spread; three: 41,910
+   and 41,968; two: 158,869 and 162,989). At 1.39 ms four passes hold
+   (9,482 and 9,733 against 9,275 and 9,798; 14% fewer sweeps) and
+   three fail narrowly (12,397 and 12,570). The short rung at 1.04 ms:
+   two passes read 26,389 at rest and 0.068% under the shake; three
+   passes 11,196 and 0.049%; four 9,805. Ring meters do not
+   discriminate, and shake clamps span 9,713 to 15,742 across
+   identical rows.
+3. **Spray does not set the substep count.** An interior-only CFL
+   (particles above half rest density) buys 1.8 to 5.6% fewer
+   substeps over the shake film, inside the 2.5% run-to-run scatter,
+   and nothing in ring, tilt or spin; the feared threefold feedback
+   (a spray particle at three times the clamp read back into the next
+   frame's CFL) never appears: the largest frame-to-frame jump in n
+   is 2 to 3. The interior water itself reaches the cap's own clamp
+   (4.76 m/s) in the film's shake. The mechanism that is real is the
+   clamp-tie ratchet above.
+4. **The sort's gate.** The design for a cell-ordered layout (below)
+   asked for one device experiment before any build: seed the
+   lattice in row order (the shipped seed), shuffled (what handling
+   produces) and cell order (what a sort delivers), and read eight
+   pinned substeps at five passes, 60 s a run, mirrored. Row 9.8
+   (cool), shuffled 11.1, cell 9.8, cell 10.6, shuffled 13.1, row
+   11.5 (hot). Shuffled sits 1.3 to 2.5 ms a frame above its
+   neighbours in both halves, above the ~1 ms drift: 0.16 to 0.3 ms a
+   substep, 16 to 30%. Cell equals row inside the drift. So a sort
+   recovers what handling mixes and nothing at rest. Unexplained:
+   both shuffled runs read a livelier pool (v_max 0.3 against 0.18 or
+   less); the cost gap is not obviously from it.
+5. **LANES 4 and workgroup 128 are unmeasured, not dead.** Both were
+   built and installed; paired installs drift as above, so neither
+   number means anything. A constant baked into a shader needs both
+   pipelines in one build to alternate; that instrument is not
+   written.
+
+### The levers, priced
+
+| Lever | Buys | Costs | Standing |
+|---|---|---|---|
+| The two-pass jump (a 120 Hz frame the CFL would put on six or seven substeps runs eight) | fits cool: 8 x 0.65 + 2.4 = 7.6 ms; at 3 m/s cool converges near 87 Hz instead of the cap | nothing at rest; hot it changes nothing by construction | shipped, below |
+| The cap scaled with the spacing (2.6 ms at 4x, four substeps at rest) | the rest boil; sleep | rest frame 4 x 1.0 + R until the gate sleeps (~14 s) | shipped, below |
+| The cell-ordered layout | 0.16 to 0.3 ms a substep in mixed water; hot particle view with the jump: 8 x 0.75 + 1.15 = 7.2 | 6 to 10 h; five buffers, four bindings | shipped, below |
+| Tracers halved at 4x | 0.4 to 0.8 of glass's 2.4 | a look change | Jack's dial; glass deprioritised 2026-09-02 |
+| LANES / workgroup retune | +-10% | an alternating two-pipeline instrument | deferred; costed 2026-09-03 |
+| Pre-clamp speed for the CFL | n answers in one frame both ways | none | quality, not cost; open |
+| Interior-only CFL | 2 to 5% | clamps +2 to 47% in motion | dead |
+| Refine mid rung | 14% of sweeps at 1.39 ms with four passes | flicker | dead |
+
+What "comfortable" can mean, priced: 120 Hz through ordinary and
+brisk handling, with a dip only in a hard shake and brief — reachable,
+and on the flat and particle looks reachable hot; glass at 4x is
+comfortable cool and dips once the phone is hot. Never dipping, any
+shake, needs a substep under 0.4 ms, 2.5 to 3x off, and is not on
+the table. Jack's ruling, 2026-09-02: glass deprioritised ("flat and
+particle look the coolest"), the first definition accepted, no more
+phone time that day, the work approved.
+
+### What shipped (branch m5-4x, 2026-09-03)
+
+Jack ruled the evening before: the boil is real on the phone, the
+glass look is deprioritised at 4x, the first definition of comfortable
+is the target, no phone time that day, the work approved. Two agents
+built the three changes in parallel worktrees; a fresh-context review
+followed (below). Every number in this section is Jack's laptop
+(Apple M2 Max), 2026-09-03; the phone has not run this build.
+
+1. **The cap scales with the spacing** (`SUBSTEP_PER_SPACING`, 0.42 s
+   per metre: 4.2 ms at 0.01 m, 2.6 ms at 0.0062 m, so a 120 Hz frame
+   at 4x floors at four substeps). Each `Sim` carries its own cap and
+   `substep_floor` takes it. The refine rung is unchanged and named:
+   `REFINE_SHORT_DT`, 1.05 ms. Films at 4x, natural pacing, before and
+   after: meterup flicker 161,469 and 148,401 -> 11,104 and 10,932
+   px/frame (line 12,000); the wake film slept at frame 1658 where the
+   before never slept; shake compression max 0.198 and 0.168 -> 0.084,
+   0.082 and 0.074%; spin 0.050 -> 0.038%; flat 0.036 -> 0.014%. At
+   1x nothing moves: the cap is the same length and the rest histogram
+   is unchanged (meterup 9,789 and 9,792 -> 9,259 and 10,329).
+2. **The two-pass jump** (`substeps_for`, one pure function that the
+   production frame and the film harness both call): the CFL count
+   floored by `substep_floor`; then, iff eight substeps of this frame
+   land on the two-pass rung (`refine_passes(dt / 8) == 2`, the same
+   division the encoder makes) and the count is six or seven (above
+   `CHEAP_RUNG_COST` 0.65 times eight), eight; then the cap. A
+   slipped frame keeps its count. Over the 4x shake film the 6 and 7
+   bins (30 and 23 frames) emptied into the 8 bin; the jump adds 0.01
+   to 0.02 points of compression max against a no-jump binary (0.071
+   and 0.064%), the two-pass rung's residual, accepted. Four pure
+   tests pin the mapping 5, 6, 7, 8, 9 -> 5, 8, 8, 8, 9 at 1/120 s, a
+   10 ms frame keeping 7, a flung frame at the cap, and the floor at
+   both spacings.
+3. **The cell-ordered layout.** `scatter` copies the five persistent
+   records (positions, velocities with the acceleration mean in w,
+   prev_vel with the pressure mean in w, prev_pressure, temperature)
+   from the resting set into a working set at each particle's
+   cell-ordered slot; the substep's sweeps bind the working set;
+   `density_div` walks `starts[c]..starts[c+1]` with j = k and stores
+   k in the neighbour list; `integrate` writes the resting set back at
+   the same slot; `reduce_stats` and every per-frame reader bind the
+   resting set, which is canonical. The sorted index list is retired.
+   The solve layout binds 23 storage buffers (`SOLVE_STORAGE_BUFFERS`
+   sets the device limit at both creation sites); the binding count
+   has run on the laptop only. The microbench owns its own count and
+   scatter now (about 25 lines beside its old stencil kernel); its
+   fate is still Jack's. Cost: 56 bytes in and out per particle per
+   substep, +362 KB at 4x. Tests: the colours-still test follows a
+   particle by position across the 27 surrounding cells with the 0.01
+   walk bound unchanged (measured walk a frame: velocity 0.0054,
+   acceleration 0.0008, pressure 0.0006, proximity 0.0011, direction
+   0.0002 — the M5 record's numbers); a new test checks the working
+   set's cell order, the scan total and the bit-for-bit travel of all
+   five records after a 60-frame settle; every sixteenth density is
+   pinned to a CPU brute-force sum with the analytic wall fill within
+   1e-3 (a wall-fill mutation every stats assertion passed failed it,
+   814.57 against 796.52). Films, three a side: 1x meterup 9,854 /
+   8,936 / 10,414 -> 9,865 / 10,080 / 9,977; 1x shake 0.138 / 0.088 /
+   0.076 -> 0.057 / 0.119 / 0.067%; 4x at four substeps: meterup
+   11,954 / 10,672 / 11,584 -> 11,072 / 11,704 / 11,253, shake 0.073 /
+   0.070 / 0.061 -> 0.049 / 0.071 / 0.056%, wake sleep at 1814 / 2086 /
+   1777 -> 1855 / 2087 / 1844. No film moved outside its scatter.
+
+The integrated head, gate green, films on the same laptop the same
+day: 4x natural pacing meterup 10,931 and 9,551 px/frame, shake
+0.075 and 0.080%, wake sleep at frame 1855, spin 0.038%, flat 0.014%,
+drag 0.045%; 1x meterup 9,000 and 10,056, shake 0.088 and 0.097%,
+wake sleep at frame 1760. Every 4x guard that failed on the head
+before this branch passes, and every 1x guard sits in its band.
+
+Two bands in earlier sections did not reproduce on the laptop that
+day and are scatter, not shifts: the 1x shake compression read 0.076
+to 0.138% on the unchanged head (the record's 0.03 to 0.06 was one
+session), and the 4x four-substep meterup read 10,672 to 11,954
+against the 10,491 and 10,710 of the day before. Read every film band
+as a distribution.
+
+### The device session (2026-09-03, evening)
+
+The runbook above, run. The build measured is this branch's head with
+the review's fixes in it (below), except where a line names the build
+before them. Every comparison against d7560a8, the branch point, is a
+difference taken inside one run: two pinned substep counts alternate
+every 120 frames, refine is pinned to five so the arms never change
+rung, and the mean interval of an over-budget window is the meter. The
+check that a mapping is right is that more substeps cost more.
+
+**The binding count.** The app launches at 4x and runs: 6,468
+particles, 4,840 cells, spacing 0.0062 m, no pipeline-layout error out
+of `Renderer::new`. The 23-buffer solve layout is inside the A15's
+limit. Lying flat the same build rests at four substeps and sleeps at
+frame 1,879.
+
+**The 4x boil, killed.** Jack held the phone upright, this branch
+first and then d7560a8, minutes apart, one pose, one thermal state.
+
+| Upright, held, 4x | d7560a8 | This branch |
+|---|---|---|
+| Substeps | 2 to 4, oscillating | 4, flat |
+| v_max | 0.35 to 0.89, never falls | 0.07 to 0.10 |
+| CFL clamps | 4,280 a second, without end | none after frame 600 |
+| Compression, mean and worst | 0.17 to 1.20% / 15.6% | 0.15% / 2.5% |
+| Frame interval p50 | 8,334 us | 8,334 us |
+
+Both hold 120 Hz, so the cap costs no cadence at rest: it spends GPU
+headroom that was there already (p50 6.4 against 6.9 ms).
+
+**The sort pays twice.** Eight pinned substeps, five passes, 4x,
+mirrored runs, the pool seeded in row order and in shuffled order.
+GPU p50, which reads the work here because the frame is over budget
+and the count does not alternate:
+
+| Seed order | This branch | d7560a8 (2026-09-02) |
+|---|---|---|
+| row | 8,394 and 8,360 us | 9,701 and 11,460 |
+| shuffled | 8,458 and 8,382 | 10,962 and 13,068 |
+
+Shuffled costs 0.5% more than row order with the sort and 13 to 16%
+more without it. That was the sort's whole justification and it holds.
+
+The second payment is larger and was not predicted. A settled pool has
+already drifted out of whatever order it was seeded in, so the sort is
+not idle at rest:
+
+| 4x, five passes, thermal serious | Substep | Frame at eight |
+|---|---|---|
+| d7560a8 | 1,235 us | 11,334 |
+| This branch, before the review's fixes | 1,013 | 9,711 |
+| This branch, after them | 955 | 9,236 |
+
+Eighteen per cent a substep. The two branch rows differ by less than
+the thermal column moved between them; the read-only binding and the
+deleted field changed nothing measurable. Each fit's intercept is the
+flat look's own per-frame work, and the two runs pinned at eight and
+twelve agree with each other and with the 1.6 ms this record measured
+for that look by a different method on a different day: 1,609 and
+1,596 us. A third run pinned at eight and sixteen reads 1,150, so the
+intercept carries a few hundred microseconds of its own uncertainty —
+the frame is not quite linear in the count within a run, because the
+phone heats as the run goes on. The agreement of the two is still the
+best independent check in the session: one number confirms the meter,
+the window mapping and the look's cost together.
+
+At 1x the same measurement finds nothing, which is the answer that
+mattered: 1x is the shipped default, and the permute is unconditional.
+The frame fits at every count the app allows there, so neither meter
+reads it — the interval locks at 8,334 us and the GPU span becomes the
+governor's clock (6,403 us at eight substeps against 6,515 at
+sixteen). `FLUID_SIM` raises the substep cap, and pinned counts of 32
+and 48 put both arms over budget, where the cadence line is a meter
+again: 222 us a substep on this branch against 226 on d7560a8, a 1.6%
+difference inside the scatter. Sixteen hundred particles fit in cache,
+so there is no locality to win and the permute is cheap; 6,468 do not,
+and it is worth eighteen per cent.
+
+**A brisk swirl at 4x, hot, on the shipped schedule.** Jack swirled
+the phone without pause for 70 seconds a look, gate on, no pins, the
+phone already hot from twenty minutes of over-budget runs.
+
+| | Flat | Particles |
+|---|---|---|
+| Median second | 8,334 us | 8,334 us |
+| Seconds over budget | 16 of 70 | 24 of 70 |
+| Longest unbroken dip | 2 s | 4 s |
+| Worst second | 9,787 us | 11,806 |
+| v_max reached | 2.19 m/s | 3.06 |
+| Substeps seen | 4 to 10 | 4 to 16 |
+
+That is definition (a), measured: 120 Hz through brisk handling, and
+the dips are seconds, not the sustained 45 to 55 Hz the dip used to
+hold until v_max fell under 1.5 m/s. Jack's eye on the particle look,
+2026-09-03: "it's stunning... enabling that to run at 4x without a
+hitch in the 120fps". His eye on the flat look the same minute: the
+flecks "just seem to teleport", which is a fault of the field path,
+not of this branch — the particle view of the same water is clean.
+Booked as HANDOFF O7 with the wash it shares a cause with.
+
+**What the device said about the jump.** The instrument counts, per
+window, the frames whose substep actually landed on the five-pass
+rung. At eight pinned substeps at 4x it is 3 to 5 frames in 120: the
+display's own clock holds a 120 Hz frame under 8.4 ms, so eight
+substeps stay on the two-pass rung for 97% of frames. The laptop's
+fixed 1/120 could not have shown this either way, and the jump's whole
+premise is that the division lands there.
+
+REVIEW.md's device-measurement blocker is answered for this branch.
+
+**What the two-pipeline instrument would cost, re-costed 2026-09-03.**
+The 2026-09-02 estimate of two hours was never derived; Jack asked
+why. `LANES` is a plain WGSL `const` (`sim_solve.wgsl`), so the second
+variant is a substitution on the shader source before
+`create_shader_module`, a second set of the six sweep pipelines off
+the second module, and a per-window switch of both the pipeline set
+and the dispatch width, which `SWEEP_LANES` divides. About half an
+hour in a throwaway worktree, then one phone session of five minutes.
+The workgroup size needs the same substitution in three places, since
+`256u / LANES` and the `div_ceil(256)` on the Rust side both name it.
+
+### The review, and what it changed (2026-09-03)
+
+Two fresh-context reviewers read the diff and the repository, never
+the plan: one on the GPU work and its encoders, one on the rules and
+the honesty of the code's claims. Every finding then went to a
+reviewer told to refute it. Fourteen findings, eight surviving.
+
+The GPU lens cleared the sort's correctness in detail and filed
+nothing against it: the five records the split copies and integrate
+writes back, the self-exclusion in `density_div` now that both indices
+are working slots, every reader of the neighbour list's stored slot,
+the per-substep scratch that needs no copy, `positions[].w` across the
+copy, the per-frame draws and `reduce_stats` binding the resting set,
+the three encoders still matching, and the bind layouts against the
+raised limit.
+
+What changed as a result:
+
+- `prev_pressure` is declared `read`, not `read_write`. No solve
+  kernel has written it since the resting copy took the write.
+- The cap's comment dated 4.2 ms to 2026-08-31. This record says 2.2
+  ms was set that day and 4.2 ms decided on 2026-09-01; the comment
+  now says so, and carries back the sentence about clearing half a
+  frame, which the constant still needs.
+- `CHEAP_RUNG_COST`'s doc comment derived 0.69 to 0.78 from the
+  numbers it cited, not 0.65. The constant is the cool two-pass
+  substep against the cool five-pass one, 0.65 ms against about 1.0,
+  and says that now. Both lenses found this independently.
+- `dt_sub_max` is gone as a field and as a parameter. It was
+  `SUBSTEP_PER_SPACING * spacing` and every caller already held the
+  spacing, so the pair could only ever disagree with itself.
+- One test added: at the 4x spacing a 120 Hz frame floors at four
+  substeps and still jumps to eight once the CFL asks for six.
+
+Refuted and not acted on: that the substep tests never reach 4x (the
+floor of four cannot jump, so no shipped rung was unpinned — the new
+test pins it anyway); that four records describe code that no longer
+exists; that the resting and working comments contradict each other;
+that the CFL inequality lost its only statement; that the film
+harness's frame length duplicates `NOMINAL_FRAME`.
 
 ## The runbook's remainder (waits for a phone session)
 
