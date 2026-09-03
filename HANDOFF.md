@@ -1,6 +1,6 @@
 # Handoff — project state
 
-*Updated 2026-09-01. Audience: the next agent, or Jack. This file is the
+*Updated 2026-09-02. Audience: the next agent, or Jack. This file is the
 state document. It holds what the next stretch of work needs. Update it in
 the same commit that closes a milestone or a task. Git holds the history.*
 
@@ -146,7 +146,7 @@ third of all eddy damping, and shipped XSPH_RATE 6 — retention tau
 at this particle count. Guards green; the recorded cost is ~2 s of
 extra sleep latency after motion.
 
-Test baseline: 32 Rust tests pass, 2026-09-01.
+Test baseline: 48 Rust tests pass, 2026-09-02.
 
 ## M1 measurements (reference device, 2026-08-30, Release)
 
@@ -169,7 +169,106 @@ The stats call costs 102 µs once a second, off the frame path. GPU
 timestamps read real values on this device in M2; the M1 note that the
 adapter lacks `TIMESTAMP_QUERY` did not hold — trust the M2 observation.
 
-## The next task — the optimisation pass's remainder
+## The next task
+
+2026-09-02: the optimisation pass's second stretch merged to master
+on Jack's ruling ("Merge this work"): no-gui, opt-remainder and
+opt-sweeps fast-forwarded as one line, the branches deleted.
+
+The same day, M5 opened with the menu Jack asked for. The M5 record
+(`docs/design/m5-menu.md`) holds the directive verbatim and D6 the
+split: a tap shows a button, the button opens a half-sheet menu with
+the four particle scales (0.25x, 1x, 4x, 16x, rated good, good,
+borderline, bad from the measured ladder), the flat look (two
+colours only, black and the chosen colour, hot pink by default, with
+a particle view that draws the particles alone as discs, sized by
+how crowded each particle is, and builds no field at all) and three readout toggles (frame rate, thermal
+state, GPU time against the 8.33 ms budget). Every choice persists.
+The core rebuilds the sim at a new scale in 25 ms and carries the
+look as a vec4 at byte 48 of the optics immediates; the
+settled-field calibration now scales with the spacing, pinned by a
+second plateau test. Measured the same
+day: the shader edit is neutral at 1x, 4x holds 120 Hz in the hand
+and dips to 40 to 60 Hz under a hard shake, 16x sits in the substep
+basin at 120 ms a frame. The lenses of the roadmap's M5 row are
+still to come, behind the same menu.
+
+Later the same day, two more of Jack's asks landed on the same
+branch. First, the drag: a finger on the glass entrains the water it
+crosses — towards the finger's own velocity, never away from it —
+inside a disc of 25 mm of glass through the whole slab, with all five
+of the phone's fingers dragging at once. The shell reports a slot and
+a point on its own drawable; the core does every metre. Second, the
+lenses: the flat looks take one colour or two, and two make a ramp
+across velocity, acceleration, pressure, proximity or temperature.
+Every field but acceleration was already in a buffer; acceleration
+is the substep's whole velocity change, measured in `integrate` and
+carried in the free w of the velocity record. The M5 record holds
+the models, the dials and the derivations.
+
+Measured the same evening (particle view, 1x, still desk, per-launch):
+GPU p50 settled 2,439 µs before the drag, 2,240 with it, 2,248 with
+the lenses on top. Both features are free. Getting there cost a hunt:
+the lenses first read 2,723, and four hypotheses died before a
+throwaway build that split the compute and render timestamps apart
+named the render pass in one run. The cause was one flat `vec3`
+varying on the disc draw — 490 µs a frame at 1,620 discs. Both quad
+passes now carry the ramp in clip z, which has no depth attachment
+to want it. The glass look, measured the same way, pays 76 µs of its
+6,428: the field texture's second channel, written once and read once.
+
+Late the same evening, Jack looked at the lenses and asked for two
+changes. The ramps stopped being derived: every lens now spans the
+lowest and the highest the frame itself holds ("The gradient should
+go from the lowest value *actually present in the sim* to the highest
+*actually present*"), reduced in the solver's own statistics block,
+which grew a second helper and three slots to carry a low-high pair
+per lens. A floor under each span keeps a still pool from stretching
+a ramp across the solver's noise — without it a settled pool strobes
+11% of the speed ramp a frame — and the ends are chased over a sixth
+of a second rather than taken, so one fast particle cannot shift
+every colour at once. The floor is the one absolute number left, and
+it binds only on water that is holding still.
+
+The flicker he reported at near-rest was the acceleration lens: a
+settled particle walked 19.4% of that ramp every frame, nine times
+the next worst. That lens and pressure now read a running mean over
+50 ms, in two `w` slots that were already free, and every lens is
+under 0.6% — measured frame by frame over a settled pool by
+`a_settled_pool_holds_its_colours_still`, which replaces the anchor
+test the auto ramp made vacuous.
+
+Temperature is gone as a lens. Jack: it "doesn't really show anything
+interesting ... it just looks like random dappling", and the
+arithmetic agrees — a settled box spreads 1.5 mK where a float near
+293 K resolves 30 µK, so the lens painted about fifty quantisation
+steps. The direction wheel has its number: hue from the heading,
+taken as far as the square of the water's speed, so a still pool
+keeps the chosen colour and the wheel speaks only for water that
+moves. The discs pack saturation and hue into clip z, hue below the
+point so that a boundary slip wraps a whole turn instead of dropping
+a disc to black; the flat surface splats unit headings into a second
+field, because a mean of angles is wrong at the seam.
+
+One regression came with the wheel and was caught by the before-and-
+after sweep: the flat surface lost 200 microseconds a frame to the
+wheel's arithmetic sitting in the fill's fragment shader, on a branch
+that look never takes, because an entry point's registers are
+allocated for the whole of it. The fill and the disc draw each have a
+second entry point now, and both paired measurements say the time came
+back. The M5 record has the sweep and the protocol it
+needed — the settled cost is the lowest p50 a run reports, and
+`FLUID_LOOK` names the look for a console run.
+
+What remains, in the order the records list it: the optimisation
+record's next steps (the tracer draw, the builder sweep, the refine
+chain); the runbook's remainder (the M3 exit measurements, budget O2,
+the battery bound, the frame-latency-1 experiment); the direction
+wheel's own cost, which is the second field it splats and the only
+lens that pays for a pass; and Jack's dials on the drag and his eye
+on the five lenses. The next one is Jack's pick.
+
+The history of the pass, for the record:
 
 m4-water merged to master 2026-09-01 on Jack's ruling ("yes i can
 see it swirling now - merge it"). The branch carried the whole M4
@@ -199,7 +298,8 @@ the dial history, and the verdict verbatim.
 overlay is deleted (git holds it), the status bar and home indicator
 hide, and the screen is only water. The stats line still prints once
 a second; `devicectl` console capture is now the only measurement
-channel.
+channel. (2026-09-02: the screen is still only water until a tap;
+the menu and the readout are the M5 record's.)
 
 2026-09-01, night: the pass's second stretch, on branch `opt-sweeps`
 (stacked on `opt-remainder` on `no-gui`; none merged). A worktree
@@ -260,7 +360,7 @@ the reference device and `HANDOFF.md` records the measurement.
 | M2 Particles | GPU particle buffer, integration under the body force, box collision, point rendering | Tilt and push the phone; particles behave; particle count at budget recorded |
 | M3 Fluid | The method from O1: neighbour search on the GPU, incompressibility, viscosity | A convincing slosh inside budget; incompressibility measured. Open pending the exit measurements (the closure-rule clause). |
 | M4 Water | The default view: the liquid-glass renderer from the M4 record — thickness from the splatted field, normals, refraction, the dazzle back wall | Looks like water; better than real time; inside budget |
-| M5 Lenses | Field lenses behind a dropdown menu: velocity, density, acceleration, pressure; temperature as an added field | Each lens switches with no frame drop |
+| M5 Lenses | The menu (opened 2026-09-02, M5 record) and, behind it, the field lenses: velocity, density, acceleration, pressure; temperature as an added field | Each lens switches with no frame drop |
 | M6 Headroom | Adaptive substeps, sleep when still, thermal response; power measured | Battery draw recorded against a target |
 | M7 Feel | Sensor-to-frame latency measured and tuned; haptics; rotation landed early (O6, closed 2026-09-01) | Latency number recorded; Jack's hand says it feels right |
 
@@ -284,7 +384,10 @@ CLAUDE.md holds the rules. Three to hold in memory:
 ## Pointers
 
 - `docs/design/decisions.md` — D1 stack, D2 shell, D3 frame and units,
-  D4 dependencies; each amended 2026-08-30 for the web removal.
+  D4 dependencies; each amended 2026-08-30 for the web removal. D5
+  the method, D6 the menu's shell/core split.
+- `docs/design/m5-menu.md` — the menu, the particle ladder, the flat
+  look, the readout, and their device numbers.
 - `scripts/gate.sh` — the whole gate; CI runs the same steps.
 - `platforms/ios/project.yml` — the Xcode project source; never edit the
   generated project.

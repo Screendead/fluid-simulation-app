@@ -1,7 +1,7 @@
 //! The C ABI the iOS shell links. `include/fluid_ffi.h` is generated from
 //! this file by cbindgen; the gate fails when the two drift.
 
-use fluid_core::MotionSample;
+use fluid_core::{Lens, Look, MotionSample, Paint};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -59,8 +59,10 @@ pub struct FluidRenderStats {
 /// Builds the renderer on a layer: `particle_count` sprites of
 /// `sprite_radius` metres, or, when `bench_sweeps` is nonzero, the M3
 /// stage-0 microbench at `bench_spacing` metres. A nonzero `sim_substeps`
-/// runs the M3 fluid instead, at that many substeps a frame. Returns null
-/// when GPU setup fails, with the reason on stderr.
+/// runs the M3 fluid instead, at that many substeps a frame, with
+/// `particle_scale` times the shipped particle count unless
+/// `bench_spacing` pins the spacing. Returns null when GPU setup fails,
+/// with the reason on stderr.
 ///
 /// # Safety
 ///
@@ -77,6 +79,7 @@ pub unsafe extern "C" fn fluid_renderer_create(
     bench_spacing: f32,
     sim_substeps: u32,
     tracers: u32,
+    particle_scale: f32,
 ) -> *mut FluidRenderer {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(metal_layer);
@@ -94,6 +97,7 @@ pub unsafe extern "C" fn fluid_renderer_create(
         bench_spacing,
         sim_substeps,
         tracers,
+        particle_scale,
     };
     match fluid_core::Renderer::new(instance, surface, width, height, options) {
         Ok(renderer) => Box::into_raw(Box::new(FluidRenderer(renderer))),
@@ -126,6 +130,105 @@ pub unsafe extern "C" fn fluid_renderer_frame(
         rotation_rate: rotation_rate.into(),
     };
     u32::from(unsafe { &mut *renderer }.0.frame(sample, now_ms))
+}
+
+/// Reseeds the fluid at `scale` times the shipped particle count: a
+/// rebuild of the sim, off the frame path, after which a still phone's
+/// water falls and settles again.
+///
+/// # Safety
+///
+/// `renderer` must be a live pointer from `fluid_renderer_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fluid_renderer_set_particles(renderer: *mut FluidRenderer, scale: f32) {
+    unsafe { &mut *renderer }.0.set_particles(scale);
+}
+
+/// The particle count `fluid_renderer_set_particles` would seed at
+/// `scale`, for the menu's labels.
+///
+/// # Safety
+///
+/// `renderer` must be a live pointer from `fluid_renderer_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fluid_renderer_particles_at(
+    renderer: *const FluidRenderer,
+    scale: f32,
+) -> u32 {
+    unsafe { &*renderer }.0.particles_at(scale)
+}
+
+/// How many fingers the sim drags with at once. A shell must give each
+/// finger a slot below this and hold it for as long as that finger
+/// stays on the glass.
+#[unsafe(no_mangle)]
+pub static FLUID_TOUCH_SLOTS: u32 = fluid_core::TOUCH_SLOTS;
+
+/// Where one finger presses, normalised over the drawable: `x` runs 0
+/// to 1 left to right, `y` 0 to 1 top to bottom. Every finger down
+/// drags the water it moves through and keeps the sim awake; `down`
+/// false lifts one. Call it from the gesture, not the frame.
+///
+/// # Safety
+///
+/// `renderer` must be a live pointer from `fluid_renderer_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fluid_renderer_touch(
+    renderer: *mut FluidRenderer,
+    slot: u32,
+    x: f32,
+    y: f32,
+    down: bool,
+) {
+    unsafe { &mut *renderer }.0.touch(slot, x, y, down);
+}
+
+/// Liquid glass when `flat` is false. Otherwise paint on black: the
+/// flat surface, or, when `particles` is also true, the particles
+/// alone as discs. `particles` alone does nothing.
+///
+/// `low` is the one colour when `gradient` is false. When it is true,
+/// the colour runs from `low` to `high` across `lens`, between the
+/// lowest and highest the frame itself holds: 0 velocity,
+/// 1 acceleration, 2 pressure, 3 proximity, and anything else
+/// velocity. 4 is the direction wheel, which takes its hue from which
+/// way the water goes and reads no `high`. Colour components are 0 to
+/// 1 as the picker shows them; the core linearises them.
+///
+/// # Safety
+///
+/// `renderer` must be a live pointer from `fluid_renderer_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fluid_renderer_set_look(
+    renderer: *mut FluidRenderer,
+    flat: bool,
+    particles: bool,
+    low: FluidVec3,
+    gradient: bool,
+    high: FluidVec3,
+    lens: u32,
+) {
+    let paint = if gradient {
+        Paint::Ramp {
+            low: low.into(),
+            high: high.into(),
+            lens: match lens {
+                1 => Lens::Acceleration,
+                2 => Lens::Pressure,
+                3 => Lens::Proximity,
+                4 => Lens::Direction,
+                _ => Lens::Velocity,
+            },
+        }
+    } else {
+        Paint::Solid(low.into())
+    };
+    let look = match (flat, particles) {
+        (false, _) => Look::Glass,
+        (true, false) => Look::Flat(paint),
+        (true, true) => Look::Particles(paint),
+    };
+    unsafe { &mut *renderer }.0.set_look(look);
 }
 
 /// # Safety

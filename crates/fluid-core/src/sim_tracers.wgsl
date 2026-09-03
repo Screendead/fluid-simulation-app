@@ -14,6 +14,8 @@ struct SimParams {
     rho0: f32,
 }
 
+// The head of the Step block pack_step writes: the tail past the seed
+// is the solver's finger, which no tracer reads.
 struct Step {
     force: vec3f,
     dt: f32,

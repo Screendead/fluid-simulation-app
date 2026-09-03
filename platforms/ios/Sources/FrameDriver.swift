@@ -4,17 +4,21 @@ import UIKit
 /// Owns the render loop: a CADisplayLink at 120 Hz feeds the newest motion
 /// sample to the core each frame, and prints one stats line per second for
 /// `devicectl` console capture.
+@Observable
 @MainActor
 final class FrameDriver {
-    private let motion = MotionSource()
+    private(set) var readout = Readout()
     var paused = false { didSet { link?.isPaused = paused } }
 
-    private var renderer: OpaquePointer?
-    private var link: CADisplayLink?
-    private var ticks = 0
-    private var active = true
-    private var lastCpuSeconds = 0.0
-    private var lastReportTime = CACurrentMediaTime()
+    @ObservationIgnored private let motion = MotionSource()
+    @ObservationIgnored private var renderer: OpaquePointer?
+    @ObservationIgnored private var link: CADisplayLink?
+    @ObservationIgnored private var ticks = 0
+    @ObservationIgnored private var active = true
+    @ObservationIgnored private var lastCpuSeconds = 0.0
+    @ObservationIgnored private var lastReportTime = CACurrentMediaTime()
+    @ObservationIgnored private var lastFrames: UInt64 = 0
+    @ObservationIgnored private var look = "glass"
 
     init() {
         UIDevice.current.isBatteryMonitoringEnabled = true
@@ -38,16 +42,48 @@ final class FrameDriver {
         let tracers = env["FLUID_TRACERS"].flatMap(UInt32.init) ?? 131_072
         renderer = fluid_renderer_create(
             Unmanaged.passUnretained(layer).toOpaque(), width, height, count, radius,
-            bench, spacing, sim, tracers)
+            bench, spacing, sim, tracers, Float(Settings.particleScale))
         guard renderer != nil else {
             print("fluid_renderer_create failed")
             return
         }
+        let chosen = Look(env["FLUID_LOOK"])
+        setLook(
+            flat: chosen.flat, particles: chosen.particles,
+            colour: Settings.flatColour, gradient: chosen.gradient,
+            high: Settings.highColour, lens: chosen.lens)
         let link = CADisplayLink(target: self, selector: #selector(tick))
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
         link.add(to: .main, forMode: .common)
         link.isPaused = paused
         self.link = link
+    }
+
+    func setParticles(_ scale: Double) {
+        guard let renderer else { return }
+        fluid_renderer_set_particles(renderer, Float(scale))
+    }
+
+    func particles(at scale: Double) -> UInt32 {
+        guard let renderer else { return 0 }
+        return fluid_renderer_particles_at(renderer, Float(scale))
+    }
+
+    /// `at` is normalised over the view, x right and y down; `slot`
+    /// names the finger. Called from the touch handlers, off the frame
+    /// path.
+    func touch(_ slot: UInt32, _ at: CGPoint, down: Bool) {
+        guard let renderer else { return }
+        fluid_renderer_touch(renderer, slot, Float(at.x), Float(at.y), down)
+    }
+
+    func setLook(
+        flat: Bool, particles: Bool, colour: FluidVec3,
+        gradient: Bool, high: FluidVec3, lens: UInt32
+    ) {
+        guard let renderer else { return }
+        fluid_renderer_set_look(renderer, flat, particles, colour, gradient, high, lens)
+        look = Look(flat: flat, particles: particles, gradient: gradient, lens: lens).name
     }
 
     @objc private func tick(_ link: CADisplayLink) {
@@ -85,11 +121,17 @@ final class FrameDriver {
         let cpuSeconds = Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1e6
             + Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1e6
         let now = CACurrentMediaTime()
-        let cpuPercent = (cpuSeconds - lastCpuSeconds) / max(now - lastReportTime, 1e-3) * 100
+        let elapsed = max(now - lastReportTime, 1e-3)
+        let cpuPercent = (cpuSeconds - lastCpuSeconds) / elapsed * 100
+        readout = Readout(
+            stepped: Double(stats.frames - lastFrames) / elapsed,
+            thermal: ProcessInfo.processInfo.thermalState,
+            gpuMs: Double(stats.gpu_p50_us) / 1000)
+        lastFrames = stats.frames
         lastCpuSeconds = cpuSeconds
         lastReportTime = now
         let line = String(
-            format: "frames %llu | interval µs p50 %.0f p99 %.0f max %.0f | acq µs p50 %.0f p99 %.0f | cpu µs p50 %.0f p99 %.0f | gpu µs p50 %.0f p99 %.0f | compr %% avg %.3f max %.3f | rho %.0f..%.0f | p %.0f..%.0f Pa | dT µK %.1f..%.1f | v %.2f n %u clamp %u nbr %u | idle %llu | mem %.1f MB | batt %.0f%% %@ | cpu%% %.1f | stats µs %.0f",
+            format: "frames %llu | interval µs p50 %.0f p99 %.0f max %.0f | acq µs p50 %.0f p99 %.0f | cpu µs p50 %.0f p99 %.0f | gpu µs p50 %.0f p99 %.0f | compr %% avg %.3f max %.3f | rho %.0f..%.0f | p %.0f..%.0f Pa | dT µK %.1f..%.1f | v %.2f n %u clamp %u nbr %u | idle %llu | mem %.1f MB | batt %.0f%% %@ | cpu%% %.1f | look %@ | stats µs %.0f",
             stats.frames,
             stats.interval_p50_us, stats.interval_p99_us, stats.interval_max_us,
             stats.acquire_p50_us, stats.acquire_p99_us,
@@ -101,7 +143,7 @@ final class FrameDriver {
             (stats.temperature_min - 293.15) * 1_000_000,
             (stats.temperature_max - 293.15) * 1_000_000,
             stats.v_max, stats.substeps, stats.clamp_count, stats.neighbour_overflow, stats.idle_frames,
-            memory, battery, thermal, cpuPercent, statsUs)
+            memory, battery, thermal, cpuPercent, look, statsUs)
         print(line)
     }
 

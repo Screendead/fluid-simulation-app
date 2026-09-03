@@ -133,8 +133,8 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         label: None,
         required_features: wgpu::Features::IMMEDIATES | wgpu::Features::SUBGROUP,
         required_limits: wgpu::Limits {
-            max_storage_buffers_per_shader_stage: 20,
-            max_immediate_size: 48,
+            max_storage_buffers_per_shader_stage: 21,
+            max_immediate_size: sim::STEP_BYTES as u32,
             ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
         },
         ..Default::default()
@@ -143,8 +143,10 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     Some((device, queue))
 }
 
-/// Runs the solver against a scripted body force and hands every
-/// `every`-th frame to `sink` as tightly packed RGBA rows. The box is
+/// Runs the solver against scripted input and hands every `every`-th
+/// frame to `sink` as tightly packed RGBA rows. `input_at` gives the
+/// frame's body force, its angular velocity, and where a finger
+/// presses in normalised drawable coordinates, if one does. The box is
 /// the reference phone's whatever the render size, and frames advance
 /// at a fixed 1/120 s: film is the look oracle, never the cost oracle.
 #[cfg(feature = "film")]
@@ -153,7 +155,7 @@ pub fn film(
     every: u32,
     spacing: f32,
     cap: u32,
-    force_at: impl Fn(u32) -> ([f32; 3], [f32; 3]),
+    input_at: impl Fn(u32) -> ([f32; 3], [f32; 3], Option<[f32; 2]>),
     mut sink: impl FnMut(&[u8]),
 ) -> Option<[u32; 2]> {
     const WIDTH: u32 = 642;
@@ -195,7 +197,7 @@ pub fn film(
     });
     let stats = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("film stats"),
-        size: 44,
+        size: STATS_BYTES,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -210,6 +212,7 @@ pub fn film(
     let mut clamp_total = 0.0f32;
     let mut filter = ForceFilter::new();
     let mut rotation = RotationTracker::new();
+    let mut fingers = Fingers::new();
     // IDLE=0 keeps the solver stepping for metrology films: a boil or
     // jump measurement over a settled window is meaningless if the gate
     // froze the window.
@@ -219,10 +222,12 @@ pub fn film(
     let mut was_asleep = false;
     let mut rows = vec![0u8; (WIDTH * 4 * HEIGHT) as usize];
     for f in 0..frames {
-        let (raw_force, raw_omega) = force_at(f);
+        let (raw_force, raw_omega, at) = input_at(f);
         let (force, dev) = filter.apply(raw_force);
         let (omega, domega) = rotation.apply(raw_omega, dt);
-        if gate_on && gate.asleep(force, dev, omega, v_max) {
+        fingers.at[0] = at;
+        let touches = fingers.step(sim.extent, dt);
+        if gate_on && gate.asleep(fingers.any_down(), force, dev, omega, v_max) {
             if !was_asleep {
                 eprintln!("film: sleep at frame {f}");
                 was_asleep = true;
@@ -257,7 +262,7 @@ pub fn film(
         };
         let dt_sub = dt / n as f32;
         let v_clamp = 0.4 * spacing / dt_sub;
-        let step = sim::pack_step(force, omega, domega, dt_sub, v_clamp, 0);
+        let step = sim::pack_step(force, omega, domega, dt_sub, v_clamp, 0, touches);
         let particles = sim.count.div_ceil(256);
         let wide = (sim.count * SWEEP_LANES).div_ceil(256);
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -296,7 +301,18 @@ pub fn film(
             pass.dispatch_workgroups(1, 1, 1);
             pass.set_bind_group(0, &sim.tracer_bind, &[]);
             pass.set_pipeline(&sim.splat);
-            pass.set_immediates(0, &sim::pack_step(force, [0.0; 3], [0.0; 3], dt, 0.0, f));
+            pass.set_immediates(
+                0,
+                &sim::pack_step(
+                    force,
+                    [0.0; 3],
+                    [0.0; 3],
+                    dt,
+                    0.0,
+                    f,
+                    sim::Touches::default(),
+                ),
+            );
             pass.dispatch_workgroups(particles, 1, 1);
             pass.set_pipeline(&sim.resolve);
             pass.dispatch_workgroups(sim.cell_groups, 1, 1);
@@ -328,6 +344,9 @@ pub fn film(
             });
             pass.draw(0..3, 0..1);
             pass.set_pipeline(&sim.body);
+            // The film is the glass look's oracle, so the paint is
+            // solid and the field's second channel splats zero.
+            pass.set_immediates(0, &pack_paint([0.0; 4], [0.0; 4], [0.0, 1.0], 0, 0.0));
             pass.set_blend_constant(wgpu::Color {
                 r: splat,
                 g: splat,
@@ -341,7 +360,10 @@ pub fn film(
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&sim.filter);
             pass.set_bind_group(0, &sim.filter_bind, &[]);
-            pass.set_immediates(0, &pack_optics(force, sim.extent));
+            pass.set_immediates(
+                0,
+                &pack_optics(force, sim.extent, sim.field_settled, [0.0; 4], [0.0; 4]),
+            );
             pass.dispatch_workgroups(sim.filter_groups[0], sim.filter_groups[1], 1);
         }
         {
@@ -359,14 +381,17 @@ pub fn film(
                 ..Default::default()
             });
             pass.set_pipeline(&sim.fill);
-            pass.set_immediates(0, &pack_optics(force, sim.extent));
+            pass.set_immediates(
+                0,
+                &pack_optics(force, sim.extent, sim.field_settled, [0.0; 4], [0.0; 4]),
+            );
             pass.set_bind_group(0, &sim.fill_bind, &[]);
             pass.draw(0..3, 0..1);
             pass.set_pipeline(&sim.points);
             pass.set_bind_group(0, &sim.tracer_draw_bind, &[]);
             pass.draw(0..sim.tracer_count, 0..1);
         }
-        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &stats, 0, 44);
+        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &stats, 0, STATS_BYTES);
         let sampled = f % every == 0;
         if sampled {
             encoder.copy_texture_to_buffer(
@@ -456,11 +481,15 @@ fn buffer_entry(
 /// of fog, which looks worse than the flicker it prevents.
 const FIELD_KEEP: f32 = 0.8;
 
-/// The settled interior value of the splatted field, dimensionless.
-/// Measured 5.297 (this machine, 2026-08-31, 600 upright frames).
-/// The surface shader divides by it to turn field into water thickness
-/// (M4 record, "Thickness"); the_settled_field_matches_the_calibration
-/// measures it and pins this constant.
+/// The settled interior value of the splatted field at the shipped
+/// spacing, dimensionless. Measured 5.297 (this machine, 2026-08-31,
+/// 600 upright frames). It is the particle layers per screen area:
+/// the fluid fills the slab depth at rest density, so it scales with
+/// SLAB_DEPTH over the spacing, and each Sim carries its own
+/// FIELD_SETTLED * SIM_SPACING / spacing. The surface shader divides
+/// by it to turn field into water thickness (M4 record, "Thickness");
+/// the_settled_field_matches_the_calibration pins the constant, and
+/// the_settled_field_scales_with_the_spacing pins the scaling.
 const FIELD_SETTLED: f32 = 5.3;
 
 /// Peak glint output; two percent of it — the Fresnel floor — is what
@@ -472,10 +501,19 @@ const SUN: f32 = 60.0;
 const GLINT_F0: f32 = 0.02;
 
 /// The Optics immediates block in sim_surface.wgsl: two 16-byte vec3
-/// slots with scalars packed into their tails. The lighting that is
-/// uniform across a frame — world up, the glint half vector, and the
-/// folded gain — is computed here once instead of per pixel.
-fn pack_optics(force: [f32; 3], extent: [f32; 2]) -> [u8; 48] {
+/// slots with scalars packed into their tails, then the flat look's
+/// two colours as vec4s. The lighting that is uniform across a frame —
+/// world up, the glint half vector, and the folded gain — is computed
+/// here once instead of per pixel. The surface reads a ramp's metric
+/// from the field itself, already normalised by the splat, so no lens
+/// or range reaches this block.
+fn pack_optics(
+    force: [f32; 3],
+    extent: [f32; 2],
+    field_settled: f32,
+    flat: [f32; 4],
+    high: [f32; 4],
+) -> [u8; 80] {
     let norm = |v: [f32; 3], floor: f32| -> ([f32; 3], f32) {
         let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(floor);
         ([v[0] / l, v[1] / l, v[2] / l], l)
@@ -503,12 +541,12 @@ fn pack_optics(force: [f32; 3], extent: [f32; 2]) -> [u8; 48] {
     let s = ((up[2] - 0.85) / 0.13).clamp(0.0, 1.0);
     let fade = 1.0 - s * s * (3.0 - 2.0 * s);
     let schlick = GLINT_F0 + (1.0 - GLINT_F0) * (1.0 - h[2]).powi(5);
-    let mut raw = [0u8; 48];
+    let mut raw = [0u8; 80];
     for (slot, v) in [
         up[0],
         up[1],
         up[2],
-        FIELD_SETTLED,
+        field_settled,
         extent[0],
         extent[1],
         sim::SLAB_DEPTH,
@@ -522,7 +560,258 @@ fn pack_optics(force: [f32; 3], extent: [f32; 2]) -> [u8; 48] {
     {
         raw[slot * 4..slot * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
+    for (i, v) in flat.into_iter().chain(high).enumerate() {
+        raw[48 + i * 4..52 + i * 4].copy_from_slice(&v.to_le_bytes());
+    }
     raw
+}
+
+/// The scalar a ramp paints with. Every one is a field the solver
+/// already carries, so a lens costs no pass of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lens {
+    /// Speed, metres per second.
+    Velocity,
+    /// The whole velocity change over a substep, metres per second
+    /// squared: body force, viscosity, tension and pressure together,
+    /// as a running mean.
+    Acceleration,
+    /// The solver's pressure, pascals, as a running mean.
+    Pressure,
+    /// How crowded a particle's neighbourhood is — its density against
+    /// rest density. Jack's word for it, 2026-09-02.
+    Proximity,
+    /// Which way the water goes, as a hue around the wheel, taking
+    /// over from the low colour as it speeds up. Jack's pick,
+    /// 2026-09-02, in place of temperature: a box that warms by
+    /// millionths of a degree paints float noise, and neighbouring
+    /// particles carry no shared history to correlate.
+    Direction,
+}
+
+impl Lens {
+    /// The order `fluid_renderer_set_look` numbers them in, and the
+    /// order the `lens_at` switch in sim_sprites.wgsl reads.
+    fn code(self) -> u32 {
+        match self {
+            Lens::Velocity => 0,
+            Lens::Acceleration => 1,
+            Lens::Pressure => 2,
+            Lens::Proximity => 3,
+            Lens::Direction => 4,
+        }
+    }
+
+    /// The two ends the frame itself set, from the reduce_stats block
+    /// in sim_solve.wgsl. Jack, 2026-09-02: "The gradient should go
+    /// from the lowest value actually present in the sim to the
+    /// highest actually present." The wheel ramps its hue in over
+    /// speed, so it reads the velocity lens's pair.
+    fn ends(self, stats: &[f32; STATS]) -> [f32; 2] {
+        match self {
+            Lens::Velocity | Lens::Direction => [stats[11], stats[6]],
+            Lens::Acceleration => [stats[12], stats[13]],
+            Lens::Pressure => [stats[4], stats[5]],
+            Lens::Proximity => [stats[2], stats[3]],
+        }
+    }
+
+    /// The narrowest span worth a ramp, in the lens's own units. Water
+    /// whose spread is under it is uniform as far as the eye goes, and
+    /// stretching a ramp across the solver's own noise paints confetti:
+    /// a settled pool's speeds span 0.02 m/s and every particle walks
+    /// the whole of that every frame (measured 2026-09-02, this
+    /// machine). Three of the four are the quantity one particle
+    /// spacing of water carries, so each scales with the ladder.
+    fn floor(self, spacing: f32) -> f32 {
+        match self {
+            // The speed of a fall through one spacing. A settled pool
+            // is a twentieth of it.
+            Lens::Velocity | Lens::Direction => (2.0 * crate::STANDARD_GRAVITY * spacing).sqrt(),
+            // The fall itself: water thrown about by less than one
+            // gravity is not being thrown about.
+            Lens::Acceleration => crate::STANDARD_GRAVITY,
+            // The weight of one spacing of water.
+            Lens::Pressure => sim::REST_DENSITY * crate::STANDARD_GRAVITY * spacing,
+            // A percent of rest density; the settled body's own
+            // compression spans four kilograms of it.
+            Lens::Proximity => 0.01 * sim::REST_DENSITY,
+        }
+    }
+}
+
+/// The ends of the live lens's ramp, chased frame by frame rather than
+/// taken. A frame's own extremes walk far enough to shift every colour
+/// on the screen at once — a settled pool's speed ceiling moves a
+/// seventh of its own span every frame (measured 2026-09-02, this
+/// machine) — and the eye reads that as the water flickering.
+struct Ramp {
+    lens: Option<Lens>,
+    ends: [f32; 2],
+}
+
+impl Ramp {
+    /// Opening out is quick, so a splash has its colours within a
+    /// third of a second; closing in is slow, so the palette does not
+    /// breathe every time the fastest particle slows down.
+    const OPEN_TAU: f32 = 0.15;
+    const CLOSE_TAU: f32 = 0.6;
+
+    fn new() -> Self {
+        Self {
+            lens: None,
+            ends: [0.0; 2],
+        }
+    }
+
+    /// None until the first stats readback lands: the block starts
+    /// zeroed, and a ramp built on it would paint the whole box one
+    /// end of itself. Density is the test, since no water has none.
+    fn follow(
+        &mut self,
+        lens: Lens,
+        stats: &[f32; STATS],
+        spacing: f32,
+        dt: f32,
+    ) -> Option<[f32; 2]> {
+        if stats[3] <= 0.0 {
+            return None;
+        }
+        let floor = lens.floor(spacing);
+        let mut want = lens.ends(stats);
+        want[1] = want[1].max(want[0] + floor);
+        if self.lens != Some(lens) {
+            self.lens = Some(lens);
+            self.ends = want;
+            return Some(want);
+        }
+        for (i, (end, want)) in self.ends.iter_mut().zip(want).enumerate() {
+            // The low end opens by falling and the high end by rising.
+            let opening = if i == 0 { want < *end } else { want > *end };
+            let tau = if opening {
+                Self::OPEN_TAU
+            } else {
+                Self::CLOSE_TAU
+            };
+            *end += (want - *end) * (1.0 - (-dt / tau).exp());
+        }
+        // Both ends closing in at once can otherwise cross.
+        self.ends[1] = self.ends[1].max(self.ends[0] + floor);
+        Some(self.ends)
+    }
+}
+
+/// How a look is coloured. Jack, 2026-09-02: "the user should be able
+/// to choose a simple single colour or optionally two colours denoting
+/// low->high values." Components are 0 to 1 as the picker shows them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Paint {
+    Solid([f32; 3]),
+    Ramp {
+        low: [f32; 3],
+        high: [f32; 3],
+        lens: Lens,
+    },
+}
+
+/// How the water is drawn (M5 record): liquid glass over the dazzle
+/// wall (the M4 look), the flat surface painted on black and nothing
+/// between, or the particles alone, each a disc of the paint on black.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Look {
+    Glass,
+    Flat(Paint),
+    Particles(Paint),
+}
+
+/// sRGB's transfer function inverted. The surface is Bgra8UnormSrgb
+/// (the reference device, 2026-09-02): the shaders work in linear
+/// light and the hardware encodes on write, so a picked colour goes
+/// in linear and comes out as the bytes that were picked.
+fn linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Slots in the reduce_stats block of sim_solve.wgsl, one f32 each.
+/// The shader is the authority on what each one holds.
+const STATS: usize = 14;
+const STATS_BYTES: u64 = STATS as u64 * 4;
+
+/// The smallest a disc of the particle view may draw, in pixels of
+/// the drawable. Jack, 2026-09-02: "They should never be 1px".
+const MIN_DISC_PX: f32 = 3.0;
+
+/// The Paint immediates block in sim_sprites.wgsl, which the disc
+/// draw and the body splat share: the two colours in linear light,
+/// then the lens with the ends of its ramp, then the floor on a disc's
+/// radius in metres, which the disc mixes towards as a particle's
+/// neighbourhood thins. The splat ignores that last one; the disc
+/// ignores nothing.
+fn pack_paint(low: [f32; 4], high: [f32; 4], range: [f32; 2], lens: u32, r_min: f32) -> [u8; 48] {
+    let mut raw = [0u8; 48];
+    for (i, v) in low.into_iter().chain(high).enumerate() {
+        raw[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    raw[32..36].copy_from_slice(&lens.to_le_bytes());
+    raw[36..40].copy_from_slice(&range[0].to_le_bytes());
+    raw[40..44].copy_from_slice(&range[1].to_le_bytes());
+    raw[44..48].copy_from_slice(&r_min.to_le_bytes());
+    raw
+}
+
+/// What the shaders need to know about a look: the low colour with a
+/// one in w for either flat look, the high colour whose w says how the
+/// body is painted (0 the low colour alone, 1 the ramp, 2 the
+/// direction wheel), the lens code, and the ends of its ramp. The
+/// glass is all zeros, which is how every shader knows it is drawing
+/// glass.
+#[derive(Clone, Copy)]
+struct Painted {
+    low: [f32; 4],
+    high: [f32; 4],
+    lens: u32,
+    range: [f32; 2],
+}
+
+impl Painted {
+    /// `ends` is the live ramp, or None where there is no ramp to
+    /// draw: a solid colour, the glass, or a lens whose field has not
+    /// been read back yet.
+    fn new(look: Look, ends: Option<[f32; 2]>) -> Painted {
+        let paint = match look {
+            Look::Glass => {
+                return Painted {
+                    low: [0.0; 4],
+                    high: [0.0; 4],
+                    lens: 0,
+                    range: [0.0, 1.0],
+                };
+            }
+            Look::Flat(p) | Look::Particles(p) => p,
+        };
+        let colour = |c: [f32; 3], w: f32| [linear(c[0]), linear(c[1]), linear(c[2]), w];
+        match (paint, ends) {
+            (Paint::Ramp { low, high, lens }, Some(range)) => Painted {
+                low: colour(low, 1.0),
+                // The wheel paints its own colours over the whole
+                // ramp, so the high colour goes unread and its slot
+                // carries the two apart instead.
+                high: colour(high, if lens == Lens::Direction { 2.0 } else { 1.0 }),
+                lens: lens.code(),
+                range,
+            },
+            (Paint::Solid(c), _) | (Paint::Ramp { low: c, .. }, None) => Painted {
+                low: colour(c, 1.0),
+                high: [0.0; 4],
+                lens: 0,
+                range: [0.0, 1.0],
+            },
+        }
+    }
 }
 
 /// Adaptive low-pass on the body force. Accelerometer noise
@@ -579,6 +868,83 @@ impl ForceFilter {
 /// gyro is far cleaner than the accelerometer, so the smoothing is
 /// light; the derivative is clamped against flick spikes and zeroed
 /// across pauses, where the frame gap is not a rotation interval.
+/// The fingers on the glass, turned into the drag the solver reads.
+/// The shell reports where each presses in normalised drawable
+/// coordinates and which slot it holds — the facts only the shell has,
+/// since only it can tell one finger from another. Every metre and
+/// metre per second below is computed here (D6).
+struct Fingers {
+    at: [Option<[f32; 2]>; sim::MAX_TOUCHES],
+    world: [[f32; 2]; sim::MAX_TOUCHES],
+    velocity: [[f32; 2]; sim::MAX_TOUCHES],
+    tracked: [bool; sim::MAX_TOUCHES],
+}
+
+impl Fingers {
+    /// How far into the water a finger drags, world metres. The world
+    /// is WORLD_SCALE times the device, so this is 25 mm of glass: a
+    /// fingertip and the wider net Jack asked for around it
+    /// (2026-09-02).
+    const RADIUS: f32 = crate::WORLD_SCALE * 0.025;
+
+    /// Touch samples and frames run at the same rate but out of phase,
+    /// so the raw per-frame difference alternates between a doubled
+    /// step and none. A 20 ms average evens that out well inside the
+    /// drag's own 25 ms response.
+    const SMOOTH_TAU: f32 = 0.02;
+
+    fn new() -> Self {
+        Self {
+            at: [None; sim::MAX_TOUCHES],
+            world: [[0.0; 2]; sim::MAX_TOUCHES],
+            velocity: [[0.0; 2]; sim::MAX_TOUCHES],
+            tracked: [false; sim::MAX_TOUCHES],
+        }
+    }
+
+    fn any_down(&self) -> bool {
+        self.at.iter().any(Option::is_some)
+    }
+
+    /// This frame's drag. Each finger's velocity comes from the
+    /// frame's own step, so one held still brakes the water it sits in
+    /// and one lifted stops dragging entirely. The solver reads the
+    /// live fingers packed from the front, so a lifted finger costs
+    /// its loop nothing.
+    fn step(&mut self, extent: [f32; 2], dt: f32) -> sim::Touches {
+        let mut touches = sim::Touches {
+            radius: Self::RADIUS,
+            ..Default::default()
+        };
+        for slot in 0..sim::MAX_TOUCHES {
+            let Some([x, y]) = self.at[slot] else {
+                self.tracked[slot] = false;
+                continue;
+            };
+            // Normalised drawable to the box plane: x runs right in
+            // both, y runs down the drawable and up the box.
+            let world = [(2.0 * x - 1.0) * extent[0], (1.0 - 2.0 * y) * extent[1]];
+            if self.tracked[slot] && dt > 0.0 {
+                let alpha = 1.0 - (-dt / Self::SMOOTH_TAU).exp();
+                let was = self.world[slot];
+                for ((smooth, now), then) in self.velocity[slot].iter_mut().zip(world).zip(was) {
+                    *smooth += ((now - then) / dt - *smooth) * alpha;
+                }
+            } else {
+                self.velocity[slot] = [0.0; 2];
+            }
+            self.world[slot] = world;
+            self.tracked[slot] = true;
+            touches.each[touches.count as usize] = sim::Touch {
+                at: world,
+                velocity: self.velocity[slot],
+            };
+            touches.count += 1;
+        }
+        touches
+    }
+}
+
 struct RotationTracker {
     smooth: [f32; 3],
     primed: bool,
@@ -655,9 +1021,21 @@ impl IdleGate {
     }
 
     /// True while the frame may be skipped.
-    fn asleep(&mut self, smooth: [f32; 3], dev: f32, omega: [f32; 3], v_max: f32) -> bool {
+    fn asleep(
+        &mut self,
+        touched: bool,
+        smooth: [f32; 3],
+        dev: f32,
+        omega: [f32; 3],
+        v_max: f32,
+    ) -> bool {
         fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
             a.iter().zip(&b).map(|(x, y)| x * y).sum()
+        }
+        if touched {
+            self.sleep_force = None;
+            self.still = 0;
+            return false;
         }
         let spinning = dot(omega, omega).sqrt() > Self::OMEGA_WAKE;
         if let Some(rest) = self.sleep_force {
@@ -919,6 +1297,10 @@ pub struct RenderOptions {
     pub bench_spacing: f32,
     pub sim_substeps: u32,
     pub tracers: u32,
+    /// The fluid's particle count as a multiple of the shipped lattice;
+    /// `spacing_for` turns it into a spacing unless `bench_spacing`
+    /// pins one.
+    pub particle_scale: f32,
 }
 
 enum Mode {
@@ -928,8 +1310,35 @@ enum Mode {
 }
 
 /// The M3 record's 2.5 mm spacing times the world scale — the same
-/// on-screen resolution at every scale. Used when FLUID_SPACING is unset.
+/// on-screen resolution at every scale. The 1x of the particle ladder.
 const SIM_SPACING: f32 = crate::WORLD_SCALE * 0.0025;
+
+/// The spacing that seeds nearest `scale` times the 1x count. The
+/// lattice quantises in whole rows and layers, so the cube root misses
+/// badly at the ends (0.25x would seed 288 particles, 16x 32,340); the
+/// search walks the FLUID_SPACING clamp range in steps of half a
+/// percent of SIM_SPACING. One count spans a run of spacings, and the
+/// run's spacing nearest the cube root wins, so 1x is SIM_SPACING
+/// itself.
+fn spacing_for(scale: f32, extent: [f32; 2]) -> f32 {
+    let count = |spacing: f32| {
+        sim::lattice_dims(spacing, extent, 0.5)
+            .iter()
+            .product::<u32>()
+    };
+    let target = scale * count(SIM_SPACING) as f32;
+    let ideal = SIM_SPACING / scale.cbrt();
+    let mut best = (f32::INFINITY, f32::INFINITY, SIM_SPACING);
+    for permille in (400..=4000).step_by(5) {
+        let spacing = SIM_SPACING * permille as f32 / 1000.0;
+        let miss = (count(spacing) as f32 / target).ln().abs();
+        let off = (spacing - ideal).abs();
+        if (miss, off) < (best.0, best.1) {
+            best = (miss, off, spacing);
+        }
+    }
+    best.2
+}
 
 struct Sim {
     count_cells: wgpu::ComputePipeline,
@@ -948,7 +1357,11 @@ struct Sim {
     resolve: wgpu::ComputePipeline,
     advect: wgpu::ComputePipeline,
     points: wgpu::RenderPipeline,
+    discs: wgpu::RenderPipeline,
+    discs_wheel: wgpu::RenderPipeline,
     body: wgpu::RenderPipeline,
+    body_flow: wgpu::RenderPipeline,
+    fill_wheel: wgpu::RenderPipeline,
     decay: wgpu::RenderPipeline,
     fill: wgpu::RenderPipeline,
     fill_layout: wgpu::BindGroupLayout,
@@ -956,6 +1369,7 @@ struct Sim {
     field_sampler: wgpu::Sampler,
     field: wgpu::TextureView,
     filter: wgpu::ComputePipeline,
+    flow: wgpu::TextureView,
     filtered: wgpu::TextureView,
     filter_bind: wgpu::BindGroup,
     filter_groups: [u32; 2],
@@ -968,8 +1382,9 @@ struct Sim {
     sprite_bind: wgpu::BindGroup,
     stats_src: wgpu::Buffer,
     stats_staging: [StagingSlot; 3],
-    stats: [f32; 11],
+    stats: [f32; STATS],
     spacing: f32,
+    field_settled: f32,
     extent: [f32; 2],
     tracer_count: u32,
     count: u32,
@@ -977,9 +1392,21 @@ struct Sim {
     max_substeps: u32,
     substeps_used: u32,
     field_keep: f32,
+    // Both fields accumulate across frames, so a frame that skipped
+    // one, and a texture just built, leave it nothing to keep.
+    field_live: bool,
+    flow_live: bool,
     frame_seed: u32,
     #[cfg(test)]
     tracers: wgpu::Buffer,
+    #[cfg(test)]
+    density: wgpu::Buffer,
+    #[cfg(test)]
+    positions: wgpu::Buffer,
+    #[cfg(test)]
+    velocities: wgpu::Buffer,
+    #[cfg(test)]
+    prev_vel: wgpu::Buffer,
 }
 
 impl Sim {
@@ -1008,10 +1435,17 @@ impl Sim {
             })
         };
         let none = wgpu::BufferUsages::empty();
+        // The tests read the particles straight back; a shipped frame
+        // never copies them off the GPU.
+        let readback = if cfg!(test) {
+            wgpu::BufferUsages::COPY_SRC
+        } else {
+            none
+        };
         let positions = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim positions"),
             size: u64::from(count) * 16,
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | readback,
             mapped_at_creation: true,
         });
         let mut bytes = Vec::with_capacity(seeded.len() * 4);
@@ -1024,14 +1458,18 @@ impl Sim {
             .copy_from_slice(&bytes);
         positions.unmap();
         // wgpu zero-initialises buffers: the fluid starts at rest.
-        let velocities = storage("sim velocities", u64::from(count) * 16, none);
+        let velocities = storage("sim velocities", u64::from(count) * 16, readback);
         let counts = storage("sim counts", u64::from(cells) * 4, none);
         // One slot past the last cell holds the total: a sweep reads a
         // cell's end as the next cell's start.
         let starts = storage("sim starts", u64::from(cells + 1) * 4, none);
         let cursors = storage("sim cursors", u64::from(cells) * 4, none);
         let sorted = storage("sim sorted", u64::from(count) * 4, none);
-        let density = storage("sim density", u64::from(count) * 4, none);
+        let density = storage(
+            "sim density",
+            u64::from(count) * 4,
+            wgpu::BufferUsages::COPY_SRC,
+        );
         let alpha = storage("sim alpha", u64::from(count) * 4, none);
         let kd = storage("sim kappa over density", u64::from(count) * 4, none);
         let pressure = storage("sim pressure", u64::from(count) * 4, none);
@@ -1043,7 +1481,8 @@ impl Sim {
         let nbr_n = storage("sim neighbour counts", u64::from(count) * 4, none);
         let nbr_over = storage("sim neighbour overflow", 4, none);
         let wall_grad = storage("sim wall gradients", u64::from(count) * 16, none);
-        let stats_src = storage("sim stats", 44, wgpu::BufferUsages::COPY_SRC);
+        let prev_vel = storage("sim previous velocities", u64::from(count) * 16, readback);
+        let stats_src = storage("sim stats", STATS_BYTES, wgpu::BufferUsages::COPY_SRC);
         // The box starts at the lab constants' temperature, 20 C.
         let temperature = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim temperature"),
@@ -1083,7 +1522,7 @@ impl Sim {
         let stats_staging = std::array::from_fn(|_| StagingSlot {
             buffer: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("sim stats staging"),
-                size: 44,
+                size: STATS_BYTES,
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -1154,6 +1593,7 @@ impl Sim {
                 rw(16),
                 rw(17),
                 rw(18),
+                rw(19),
             ],
         );
         let tracer_layout = layout(
@@ -1182,6 +1622,16 @@ impl Sim {
                 ),
                 buffer_entry(
                     2,
+                    vertex,
+                    wgpu::BufferBindingType::Storage { read_only: true },
+                ),
+                buffer_entry(
+                    4,
+                    vertex,
+                    wgpu::BufferBindingType::Storage { read_only: true },
+                ),
+                buffer_entry(
+                    5,
                     vertex,
                     wgpu::BufferBindingType::Storage { read_only: true },
                 ),
@@ -1245,6 +1695,7 @@ impl Sim {
                 entry(16, &nbr),
                 entry(17, &nbr_n),
                 entry(18, &wall_grad),
+                entry(19, &prev_vel),
             ],
         );
         let tracer_bind = bind(
@@ -1271,6 +1722,8 @@ impl Sim {
                 entry(0, &params),
                 entry(1, &positions),
                 entry(2, &velocities),
+                entry(4, &density),
+                entry(5, &prev_vel),
             ],
         );
 
@@ -1300,22 +1753,31 @@ impl Sim {
             ..Default::default()
         });
         let field = field_view(device, "sim field", surface);
+        let flow = field_view(device, "sim flow", surface);
         // The optics read the field through field_filter: the raw splat
         // in, the blurred thickness with its differences out, and the
         // fill pass samples that.
         let filter_layout = layout_filter(device);
         let filtered = filtered_view(device, surface);
-        let fill_bind = field_bind(device, &fill_layout, &filtered, &field_sampler);
+        let fill_bind = field_bind(
+            device,
+            &fill_layout,
+            &filtered,
+            &field_sampler,
+            &field,
+            &flow,
+        );
         let filter_bind = filter_bind(device, &filter_layout, &field, &filtered);
         let surface_module = module("sim_surface", include_str!("sim_surface.wgsl"));
-        let fill_pl = pipe_layout("sim surface", &fill_layout, 48);
-        let filter_pl = pipe_layout("sim field filter", &filter_layout, 48);
+        let fill_pl = pipe_layout("sim surface", &fill_layout, 80);
+        let filter_pl = pipe_layout("sim field filter", &filter_layout, 80);
         let grid_pl = pipe_layout("sim grid", &grid_layout, 0);
         let scan_pl = pipe_layout("sim scan", &scan_layout, 0);
-        let solve_pl = pipe_layout("sim solve", &solve_layout, 48);
+        let solve_pl = pipe_layout("sim solve", &solve_layout, sim::STEP_BYTES as u32);
         let sprite_pl = pipe_layout("sim sprites", &sprite_layout, 0);
-        let tracer_pl = pipe_layout("sim tracers", &tracer_layout, 48);
+        let tracer_pl = pipe_layout("sim tracers", &tracer_layout, sim::STEP_BYTES as u32);
         let tracer_draw_pl = pipe_layout("sim tracer draw", &tracer_draw_layout, 0);
+        let paint_pl = pipe_layout("sim paint", &sprite_layout, 48);
         let pipeline =
             |layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, entry_point: &str| {
                 device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1399,9 +1861,68 @@ impl Sim {
                 multiview_mask: None,
                 cache: None,
             }),
+            // Written opaque, colour only: a disc over the body is the
+            // body's colour and a disc in the air is a droplet, so the
+            // screen stays two colours.
+            discs: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim discs"),
+                layout: Some(&paint_pl),
+                vertex: wgpu::VertexState {
+                    module: &sprite_module,
+                    entry_point: Some("disc"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &sprite_module,
+                    entry_point: Some("disc_frag"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::COLOR,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            }),
+            discs_wheel: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim discs wheel"),
+                layout: Some(&paint_pl),
+                vertex: wgpu::VertexState {
+                    module: &sprite_module,
+                    entry_point: Some("disc_wheel"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &sprite_module,
+                    entry_point: Some("disc_wheel_frag"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::COLOR,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            }),
             body: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("sim body"),
-                layout: Some(&sprite_pl),
+                layout: Some(&paint_pl),
                 vertex: wgpu::VertexState {
                     module: &sprite_module,
                     entry_point: Some("body"),
@@ -1419,7 +1940,35 @@ impl Sim {
                     entry_point: Some("weight"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::R16Float,
+                        format: wgpu::TextureFormat::Rg16Float,
+                        blend: Some(SPLAT),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            }),
+            body_flow: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim body flow"),
+                layout: Some(&paint_pl),
+                vertex: wgpu::VertexState {
+                    module: &sprite_module,
+                    entry_point: Some("body_flow"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &sprite_module,
+                    entry_point: Some("flow"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rg16Float,
                         blend: Some(SPLAT),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -1450,7 +1999,7 @@ impl Sim {
                     entry_point: Some("decay_frag"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::R16Float,
+                        format: wgpu::TextureFormat::Rg16Float,
                         blend: Some(DECAY),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -1483,6 +2032,31 @@ impl Sim {
                 multiview_mask: None,
                 cache: None,
             }),
+            fill_wheel: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sim fill wheel"),
+                layout: Some(&fill_pl),
+                vertex: wgpu::VertexState {
+                    module: &surface_module,
+                    entry_point: Some("fill"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &surface_module,
+                    entry_point: Some("surface_wheel_frag"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(OVER),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            }),
             fill_layout,
             filter_layout,
             field_sampler,
@@ -1495,6 +2069,7 @@ impl Sim {
                 compilation_options: Default::default(),
                 cache: None,
             }),
+            flow,
             filtered,
             filter_bind,
             filter_groups: filter_groups(surface),
@@ -1507,8 +2082,9 @@ impl Sim {
             sprite_bind,
             stats_src,
             stats_staging,
-            stats: [0.0; 11],
+            stats: [0.0; STATS],
             spacing,
+            field_settled: FIELD_SETTLED * SIM_SPACING / spacing,
             extent,
             tracer_count,
             count,
@@ -1516,9 +2092,19 @@ impl Sim {
             max_substeps: substeps,
             substeps_used: 0,
             field_keep: FIELD_KEEP,
+            field_live: false,
+            flow_live: false,
             frame_seed: 0,
             #[cfg(test)]
             tracers,
+            #[cfg(test)]
+            density,
+            #[cfg(test)]
+            positions,
+            #[cfg(test)]
+            velocities,
+            #[cfg(test)]
+            prev_vel,
         }
     }
 }
@@ -1526,15 +2112,20 @@ impl Sim {
 impl Sim {
     fn resize(&mut self, device: &wgpu::Device, surface: [u32; 2]) {
         self.field = field_view(device, "sim field", surface);
+        self.flow = field_view(device, "sim flow", surface);
         self.filtered = filtered_view(device, surface);
         self.fill_bind = field_bind(
             device,
             &self.fill_layout,
             &self.filtered,
             &self.field_sampler,
+            &self.field,
+            &self.flow,
         );
         self.filter_bind = filter_bind(device, &self.filter_layout, &self.field, &self.filtered);
         self.filter_groups = filter_groups(surface);
+        self.field_live = false;
+        self.flow_live = false;
     }
 }
 
@@ -1629,7 +2220,10 @@ fn field_view(device: &wgpu::Device, label: &str, surface: [u32; 2]) -> wgpu::Te
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R16Float,
+            // r the splatted thickness, g that thickness weighted by
+            // the lens. The ratio is the flat look's ramp; the glass
+            // splats a zero there and never reads it.
+            format: wgpu::TextureFormat::Rg16Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         })
@@ -1641,6 +2235,8 @@ fn field_bind(
     layout: &wgpu::BindGroupLayout,
     field: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
+    splat: &wgpu::TextureView,
+    flow: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("sim surface"),
@@ -1653,6 +2249,14 @@ fn field_bind(
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(splat),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(flow),
             },
         ],
     })
@@ -1676,6 +2280,30 @@ fn layout_frag(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            // The raw splat, for the flat look's ramp. Binding 2 is
+            // the filter pass's storage view of the same texture and
+            // has no place in a fragment layout.
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // The direction lens's own field.
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
                 count: None,
             },
         ],
@@ -2055,9 +2683,12 @@ pub struct Renderer {
     gpu_timing: Option<GpuTiming>,
     force_filter: ForceFilter,
     rotation: RotationTracker,
+    fingers: Fingers,
+    ramp: Ramp,
     idle: IdleGate,
     idle_frames: u64,
     mode: Mode,
+    look: Look,
     frames: u64,
     last_frame_ms: f64,
 }
@@ -2096,8 +2727,8 @@ impl Renderer {
             // asks 16), so start from downlevel and raise what the code
             // binds: the solve layout holds eighteen storage buffers.
             required_limits: wgpu::Limits {
-                max_storage_buffers_per_shader_stage: 20,
-                max_immediate_size: 48,
+                max_storage_buffers_per_shader_stage: 21,
+                max_immediate_size: sim::STEP_BYTES as u32,
                 ..wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
             },
             ..Default::default()
@@ -2117,6 +2748,9 @@ impl Renderer {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
+        // The shaders write linear light, so the format says whether
+        // the hardware encodes on write; set_look linearises to match.
+        eprintln!("surface: {:?}", config.format);
 
         let extent = [
             width as f32 * 0.5 * METRES_PER_PIXEL,
@@ -2125,13 +2759,14 @@ impl Renderer {
         let mode = if options.bench_sweeps > 0 {
             Mode::Bench(Box::new(Bench::new(&device, extent, &options)))
         } else if options.sim_substeps > 0 {
-            // FLUID_SPACING serves both modes; zero means the default.
+            // FLUID_SPACING pins the spacing for a measurement run;
+            // zero hands the choice to the particle scale.
             let spacing = if options.bench_spacing > 0.0 {
                 options
                     .bench_spacing
                     .clamp(0.4 * SIM_SPACING, 4.0 * SIM_SPACING)
             } else {
-                SIM_SPACING
+                spacing_for(options.particle_scale, extent)
             };
             Mode::Sim(Box::new(Sim::new(
                 &device,
@@ -2188,12 +2823,75 @@ impl Renderer {
             gpu_timing,
             force_filter: ForceFilter::new(),
             rotation: RotationTracker::new(),
+            fingers: Fingers::new(),
+            ramp: Ramp::new(),
             idle: IdleGate::new(),
             idle_frames: 0,
             mode,
+            look: Look::Glass,
             frames: 0,
             last_frame_ms: 0.0,
         })
+    }
+
+    /// Reseeds the fluid at `scale` times the 1x count (spacing_for).
+    /// A rebuild off the frame path: the sim's buffers and pipelines
+    /// are made again, and the idle gate restarts so the fresh lattice
+    /// on a still phone falls and settles before it may sleep.
+    pub fn set_particles(&mut self, scale: f32) {
+        let Mode::Sim(s) = &self.mode else {
+            return;
+        };
+        let spacing = spacing_for(scale, s.extent);
+        if spacing == s.spacing {
+            return;
+        }
+        let (extent, cap, tracers) = (s.extent, s.max_substeps, s.tracer_count);
+        let started = std::time::Instant::now();
+        self.mode = Mode::Sim(Box::new(Sim::new(
+            &self.device,
+            self.config.format,
+            extent,
+            cap,
+            spacing,
+            tracers,
+            [self.config.width, self.config.height],
+        )));
+        self.idle = IdleGate::new();
+        eprintln!(
+            "sim: rebuilt in {:.0} ms",
+            started.elapsed().as_secs_f64() * 1_000.0
+        );
+    }
+
+    /// The count `set_particles(scale)` would seed; zero outside the sim.
+    pub fn particles_at(&self, scale: f32) -> u32 {
+        match &self.mode {
+            Mode::Sim(s) => sim::lattice_dims(spacing_for(scale, s.extent), s.extent, 0.5)
+                .iter()
+                .product(),
+            _ => 0,
+        }
+    }
+
+    /// Where one finger presses, in normalised drawable coordinates: x
+    /// runs 0 to 1 left to right, y 0 to 1 top to bottom, the shell's
+    /// own convention. `down` false lifts it. `slot` is the shell's
+    /// name for that finger, held for as long as it stays on the
+    /// glass, and ignored past `touch_slots`. Every finger down drags
+    /// the water it moves through, and any finger down holds the idle
+    /// gate awake.
+    pub fn touch(&mut self, slot: u32, x: f32, y: f32, down: bool) {
+        if let Some(at) = self.fingers.at.get_mut(slot as usize) {
+            *at = down.then_some([x, y]);
+        }
+    }
+
+    /// The idle gate restarts: a sleeping sim presents nothing, so a
+    /// look changed on a still phone would not reach the screen.
+    pub fn set_look(&mut self, look: Look) {
+        self.look = look;
+        self.idle = IdleGate::new();
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -2227,8 +2925,22 @@ impl Renderer {
         let (omega, domega) = self
             .rotation
             .apply(sample.rotation_rate, interval_us / 1_000_000.0);
+        let extent = match &self.mode {
+            Mode::Sim(s) => s.extent,
+            _ => [1.0; 2],
+        };
+        let flat = !matches!(self.look, Look::Glass);
+        // The particle view draws the solver's own particles, so it
+        // needs no thickness field: the splat, the blur and the
+        // surface pass go unencoded.
+        let field = !matches!(self.look, Look::Particles(_));
+        // The strands are the glass look's dye; neither flat look
+        // shows them.
+        let strands = !flat && matches!(&self.mode, Mode::Sim(s) if s.tracer_count > 0);
         if let Mode::Sim(s) = &self.mode
-            && self.idle.asleep(force, dev, omega, s.stats[6])
+            && self
+                .idle
+                .asleep(self.fingers.any_down(), force, dev, omega, s.stats[6])
         {
             // The clock still advances, so the wake frame steps one
             // tick, not the whole nap.
@@ -2247,6 +2959,29 @@ impl Renderer {
         } else {
             (interval_us / 1_000_000.0).clamp(0.0, MAX_DT)
         };
+        let touches = if matches!(self.mode, Mode::Sim(_)) {
+            self.fingers.step(extent, dt)
+        } else {
+            sim::Touches::default()
+        };
+        // The ramp chases the frame's own two ends, so it needs the
+        // frame's dt and the readback the gate above kept from
+        // advancing.
+        let ends = match (&self.mode, self.look) {
+            (
+                Mode::Sim(s),
+                Look::Flat(Paint::Ramp { lens, .. }) | Look::Particles(Paint::Ramp { lens, .. }),
+            ) => self.ramp.follow(lens, &s.stats, s.spacing, dt),
+            _ => None,
+        };
+        let paint = Painted::new(self.look, ends);
+        let optics = match &self.mode {
+            Mode::Sim(s) => pack_optics(force, extent, s.field_settled, paint.low, paint.high),
+            _ => [0; 80],
+        };
+        // The direction wheel is the one lens the surface cannot read
+        // out of the thickness field.
+        let wheel = field && paint.high[3] > 1.0;
         if let Mode::Sim(s) = &mut self.mode {
             // CFL: dt <= 0.4 d / v_max, from the one-frame-stale v_max
             // the stats readback drained. The GPU clamp enforces the dt
@@ -2335,7 +3070,7 @@ impl Renderer {
                     let n = s.substeps_used;
                     let dt_sub = dt / n as f32;
                     let v_clamp = 0.4 * s.spacing / dt_sub;
-                    let step = sim::pack_step(force, omega, domega, dt_sub, v_clamp, 0);
+                    let step = sim::pack_step(force, omega, domega, dt_sub, v_clamp, 0, touches);
                     let particles = s.count.div_ceil(256);
                     let wide = (s.count * SWEEP_LANES).div_ceil(256);
                     for _ in 0..n {
@@ -2369,14 +3104,22 @@ impl Renderer {
                     }
                     pass.set_pipeline(&s.reduce_stats);
                     pass.dispatch_workgroups(1, 1, 1);
-                    if s.tracer_count > 0 {
+                    if strands {
                         // The visual layer advects once a frame on the
                         // solved end-of-frame field, with the frame dt.
                         pass.set_bind_group(0, &s.tracer_bind, &[]);
                         pass.set_pipeline(&s.splat);
                         pass.set_immediates(
                             0,
-                            &sim::pack_step(force, [0.0; 3], [0.0; 3], dt, 0.0, s.frame_seed),
+                            &sim::pack_step(
+                                force,
+                                [0.0; 3],
+                                [0.0; 3],
+                                dt,
+                                0.0,
+                                s.frame_seed,
+                                sim::Touches::default(),
+                            ),
                         );
                         pass.dispatch_workgroups(particles, 1, 1);
                         pass.set_pipeline(&s.resolve);
@@ -2388,7 +3131,9 @@ impl Renderer {
                 Mode::Sim(_) => {}
             }
         }
-        if let Mode::Sim(s) = &self.mode {
+        if let Mode::Sim(s) = &self.mode
+            && field
+        {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2405,7 +3150,14 @@ impl Renderer {
                 occlusion_query_set: None,
                 ..Default::default()
             });
-            let keep = f64::from(s.field_keep);
+            // After a frame that skipped the field, the first field
+            // frame decays the stale one to nothing and splats the
+            // whole weight: the same steady state, no ghost.
+            let keep = if s.field_live {
+                f64::from(s.field_keep)
+            } else {
+                0.0
+            };
             let splat = 1.0 - keep;
             pass.set_pipeline(&s.decay);
             pass.set_blend_constant(wgpu::Color {
@@ -2416,6 +3168,10 @@ impl Renderer {
             });
             pass.draw(0..3, 0..1);
             pass.set_pipeline(&s.body);
+            pass.set_immediates(
+                0,
+                &pack_paint(paint.low, paint.high, paint.range, paint.lens, 0.0),
+            );
             pass.set_blend_constant(wgpu::Color {
                 r: splat,
                 g: splat,
@@ -2425,11 +3181,60 @@ impl Renderer {
             pass.set_bind_group(0, &s.sprite_bind, &[]);
             pass.draw(0..4, 0..s.count);
         }
-        if let Mode::Sim(s) = &self.mode {
+        if let Mode::Sim(s) = &self.mode
+            && wheel
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &s.flow,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                ..Default::default()
+            });
+            let keep = if s.flow_live {
+                f64::from(s.field_keep)
+            } else {
+                0.0
+            };
+            let splat = 1.0 - keep;
+            pass.set_pipeline(&s.decay);
+            pass.set_blend_constant(wgpu::Color {
+                r: keep,
+                g: keep,
+                b: keep,
+                a: keep,
+            });
+            pass.draw(0..3, 0..1);
+            pass.set_pipeline(&s.body_flow);
+            pass.set_immediates(
+                0,
+                &pack_paint(paint.low, paint.high, paint.range, paint.lens, 0.0),
+            );
+            pass.set_blend_constant(wgpu::Color {
+                r: splat,
+                g: splat,
+                b: splat,
+                a: splat,
+            });
+            pass.set_bind_group(0, &s.sprite_bind, &[]);
+            pass.draw(0..4, 0..s.count);
+        }
+        if let Mode::Sim(s) = &self.mode
+            && field
+        {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&s.filter);
             pass.set_bind_group(0, &s.filter_bind, &[]);
-            pass.set_immediates(0, &pack_optics(force, s.extent));
+            pass.set_immediates(0, &optics);
             pass.dispatch_workgroups(s.filter_groups[0], s.filter_groups[1], 1);
         }
         {
@@ -2440,7 +3245,11 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(BACKDROP),
+                        load: wgpu::LoadOp::Clear(if field {
+                            BACKDROP
+                        } else {
+                            wgpu::Color::BLACK
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -2461,16 +3270,40 @@ impl Renderer {
                     pass.set_bind_group(0, &p.sprite_bind, &[]);
                     pass.draw(0..4, 0..p.count);
                 }
+                Mode::Sim(s) if !field => {
+                    // Clip space spans the extent, so a pixel is that
+                    // much of it over half the drawable's width.
+                    let metres_per_px = 2.0 * s.extent[0] / self.config.width as f32;
+                    pass.set_pipeline(if paint.high[3] > 1.0 {
+                        &s.discs_wheel
+                    } else {
+                        &s.discs
+                    });
+                    pass.set_immediates(
+                        0,
+                        &pack_paint(
+                            paint.low,
+                            paint.high,
+                            paint.range,
+                            paint.lens,
+                            MIN_DISC_PX * metres_per_px,
+                        ),
+                    );
+                    pass.set_bind_group(0, &s.sprite_bind, &[]);
+                    pass.draw(0..4, 0..s.count);
+                }
                 Mode::Sim(s) => {
-                    pass.set_pipeline(&s.fill);
-                    pass.set_immediates(0, &pack_optics(force, s.extent));
+                    pass.set_pipeline(if wheel { &s.fill_wheel } else { &s.fill });
+                    pass.set_immediates(0, &optics);
                     pass.set_bind_group(0, &s.fill_bind, &[]);
                     pass.draw(0..3, 0..1);
-                    if s.tracer_count > 0 {
+                    if strands {
                         pass.set_pipeline(&s.points);
                         pass.set_bind_group(0, &s.tracer_draw_bind, &[]);
                         pass.draw(0..s.tracer_count, 0..1);
-                    } else {
+                    // The flat surface is the whole picture: two
+                    // colours, and nothing drawn over them.
+                    } else if !flat {
                         pass.set_pipeline(&s.sprites);
                         pass.set_bind_group(0, &s.sprite_bind, &[]);
                         pass.draw(0..4, 0..s.count);
@@ -2489,12 +3322,22 @@ impl Renderer {
                 .iter()
                 .position(|x| x.state.load(Ordering::Acquire) == SLOT_FREE);
             if let Some(i) = free {
-                encoder.copy_buffer_to_buffer(&s.stats_src, 0, &s.stats_staging[i].buffer, 0, 44);
+                encoder.copy_buffer_to_buffer(
+                    &s.stats_src,
+                    0,
+                    &s.stats_staging[i].buffer,
+                    0,
+                    STATS_BYTES,
+                );
             }
             free
         } else {
             None
         };
+        if let Mode::Sim(s) = &mut self.mode {
+            s.field_live = field;
+            s.flow_live = wheel;
+        }
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.present(texture);
         if let (Some(t), Some(slot)) = (self.gpu_timing.as_ref(), slot) {
@@ -2603,7 +3446,7 @@ impl Renderer {
     pub fn stats(&self) -> RenderStats {
         let (f, substeps) = match &self.mode {
             Mode::Sim(s) => (s.stats, s.substeps_used),
-            _ => ([0.0; 11], 0),
+            _ => ([0.0; STATS], 0),
         };
         RenderStats {
             compression_avg: f[0],
@@ -2644,21 +3487,21 @@ mod tests {
         let upright = [0.0, -g, 0.0];
         let mut gate = IdleGate::new();
         for _ in 0..IdleGate::STILL_FRAMES - 1 {
-            assert!(!gate.asleep(upright, 0.1, still, 0.03));
+            assert!(!gate.asleep(false, upright, 0.1, still, 0.03));
         }
-        assert!(gate.asleep(upright, 0.1, still, 0.03));
+        assert!(gate.asleep(false, upright, 0.1, still, 0.03));
         // Noise peaks sit between the sleep and wake thresholds: no
         // false wake.
-        assert!(gate.asleep(upright, 0.8, still, 0.03));
+        assert!(gate.asleep(false, upright, 0.8, still, 0.03));
         // A shake crosses the deviation test in one tick.
-        assert!(!gate.asleep(upright, 2.0, still, 0.03));
+        assert!(!gate.asleep(false, upright, 2.0, still, 0.03));
         for _ in 0..IdleGate::STILL_FRAMES {
-            gate.asleep(upright, 0.1, still, 0.03);
+            gate.asleep(false, upright, 0.1, still, 0.03);
         }
-        assert!(gate.asleep(upright, 0.1, still, 0.03));
+        assert!(gate.asleep(false, upright, 0.1, still, 0.03));
         // A settled 2.9-degree tilt is far past the 1.5-degree wake
         // angle even though its deviation never crossed anything.
-        assert!(!gate.asleep([g * 0.05, -g, 0.0], 0.1, still, 0.03));
+        assert!(!gate.asleep(false, [g * 0.05, -g, 0.0], 0.1, still, 0.03));
     }
 
     // The gyro-only pose: a flat phone spun about its normal holds
@@ -2669,18 +3512,79 @@ mod tests {
         let flat = [0.0, 0.0, -9.81];
         let mut gate = IdleGate::new();
         for _ in 0..IdleGate::STILL_FRAMES {
-            gate.asleep(flat, 0.1, [0.0; 3], 0.03);
+            gate.asleep(false, flat, 0.1, [0.0; 3], 0.03);
         }
-        assert!(gate.asleep(flat, 0.1, [0.0, 0.0, 0.01], 0.03), "gyro noise");
         assert!(
-            !gate.asleep(flat, 0.1, [0.0, 0.0, 0.5], 0.03),
+            gate.asleep(false, flat, 0.1, [0.0, 0.0, 0.01], 0.03),
+            "gyro noise"
+        );
+        assert!(
+            !gate.asleep(false, flat, 0.1, [0.0, 0.0, 0.5], 0.03),
             "a real turn"
         );
         // And a spin blocks falling asleep in the first place.
         let mut spun = IdleGate::new();
         for _ in 0..2 * IdleGate::STILL_FRAMES {
-            assert!(!spun.asleep(flat, 0.1, [0.0, 0.0, 0.5], 0.03));
+            assert!(!spun.asleep(false, flat, 0.1, [0.0, 0.0, 0.5], 0.03));
         }
+    }
+
+    // The shell reports a point on its own drawable and nothing else;
+    // every metre below is the core's (D6).
+    #[test]
+    fn the_fingers_map_drawable_points_into_the_box() {
+        let extent = [0.1, 0.2];
+        let mut fingers = Fingers::new();
+        fingers.at[0] = Some([1.0, 0.0]);
+        let touches = fingers.step(extent, 0.0);
+        assert_eq!(touches.count, 1);
+        assert_eq!(
+            touches.each[0].at,
+            [0.1, 0.2],
+            "the drawable's top right is the box's"
+        );
+        assert_eq!(
+            touches.each[0].velocity, [0.0; 2],
+            "one sample makes no speed"
+        );
+        assert!(touches.radius > 0.0);
+        fingers.at[0] = None;
+        assert_eq!(fingers.step(extent, 1.0 / 120.0).count, 0, "lifted");
+    }
+
+    // The slot is the shell's name for one finger. A finger that lifts
+    // must not hand its speed to whichever finger the solver reads in
+    // its place: the live fingers pack forward for the shader, the
+    // state behind them does not move.
+    #[test]
+    fn a_lifted_finger_leaves_the_others_where_they_were() {
+        let extent = [0.1, 0.2];
+        let dt = 1.0 / 120.0;
+        let mut fingers = Fingers::new();
+        let mut velocity = [0.0; 2];
+        for f in 0..60 {
+            // Slot 2 walks a hundredth of the drawable's width a frame:
+            // a fifth of a millimetre of box in 1/120 s, 0.24 m/s right.
+            fingers.at[0] = Some([0.9, 0.9]);
+            fingers.at[2] = Some([0.2 + 0.01 * f as f32, 0.5]);
+            let touches = fingers.step(extent, dt);
+            assert_eq!(touches.count, 2);
+            velocity = touches.each[1].velocity;
+        }
+        assert!((velocity[0] - 0.24).abs() < 0.005, "vx {}", velocity[0]);
+        assert_eq!(velocity[1], 0.0);
+        // Lift the still finger; the walking one keeps walking. It now
+        // reads from slot 0 of the packed array instead of slot 1, and
+        // must still be the same finger at the same speed.
+        fingers.at[0] = None;
+        fingers.at[2] = Some([0.2 + 0.01 * 60.0, 0.5]);
+        let touches = fingers.step(extent, dt);
+        assert_eq!(touches.count, 1);
+        assert!(
+            (touches.each[0].velocity[0] - 0.24).abs() < 0.005,
+            "the walking finger changed when the still one lifted: {:?}",
+            touches.each[0].velocity
+        );
     }
 
     #[test]
@@ -2708,11 +3612,27 @@ mod tests {
 
     #[test]
     fn optics_immediates_land_at_the_shader_offsets() {
-        let raw = pack_optics([0.0, -9.81, 0.0], [4.0, 5.0]);
+        let raw = pack_optics(
+            [0.0, -9.81, 0.0],
+            [4.0, 5.0],
+            FIELD_SETTLED,
+            [0.25, 0.5, 0.75, 1.0],
+            [0.1, 0.2, 0.3, 1.0],
+        );
         let f = |i: usize| f32::from_le_bytes(raw[i..i + 4].try_into().unwrap());
         assert_eq!([f(0), f(4), f(8)], [0.0, 1.0, 0.0], "up");
         assert_eq!(f(12), FIELD_SETTLED);
         assert_eq!([f(16), f(20)], [4.0, 5.0], "extent");
+        assert_eq!(
+            [f(48), f(52), f(56), f(60)],
+            [0.25, 0.5, 0.75, 1.0],
+            "the flat look"
+        );
+        assert_eq!(
+            [f(64), f(68), f(72), f(76)],
+            [0.1, 0.2, 0.3, 1.0],
+            "the ramp's high colour"
+        );
         assert_eq!(f(24), sim::SLAB_DEPTH);
         // Upright: up.z = 0, no fade, so the gain is SUN scaled by
         // Schlick at the half vector's z.
@@ -2725,15 +3645,81 @@ mod tests {
         assert!((f(28) - SUN * schlick).abs() < 1e-4, "gain {}", f(28));
         // Face up fades the sun out; face down degenerates h to zero
         // and the gain with it — neither may go NaN.
-        let flat = pack_optics([0.0, 0.0, -9.81], [4.0, 5.0]);
+        let flat = pack_optics(
+            [0.0, 0.0, -9.81],
+            [4.0, 5.0],
+            FIELD_SETTLED,
+            [0.0; 4],
+            [0.0; 4],
+        );
         assert_eq!(
             f32::from_le_bytes(flat[28..32].try_into().unwrap()),
             0.0,
             "face-up fade"
         );
-        let down = pack_optics([0.0, 0.0, 9.81], [4.0, 5.0]);
+        let down = pack_optics(
+            [0.0, 0.0, 9.81],
+            [4.0, 5.0],
+            FIELD_SETTLED,
+            [0.0; 4],
+            [0.0; 4],
+        );
         for chunk in down.as_chunks::<4>().0 {
             assert!(f32::from_le_bytes(*chunk).is_finite());
+        }
+    }
+
+    // Hot pink's bytes through sRGB's curve: the ends are fixed points,
+    // the middle darkens, and the glass is all zeros.
+    #[test]
+    fn the_flat_colour_is_linearised() {
+        let hot_pink = [1.0, 105.0 / 255.0, 180.0 / 255.0];
+        let solid = |look| Painted::new(look, None);
+        let [r, g, b, w] = solid(Look::Flat(Paint::Solid(hot_pink))).low;
+        assert_eq!((r, w), (1.0, 1.0));
+        // The discs take their colour from the same word.
+        assert_eq!(
+            solid(Look::Particles(Paint::Solid(hot_pink))).low,
+            [r, g, b, w]
+        );
+        assert!((g - 0.1413).abs() < 1e-3, "g {g}");
+        assert!((b - 0.4564).abs() < 1e-3, "b {b}");
+        assert_eq!(linear(0.0), 0.0);
+        assert!(
+            (linear(0.04045) - 0.04045 / 12.92).abs() < 1e-6,
+            "the joint"
+        );
+        assert_eq!(solid(Look::Glass).low, [0.0; 4]);
+    }
+
+    // The menu's four scales on the reference screen: within 5% of
+    // their multiples of the 1x count, and 1x is the shipped spacing.
+    #[test]
+    fn the_ladder_seeds_near_its_scales() {
+        let extent = [
+            1284.0 * 0.5 * METRES_PER_PIXEL,
+            2778.0 * 0.5 * METRES_PER_PIXEL,
+        ];
+        let count = |scale| {
+            sim::lattice_dims(spacing_for(scale, extent), extent, 0.5)
+                .iter()
+                .product::<u32>()
+        };
+        assert_eq!(spacing_for(1.0, extent), SIM_SPACING);
+        assert_eq!(count(1.0), 1620);
+        for scale in [0.25, 1.0, 4.0, 16.0] {
+            let spacing = spacing_for(scale, extent);
+            let cells = sim::Grid::new(extent, 2.4 * spacing).cell_count();
+            eprintln!(
+                "{scale}x: spacing {spacing} m, {} particles, {cells} cells",
+                count(scale)
+            );
+            let ratio = count(scale) as f32 / (scale * 1620.0);
+            assert!(
+                (0.95..1.05).contains(&ratio),
+                "{scale}x seeds {}",
+                count(scale)
+            );
         }
     }
 
@@ -2762,10 +3748,11 @@ mod tests {
         substeps: u32,
         frames: u32,
         gravity: [f32; 3],
-    ) -> [f32; 11] {
+        touches: sim::Touches,
+    ) -> [f32; STATS] {
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stats staging"),
-            size: 44,
+            size: STATS_BYTES,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -2783,6 +3770,7 @@ mod tests {
             if substeps == 0 { 0.0 } else { dt },
             v_clamp,
             0,
+            touches,
         );
         let mut encoder = device.create_command_encoder(&Default::default());
         {
@@ -2827,7 +3815,15 @@ mod tests {
                     pass.set_pipeline(&sim.splat);
                     pass.set_immediates(
                         0,
-                        &sim::pack_step(gravity, [0.0; 3], [0.0; 3], frame_dt, 0.0, f),
+                        &sim::pack_step(
+                            gravity,
+                            [0.0; 3],
+                            [0.0; 3],
+                            frame_dt,
+                            0.0,
+                            f,
+                            sim::Touches::default(),
+                        ),
                     );
                     pass.dispatch_workgroups(particles, 1, 1);
                     pass.set_pipeline(&sim.resolve);
@@ -2840,7 +3836,7 @@ mod tests {
             pass.set_pipeline(&sim.reduce_stats);
             pass.dispatch_workgroups(1, 1, 1);
         }
-        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &staging, 0, 44);
+        encoder.copy_buffer_to_buffer(&sim.stats_src, 0, &staging, 0, STATS_BYTES);
         queue.submit(std::iter::once(encoder.finish()));
         staging.map_async(wgpu::MapMode::Read, .., |_| {});
         device
@@ -2850,7 +3846,7 @@ mod tests {
             })
             .expect("poll");
         let bytes = staging.get_mapped_range(..).expect("mapped");
-        let mut out = [0.0f32; 11];
+        let mut out = [0.0f32; STATS];
         for (v, chunk) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
             *v = f32::from_le_bytes(*chunk);
         }
@@ -2882,6 +3878,934 @@ mod tests {
             .expect("poll");
     }
 
+    /// Draws the discs of a settled slab into a square of `side` and
+    /// hands back its BGRA pixels. The paint is the caller's, so one
+    /// draw serves the solid look and the ramp alike.
+    // Jack, 2026-09-02: "a hue-wheel rainbow colouring based on the
+    // theta of the velocity". The disc draw carries a hue and a
+    // saturation down one interpolant, packed into clip z, and nothing
+    // else in the suite would notice if that pair came apart. Two
+    // claims: every disc is a pure hue scaled by its speed, which
+    // fails the moment the pack leaks one number into the other, and a
+    // sloshing pool paints its water around the wheel rather than into
+    // one corner of it.
+    #[test]
+    fn the_wheel_paints_pure_hues_around_the_circle() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        // Tipped hard on its side: the pool runs, and its water ends up
+        // going every way at once.
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            60,
+            [9.81, -2.0, -0.5],
+            sim::Touches::default(),
+        );
+        let side = 64u32;
+        let floor = MIN_DISC_PX * 2.0 * TEST_EXTENT[0] / side as f32;
+        // Black for the low colour, so a drawn pixel is the hue itself
+        // scaled by speed and nothing is mixed into it.
+        let paint = pack_paint(
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0, 2.0],
+            Lens::Direction.ends(&f),
+            Lens::Direction.code(),
+            floor,
+        );
+        let mut sextants = std::collections::BTreeSet::new();
+        let mut drawn = 0;
+        for px in draw_discs(&device, &queue, &sim, side, paint) {
+            let [b, g, r, _] = px;
+            let rgb = [r, g, b];
+            if rgb == [0; 3] {
+                continue;
+            }
+            drawn += 1;
+            // A hue at full saturation always has a channel at zero,
+            // and scaling by the speed leaves it there.
+            assert!(
+                rgb.iter().min() <= Some(&1),
+                "a disc drew something that is not a hue: {rgb:?}"
+            );
+            let arg = |pick: fn(&&u8, &&u8) -> std::cmp::Ordering| {
+                rgb.iter()
+                    .enumerate()
+                    .max_by(|a, b| pick(&a.1, &b.1))
+                    .expect("three channels")
+                    .0
+            };
+            sextants.insert((arg(|a, b| a.cmp(b)), arg(|a, b| b.cmp(a))));
+        }
+        eprintln!(
+            "wheel: {drawn} discs drawn over {} sextants",
+            sextants.len()
+        );
+        assert!(drawn > 100, "the wheel drew {drawn} pixels");
+        assert!(
+            sextants.len() >= 3,
+            "a running pool painted {} of the wheel: {sextants:?}",
+            sextants.len()
+        );
+    }
+
+    // The wheel down the other path. The surface cannot take a mean of
+    // an angle, so each particle splats its unit heading into a second
+    // field and the fill reads the heading of the sum; nothing else in
+    // the suite would notice if that field went missing, and a missing
+    // one reads as a single colour, not as a crash.
+    #[test]
+    fn the_wheel_paints_the_flat_surface_around_the_circle() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            60,
+            [9.81, -2.0, -0.5],
+            sim::Touches::default(),
+        );
+        let side = 64u32;
+        let black = [0.0, 0.0, 0.0, 1.0];
+        let optics = pack_optics(
+            [9.81, -2.0, -0.5],
+            sim.extent,
+            sim.field_settled,
+            black,
+            [0.0, 0.0, 0.0, 2.0],
+        );
+        let paint = pack_paint(
+            black,
+            [0.0, 0.0, 0.0, 2.0],
+            Lens::Direction.ends(&f),
+            Lens::Direction.code(),
+            0.0,
+        );
+        let mut sextants = std::collections::BTreeSet::new();
+        let mut water = 0;
+        for px in draw_surface(&device, &queue, &sim, side, paint, optics) {
+            let [b, g, r, _] = px;
+            let rgb = [r, g, b];
+            if rgb == [0; 3] {
+                continue;
+            }
+            water += 1;
+            assert!(
+                rgb.iter().min() <= Some(&1),
+                "the surface drew something that is not a hue: {rgb:?}"
+            );
+            let arg = |pick: fn(&&u8, &&u8) -> std::cmp::Ordering| {
+                rgb.iter()
+                    .enumerate()
+                    .max_by(|a, b| pick(&a.1, &b.1))
+                    .expect("three channels")
+                    .0
+            };
+            sextants.insert((arg(|a, b| a.cmp(b)), arg(|a, b| b.cmp(a))));
+        }
+        eprintln!(
+            "flat wheel: {water} water pixels over {} sextants",
+            sextants.len()
+        );
+        assert!(water > 100, "the wheel drew {water} pixels");
+        assert!(
+            sextants.len() >= 3,
+            "a running pool painted {} of the wheel: {sextants:?}",
+            sextants.len()
+        );
+    }
+
+    // The flat look's whole path: one clean splat into the field, the
+    // filter, and the fill. `paint`'s high w picks the ramp or the
+    // wheel, and the wheel splats its headings into the second field
+    // on the way.
+    fn draw_surface(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sim: &Sim,
+        side: u32,
+        paint: [u8; 48],
+        optics: [u8; 80],
+    ) -> Vec<[u8; 4]> {
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("flat surface"),
+            size: wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("flat surface readback"),
+            size: u64::from(side * side * 4),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let wheel =
+            f32::from_le_bytes(paint[28..32].try_into().expect("the high colour's w")) > 1.0;
+        let mut encoder = device.create_command_encoder(&Default::default());
+        for (field, pipeline) in [(&sim.field, &sim.body), (&sim.flow, &sim.body_flow)]
+            .into_iter()
+            .take(if wheel { 2 } else { 1 })
+        {
+            // One clean splat: the blend constant is one and the field
+            // is cleared, so no frame of decay is in the picture.
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: field,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_immediates(0, &paint);
+            pass.set_blend_constant(wgpu::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            });
+            pass.set_bind_group(0, &sim.sprite_bind, &[]);
+            pass.draw(0..4, 0..sim.count);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&sim.filter);
+            pass.set_bind_group(0, &sim.filter_bind, &[]);
+            pass.set_immediates(0, &optics);
+            pass.dispatch_workgroups(sim.filter_groups[0], sim.filter_groups[1], 1);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(if wheel { &sim.fill_wheel } else { &sim.fill });
+            pass.set_immediates(0, &optics);
+            pass.set_bind_group(0, &sim.fill_bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(side * 4),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+        readback.map_async(wgpu::MapMode::Read, .., |_| {});
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let out = readback
+            .get_mapped_range(..)
+            .expect("mapped")
+            .as_chunks::<4>()
+            .0
+            .to_vec();
+        readback.unmap();
+        out
+    }
+
+    fn draw_discs(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sim: &Sim,
+        side: u32,
+        paint: [u8; 48],
+    ) -> Vec<[u8; 4]> {
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("particle view"),
+            size: wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("particle view readback"),
+            size: u64::from(side * side * 4),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            let wheel =
+                f32::from_le_bytes(paint[28..32].try_into().expect("the high colour's w")) > 1.0;
+            pass.set_pipeline(if wheel { &sim.discs_wheel } else { &sim.discs });
+            pass.set_immediates(0, &paint);
+            pass.set_bind_group(0, &sim.sprite_bind, &[]);
+            pass.draw(0..4, 0..sim.count);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(side * 4),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+        readback.map_async(wgpu::MapMode::Read, .., |_| {});
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let bytes = readback.get_mapped_range(..).expect("mapped");
+        bytes.as_chunks::<4>().0.to_vec()
+    }
+
+    // Jack's rule for the flat look, 2026-09-02: two colours on the
+    // screen and nothing between. The discs are opaque and write no
+    // alpha, so every pixel is the colour or the black behind it.
+    #[test]
+    fn the_particle_view_draws_two_colours() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        // A settled second, so the discs size on real densities.
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            120,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        let side = 64u32;
+        // Magenta: each component lands on a byte exactly, so a blend
+        // or a stray write shows as a third colour.
+        let floor = MIN_DISC_PX * 2.0 * TEST_EXTENT[0] / side as f32;
+        let paint = pack_paint([1.0, 0.0, 1.0, 1.0], [0.0; 4], [0.0, 1.0], 0, floor);
+        let mut water = 0;
+        for px in draw_discs(&device, &queue, &sim, side, paint) {
+            match px[..3] {
+                [0, 0, 0] => {}
+                [255, 0, 255] => water += 1,
+                _ => panic!("a third colour: {px:?}"),
+            }
+        }
+        assert!(water > side * side / 20, "the discs drew {water} pixels");
+    }
+
+    // Jack, 2026-09-02: "make the color a gradient ... two colours
+    // denoting low->high values." Red to blue across proximity, which
+    // is the lens with real spread in a settled slab: the interior is
+    // a full neighbourhood, the free surface is not. Every disc must
+    // land somewhere on the line between the two colours, and the
+    // discs must not all land on the same point of it.
+    #[test]
+    fn a_ramp_paints_the_discs_between_its_two_colours() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            120,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        let side = 64u32;
+        let floor = MIN_DISC_PX * 2.0 * TEST_EXTENT[0] / side as f32;
+        let paint = pack_paint(
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            Lens::Proximity.ends(&f),
+            Lens::Proximity.code(),
+            floor,
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for px in draw_discs(&device, &queue, &sim, side, paint) {
+            if px[..3] == [0, 0, 0] {
+                continue;
+            }
+            let [b, g, r, _] = px;
+            assert_eq!(g, 0, "the ramp left its line: {px:?}");
+            assert!(
+                (i32::from(r) + i32::from(b) - 255).abs() <= 1,
+                "the ramp left its line: {px:?}"
+            );
+            seen.insert(r);
+        }
+        eprintln!("proximity ramp: {} distinct steps", seen.len());
+        assert!(seen.len() >= 3, "the ramp painted one colour: {seen:?}");
+    }
+
+    // The disc law of the particle view (sim_sprites.wgsl): a disc
+    // holds its full size while its neighbourhood is a body of water,
+    // and shrinks to the pixel floor as that neighbourhood empties.
+    // This is the measurement the law's two ends rest on. BODY_RHO
+    // mirrors the shader's constant; LONE_RHO is the module's.
+    #[test]
+    fn the_settled_body_keeps_its_discs() {
+        const BODY_RHO: f32 = 0.65;
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        let mut rho: Vec<f32> = read_floats(&device, &queue, &sim.density, sim.count)
+            .into_iter()
+            .map(|r| r / sim::REST_DENSITY)
+            .collect();
+        rho.sort_unstable_by(f32::total_cmp);
+        let at = |q: f32| rho[((rho.len() - 1) as f32 * q) as usize];
+        eprintln!(
+            "settled rho/rho0: min {:.3} p1 {:.3} p5 {:.3} p50 {:.3} max {:.3}",
+            rho[0],
+            at(0.01),
+            at(0.05),
+            at(0.50),
+            rho[rho.len() - 1]
+        );
+        assert!(
+            at(0.05) >= BODY_RHO,
+            "a settled body would shrink: p5 {:.3}",
+            at(0.05)
+        );
+        // A lone particle carries its own kernel weight and, mid-slab,
+        // no wall support: the far end of the law.
+        let h = 1.2 * SIM_SPACING;
+        let mass = sim::REST_DENSITY * SIM_SPACING.powi(3);
+        let lone = mass * sim::kernel(0.0, h) / sim::REST_DENSITY;
+        eprintln!("lone particle: {lone:.3} of rho0");
+        // The empty end of the disc law, mirrored from
+        // sim_sprites.wgsl.
+        const LONE_RHO: f32 = 0.25;
+        assert!(lone <= LONE_RHO, "a lone drop would not shrink: {lone:.3}");
+    }
+
+    fn read_floats(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        buffer: &wgpu::Buffer,
+        count: u32,
+    ) -> Vec<f32> {
+        read_back(device, queue, buffer, u64::from(count) * 4)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect()
+    }
+
+    fn read_vec4(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        buffer: &wgpu::Buffer,
+        count: u32,
+    ) -> Vec<[f32; 4]> {
+        read_back(device, queue, buffer, u64::from(count) * 16)
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .map(|c| std::array::from_fn(|i| f32::from_le_bytes(c.as_chunks::<4>().0[i])))
+            .collect()
+    }
+
+    fn read_back(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        buffer: &wgpu::Buffer,
+        size: u64,
+    ) -> Vec<u8> {
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback staging"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, size);
+        queue.submit(std::iter::once(encoder.finish()));
+        staging.map_async(wgpu::MapMode::Read, .., |_| {});
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let out = staging.get_mapped_range(..).expect("mapped").to_vec();
+        staging.unmap();
+        out
+    }
+
+    const LENSES: [Lens; 5] = [
+        Lens::Velocity,
+        Lens::Acceleration,
+        Lens::Pressure,
+        Lens::Proximity,
+        Lens::Direction,
+    ];
+
+    /// hue_colour in sim_sprites.wgsl, in the sRGB the picker shows;
+    /// the test compares colours against each other, never against the
+    /// linear-light ones the shader hands the hardware.
+    fn hue_rgb(h: f32) -> [f32; 3] {
+        std::array::from_fn(|i| {
+            let off = [1.0, 2.0 / 3.0, 1.0 / 3.0][i];
+            ((h + off).fract() * 6.0 - 3.0).abs().clamp(1.0, 2.0) - 1.0
+        })
+    }
+
+    // Jack, 2026-09-02: "It shouldn't repel; it should drag the water
+    // as if I were putting my finger through it." The two sides of the
+    // finger separate the two models. A repulsive finger throws the
+    // water on its left to the left; an entraining one carries both
+    // sides along with it, so both sides read positive.
+    #[test]
+    fn a_finger_drags_both_sides_of_the_water_it_crosses() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        // In the settled pool, a fifth of the box up from the floor,
+        // moving right at a metre a second for an eighth of a second.
+        let at = [0.0, -0.8 * TEST_EXTENT[1]];
+        let mut touches = sim::Touches {
+            count: 1,
+            radius: Fingers::RADIUS,
+            ..Default::default()
+        };
+        touches.each[0] = sim::Touch {
+            at,
+            velocity: [1.0, 0.0],
+        };
+        read_stats(&device, &queue, &sim, 7, 15, [0.0, -9.81, -0.5], touches);
+        let positions = read_vec4(&device, &queue, &sim.positions, sim.count);
+        let velocities = read_vec4(&device, &queue, &sim.velocities, sim.count);
+        let mean = |pick: &dyn Fn(&[f32; 4]) -> bool| {
+            let picked: Vec<f32> = positions
+                .iter()
+                .zip(&velocities)
+                .filter(|(p, _)| pick(p))
+                .map(|(_, v)| v[0])
+                .collect();
+            (
+                picked.iter().sum::<f32>() / picked.len().max(1) as f32,
+                picked.len(),
+            )
+        };
+        let reach = |p: &[f32; 4]| (p[0] - at[0]).hypot(p[1] - at[1]);
+        let under = |p: &[f32; 4]| reach(p) < Fingers::RADIUS;
+        let (left, n_left) = mean(&|p| under(p) && p[0] < at[0]);
+        let (right, n_right) = mean(&|p| under(p) && p[0] > at[0]);
+        let (inside, n_in) = mean(&under);
+        let (outside, n_out) = mean(&|p| !under(p));
+        eprintln!(
+            "vx: left {left:.3} ({n_left}) right {right:.3} ({n_right}), \
+             under {inside:.3} ({n_in}) beyond {outside:.3} ({n_out})"
+        );
+        assert!(
+            n_left > 0 && n_right > 0 && n_out > 0,
+            "the split found nothing"
+        );
+        assert!(left > 0.0, "the finger repelled its left side: {left:.3}");
+        assert!(
+            right > 0.0,
+            "the finger repelled its right side: {right:.3}"
+        );
+        assert!(inside > 0.3, "the finger barely bit: {inside:.3}");
+        // The net has an edge: water the finger never reaches moves
+        // only through the pressure that the dragged water builds.
+        assert!(
+            outside < 0.5 * inside,
+            "the finger dragged the whole box: {outside:.3} against {inside:.3}"
+        );
+    }
+
+    // Jack, 2026-09-02: "Multi-touch should behave the same way for
+    // each simultaneous finger." Two fingers pulling opposite ways is
+    // the case a single shared drag cannot fake: each neighbourhood
+    // must follow its own finger.
+    #[test]
+    fn two_fingers_drag_their_own_water_their_own_way() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        // Far enough apart that neither disc reaches the other's water.
+        let y = -0.8 * TEST_EXTENT[1];
+        let split = 1.2 * Fingers::RADIUS;
+        let mut touches = sim::Touches {
+            count: 2,
+            radius: Fingers::RADIUS,
+            ..Default::default()
+        };
+        touches.each[0] = sim::Touch {
+            at: [-split, y],
+            velocity: [-1.0, 0.0],
+        };
+        touches.each[1] = sim::Touch {
+            at: [split, y],
+            velocity: [1.0, 0.0],
+        };
+        read_stats(&device, &queue, &sim, 7, 15, [0.0, -9.81, -0.5], touches);
+        let positions = read_vec4(&device, &queue, &sim.positions, sim.count);
+        let velocities = read_vec4(&device, &queue, &sim.velocities, sim.count);
+        let under =
+            |p: &[f32; 4], at: [f32; 2]| (p[0] - at[0]).hypot(p[1] - at[1]) < Fingers::RADIUS;
+        let mean = |at: [f32; 2]| {
+            let picked: Vec<f32> = positions
+                .iter()
+                .zip(&velocities)
+                .filter(|(p, _)| under(p, at))
+                .map(|(_, v)| v[0])
+                .collect();
+            (
+                picked.iter().sum::<f32>() / picked.len().max(1) as f32,
+                picked.len(),
+            )
+        };
+        let (left, n_left) = mean(touches.each[0].at);
+        let (right, n_right) = mean(touches.each[1].at);
+        eprintln!(
+            "vx under the left finger {left:.3} ({n_left}), the right {right:.3} ({n_right})"
+        );
+        assert!(n_left > 0 && n_right > 0, "the split found nothing");
+        // Each side reads about a third of what one finger alone
+        // manages: two fingers pulling apart are trying to open a gap
+        // in an incompressible fluid, and the pressure solve is what
+        // stops them. The signs and the gap between them are the claim.
+        assert!(left < -0.05, "the left finger did not pull left: {left:.3}");
+        assert!(
+            right > 0.05,
+            "the right finger did not pull right: {right:.3}"
+        );
+        assert!(
+            right - left > 0.15,
+            "the fingers dragged as one: {left:.3} and {right:.3}"
+        );
+    }
+
+    // The flat surface gets its ramp a different way from the discs:
+    // the splat carries the lens into the field's second channel and
+    // the fill divides it back out. This is that path — splat, filter,
+    // fill — with the same red-to-blue line the disc test uses.
+    #[test]
+    fn a_ramp_paints_the_flat_surface_between_its_two_colours() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        let side = 64u32;
+        let optics = pack_optics(
+            [0.0, -9.81, -0.5],
+            sim.extent,
+            sim.field_settled,
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+        );
+        let paint = pack_paint(
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            Lens::Proximity.ends(&f),
+            Lens::Proximity.code(),
+            0.0,
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        let mut air = 0;
+        for px in draw_surface(&device, &queue, &sim, side, paint, optics) {
+            if px[..3] == [0, 0, 0] {
+                air += 1;
+                continue;
+            }
+            let [b, g, r, _] = px;
+            assert_eq!(g, 0, "the ramp left its line: {px:?}");
+            assert!(
+                (i32::from(r) + i32::from(b) - 255).abs() <= 1,
+                "the ramp left its line: {px:?}"
+            );
+            seen.insert(r);
+        }
+        eprintln!(
+            "flat ramp: {} distinct steps over {} water pixels",
+            seen.len(),
+            side * side - air
+        );
+        assert!(air > 0, "the whole screen read as water");
+        assert!(seen.len() >= 3, "the ramp painted one colour: {seen:?}");
+    }
+
+    // The chase runs on every frame the device draws and no test
+    // reached it: the GPU tests all build a Ramp of their own, which
+    // takes its first ends whole. Three things it must do — hold off
+    // until the field has been read back, hold a zero span open, and
+    // open out faster than it closes in.
+    #[test]
+    fn the_ramp_opens_faster_than_it_closes() {
+        let speeds = |lo: f32, hi: f32| {
+            let mut stats = [0.0; STATS];
+            // Density max is the readback's liveness test.
+            stats[3] = sim::REST_DENSITY;
+            stats[11] = lo;
+            stats[6] = hi;
+            stats
+        };
+        let mut cold = [0.0; STATS];
+        cold[6] = 4.0;
+        assert_eq!(
+            Ramp::new().follow(Lens::Velocity, &cold, SIM_SPACING, 0.0),
+            None
+        );
+
+        let floor = Lens::Velocity.floor(SIM_SPACING);
+        let still = Ramp::new()
+            .follow(Lens::Velocity, &speeds(0.0, 0.0), SIM_SPACING, 0.0)
+            .expect("live");
+        assert_eq!(still, [0.0, floor]);
+
+        let tenth = |from: f32, to: f32| {
+            let mut ramp = Ramp::new();
+            ramp.follow(Lens::Velocity, &speeds(0.0, from), SIM_SPACING, 0.0);
+            ramp.follow(Lens::Velocity, &speeds(0.0, to), SIM_SPACING, 0.1)
+                .expect("live")[1]
+        };
+        // A tenth of a second is two thirds of the opening time
+        // constant and a sixth of the closing one.
+        let opened = (tenth(4.0, 8.0) - 4.0) / 4.0;
+        let closed = (8.0 - tenth(8.0, 4.0)) / 4.0;
+        eprintln!("ramp: opened {opened:.3} of the step, closed {closed:.3}");
+        assert!((opened - 0.487).abs() < 0.01, "opened {opened:.3}");
+        assert!((closed - 0.154).abs() < 0.01, "closed {closed:.3}");
+    }
+
+    // Jack, 2026-09-02: "the water is a bit flickery with the gradient
+    // on, at near-rest". A ramp between the frame's own two ends puts
+    // the solver's own noise on the screen unless the lens's field is
+    // quiet and the span has a floor under it. This measures both at
+    // once: how far a settled particle walks along its ramp from one
+    // frame to the next. The numbers are the M5 record's.
+    #[test]
+    fn a_settled_pool_holds_its_colours_still() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let g = [0.0, -9.81, -0.5];
+        read_stats(&device, &queue, &sim, 7, 600, g, sim::Touches::default());
+        const FRAMES: usize = 30;
+        let mut walk = [0.0f64; 5];
+        let mut last: Option<Vec<[f32; 5]>> = None;
+        let mut ends = [[0.0f32; 2]; 5];
+        for _ in 0..FRAMES {
+            let f = read_stats(&device, &queue, &sim, 7, 1, g, sim::Touches::default());
+            for (lens, slot) in LENSES.into_iter().zip(&mut ends) {
+                *slot = Ramp::new()
+                    .follow(lens, &f, SIM_SPACING, 0.0)
+                    .expect("the readback is live after 600 frames");
+            }
+            let ramp = |lens: usize, v: f32| {
+                let [lo, hi] = ends[lens];
+                ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
+            };
+            let velocities = read_vec4(&device, &queue, &sim.velocities, sim.count);
+            let smooth_p = read_vec4(&device, &queue, &sim.prev_vel, sim.count);
+            let density = read_floats(&device, &queue, &sim.density, sim.count);
+            let now: Vec<[f32; 5]> = velocities
+                .iter()
+                .zip(&smooth_p)
+                .zip(&density)
+                .map(|((v, p), rho)| {
+                    let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                    [
+                        ramp(0, speed),
+                        ramp(1, v[3]),
+                        ramp(2, p[3]),
+                        ramp(3, *rho),
+                        // The wheel's own place on the screen: the
+                        // heading, taken as far as speed has mixed it
+                        // in, which is what the eye sees move.
+                        v[1].atan2(v[0]) / std::f32::consts::TAU + 0.5,
+                    ]
+                })
+                .collect();
+            if let Some(was) = last.replace(now) {
+                let now = last.as_ref().expect("just replaced");
+                for (a, b) in was.iter().zip(now) {
+                    for (lens, step) in walk.iter_mut().enumerate().take(4) {
+                        *step += f64::from((b[lens] - a[lens]).abs()) / now.len() as f64;
+                    }
+                    // The wheel moves in colour, not along a line.
+                    let wheel = |q: &[f32; 5]| {
+                        let c = hue_rgb(q[4]);
+                        std::array::from_fn::<f32, 3, _>(|i| c[i] * q[0] * q[0])
+                    };
+                    let (x, y) = (wheel(a), wheel(b));
+                    let d: f32 = (0..3).map(|i| (x[i] - y[i]).powi(2)).sum();
+                    walk[4] += f64::from(d.sqrt()) / now.len() as f64;
+                }
+            }
+        }
+        for step in &mut walk {
+            *step /= (FRAMES - 1) as f64;
+        }
+        eprintln!(
+            "settled, walked along the ramp a frame: velocity {:.4}, acceleration {:.4}, \
+             pressure {:.4}, proximity {:.4}, direction {:.4}",
+            walk[0], walk[1], walk[2], walk[3], walk[4]
+        );
+        for (lens, step) in LENSES.into_iter().zip(walk) {
+            assert!(
+                step < 0.01,
+                "{lens:?} walks {step:.4} of its ramp a frame on settled water"
+            );
+        }
+        // The floor is what holds the speed ramp open: a settled pool
+        // spans a fraction of it and paints its low colour, where the
+        // frame's own two ends alone would stretch noise over the
+        // whole of it.
+        let quick = {
+            let [lo, hi] = ends[0];
+            let f = read_stats(&device, &queue, &sim, 7, 1, g, sim::Touches::default());
+            (f[6] - lo) / (hi - lo)
+        };
+        assert!((0.0..0.1).contains(&quick), "settled v {quick:.3}");
+        // Proximity must separate the body from the free surface, and
+        // a settled slab has no spray, so its sparsest particle is a
+        // surface one, not an isolated drop.
+        let f = read_stats(&device, &queue, &sim, 7, 1, g, sim::Touches::default());
+        let [lo, hi] = ends[3];
+        let fringe = (f[2] - lo) / (hi - lo);
+        let body = (f[3] - lo) / (hi - lo);
+        assert!(
+            body - fringe > 0.25,
+            "the free surface reads as body: {fringe:.2} against {body:.2}"
+        );
+    }
+
     // Seeds the real lattice, runs one rebuild and density sweep, and
     // reads the stats back: the whole solver chain, not just its
     // compilation.
@@ -2890,7 +4814,15 @@ mod tests {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        let f = read_stats(&device, &queue, &sim, 0, 1, [0.0; 3]);
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            0,
+            1,
+            [0.0; 3],
+            sim::Touches::default(),
+        );
         eprintln!(
             "seeded slab: compr avg {:.4} max {:.4}, rho {:.1}..{:.1}",
             f[0], f[1], f[2], f[3]
@@ -2930,6 +4862,7 @@ mod tests {
             bench_spacing: 0.0,
             sim_substeps: 0,
             tracers: 0,
+            particle_scale: 1.0,
         };
         let mut bench = Bench::new(&device, TEST_EXTENT, &options);
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -2954,7 +4887,15 @@ mod tests {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        let f = read_stats(&device, &queue, &sim, 7, 1, [0.0, -9.81, 0.0]);
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            1,
+            [0.0, -9.81, 0.0],
+            sim::Touches::default(),
+        );
         eprintln!(
             "one frame: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
             f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9]
@@ -2968,20 +4909,42 @@ mod tests {
         assert!(f[3] < 2.0 * sim::REST_DENSITY, "rho max {}", f[3]);
     }
 
-    // The surface shader divides the field by FIELD_SETTLED to get
-    // water thickness. This measures the real settled splat — five
-    // upright seconds, then one raw draw (splat constant 1, the EMA's
-    // steady state at rest) — and pins the constant to it. TEST_EXTENT
-    // matches the phone's world within half a percent, and the splat
-    // is a point-sampled continuous field, so the small target reads
-    // the same plateau the phone renders.
-    #[test]
-    fn the_settled_field_matches_the_calibration() {
-        let Some((device, queue, sim)) = headless_sim() else {
-            return;
-        };
-        let f = read_stats(&device, &queue, &sim, 7, 600, [0.0, -9.81, -0.5]);
-        assert!(f[6] < 0.2, "not settled: v_max {}", f[6]);
+    // Field values live in f16's normal range; zero rows decode to
+    // exactly zero through the e == 0 arm, and an overflowed store
+    // decodes to infinity so is_finite can catch it.
+    fn f16(h: u16) -> f32 {
+        let e = u32::from(h >> 10) & 0x1f;
+        if e == 0 {
+            return 0.0;
+        }
+        if e == 31 {
+            return f32::INFINITY;
+        }
+        f32::from_bits(
+            (u32::from(h & 0x8000) << 16) | ((e + 112) << 23) | (u32::from(h & 0x3ff) << 13),
+        )
+    }
+
+    // The interior plateau of a field: the median of the texels at
+    // 60% of the peak or more, with the peak.
+    fn plateau(vals: &[f32]) -> (f32, f32) {
+        let max = vals.iter().copied().fold(0.0, f32::max);
+        let mut interior: Vec<f32> = vals.iter().copied().filter(|v| *v >= 0.6 * max).collect();
+        interior.sort_unstable_by(f32::total_cmp);
+        (interior[interior.len() / 2], max)
+    }
+
+    // One raw draw of the body splat (splat constant 1, the EMA's
+    // steady state at rest) into a 32 x 64 target: the target's view,
+    // for the filter, and its decoded texels. TEST_EXTENT matches the
+    // phone's world within half a percent, and the splat is a
+    // point-sampled continuous field, so the small target reads the
+    // same plateau the phone renders.
+    fn raw_splat(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sim: &Sim,
+    ) -> (wgpu::TextureView, Vec<f32>) {
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("calibration field"),
             size: wgpu::Extent3d {
@@ -2992,7 +4955,7 @@ mod tests {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R16Float,
+            format: wgpu::TextureFormat::Rg16Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_SRC
                 | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -3021,6 +4984,9 @@ mod tests {
                 ..Default::default()
             });
             pass.set_pipeline(&sim.body);
+            // A solid paint, so the second channel splats zero and the
+            // thickness in the first is the whole measurement.
+            pass.set_immediates(0, &pack_paint([1.0; 4], [0.0; 4], [0.0, 1.0], 0, 0.0));
             pass.set_blend_constant(wgpu::Color {
                 r: 1.0,
                 g: 1.0,
@@ -3060,36 +5026,38 @@ mod tests {
             })
             .expect("poll");
         let bytes = readback.get_mapped_range(..).expect("mapped");
-        // Field values live in f16's normal range; zero rows decode to
-        // exactly zero through the e == 0 arm, and an overflowed store
-        // decodes to infinity so is_finite can catch it.
-        let f16 = |h: u16| -> f32 {
-            let e = u32::from(h >> 10) & 0x1f;
-            if e == 0 {
-                return 0.0;
-            }
-            if e == 31 {
-                return f32::INFINITY;
-            }
-            f32::from_bits(
-                (u32::from(h & 0x8000) << 16) | ((e + 112) << 23) | (u32::from(h & 0x3ff) << 13),
-            )
-        };
         let mut vals = Vec::new();
         for row in 0..64 {
+            // Two halves a texel now; the thickness is the first.
             let base = row * 256;
-            for pair in bytes[base..base + 64].as_chunks::<2>().0 {
-                vals.push(f16(u16::from_le_bytes(*pair)));
+            for texel in bytes[base..base + 128].as_chunks::<4>().0 {
+                vals.push(f16(u16::from_le_bytes([texel[0], texel[1]])));
             }
         }
-        let max = vals.iter().copied().fold(0.0, f32::max);
-        let mut interior: Vec<f32> = vals.into_iter().filter(|v| *v >= 0.6 * max).collect();
-        interior.sort_unstable_by(f32::total_cmp);
-        let plateau = interior[interior.len() / 2];
-        eprintln!(
-            "settled field: plateau {plateau:.3}, max {max:.3}, interior texels {}",
-            interior.len()
+        (view, vals)
+    }
+
+    // The surface shader divides the field by FIELD_SETTLED to get
+    // water thickness. This measures the real settled splat — five
+    // upright seconds, then one raw draw — and pins the constant to it.
+    #[test]
+    fn the_settled_field_matches_the_calibration() {
+        let Some((device, queue, sim)) = headless_sim() else {
+            return;
+        };
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
         );
+        assert!(f[6] < 0.2, "not settled: v_max {}", f[6]);
+        let (view, vals) = raw_splat(&device, &queue, &sim);
+        let (plateau, max) = plateau(&vals);
+        eprintln!("settled field: plateau {plateau:.3}, max {max:.3}");
         assert!(
             (plateau / FIELD_SETTLED - 1.0).abs() < 0.1,
             "plateau {plateau} vs calibrated {FIELD_SETTLED}"
@@ -3128,7 +5096,16 @@ mod tests {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&sim.filter);
             pass.set_bind_group(0, &bind, &[]);
-            pass.set_immediates(0, &pack_optics([0.0, -9.81, -0.5], sim.extent));
+            pass.set_immediates(
+                0,
+                &pack_optics(
+                    [0.0, -9.81, -0.5],
+                    sim.extent,
+                    sim.field_settled,
+                    [0.0; 4],
+                    [0.0; 4],
+                ),
+            );
             let groups = filter_groups([128, 256]);
             pass.dispatch_workgroups(groups[0], groups[1], 1);
         }
@@ -3210,6 +5187,47 @@ mod tests {
         assert!(edge > 0.05, "no waterline to test: {edge}");
     }
 
+    // The field is the particle layers per screen area, so a finer
+    // lattice settles to a proportionally higher plateau: the scaling
+    // every other scale's thickness and edge band rest on (M5 record).
+    #[test]
+    fn the_settled_field_scales_with_the_spacing() {
+        let Some((device, queue)) = headless_device() else {
+            return;
+        };
+        let spacing = 0.63 * SIM_SPACING;
+        let sim = Sim::new(
+            &device,
+            wgpu::TextureFormat::Bgra8Unorm,
+            TEST_EXTENT,
+            7,
+            spacing,
+            4096,
+            [128, 256],
+        );
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, -9.81, -0.5],
+            sim::Touches::default(),
+        );
+        assert!(f[6] < 0.2, "not settled: v_max {}", f[6]);
+        let (_, vals) = raw_splat(&device, &queue, &sim);
+        let (plateau, _) = plateau(&vals);
+        eprintln!(
+            "settled field at {spacing} m: plateau {plateau:.3} vs {:.3}",
+            sim.field_settled
+        );
+        assert!(
+            (plateau / sim.field_settled - 1.0).abs() < 0.1,
+            "plateau {plateau} vs scaled {}",
+            sim.field_settled
+        );
+    }
+
     // A second of the solve, phone flat on the desk (gravity into the
     // screen): the state the device diverged in. Settling is allowed;
     // explosion is not.
@@ -3218,7 +5236,15 @@ mod tests {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        let f = read_stats(&device, &queue, &sim, 7, 120, [0.0, 0.0, -9.81]);
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            120,
+            [0.0, 0.0, -9.81],
+            sim::Touches::default(),
+        );
         eprintln!(
             "one second flat: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
             f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9]
@@ -3241,7 +5267,15 @@ mod tests {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        let f = read_stats(&device, &queue, &sim, 7, 1800, [0.0, -9.81, 0.0]);
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            1800,
+            [0.0, -9.81, 0.0],
+            sim::Touches::default(),
+        );
         eprintln!(
             "fifteen seconds upright: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
             f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9]
@@ -3258,10 +5292,26 @@ mod tests {
         // A second of hard sideways force churns the box and charges
         // the tracers; five settled seconds must drain most of it
         // (exp(-5/T_CHARGE) plus respawns at resting particles).
-        read_stats(&device, &queue, &sim, 7, 120, [-6.0, -9.81, 0.0]);
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            120,
+            [-6.0, -9.81, 0.0],
+            sim::Touches::default(),
+        );
         let mean = |ts: &[[f32; 4]]| ts.iter().map(|t| t[3]).sum::<f32>() / ts.len() as f32;
         let kicked = mean(&read_tracers(&device, &queue, &sim));
-        read_stats(&device, &queue, &sim, 7, 600, [0.0, -9.81, 0.0]);
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [0.0, -9.81, 0.0],
+            sim::Touches::default(),
+        );
         let rested = mean(&read_tracers(&device, &queue, &sim));
         eprintln!("charge kicked {kicked:.3}, rested {rested:.3}");
         assert!(kicked > 0.05, "kicked {kicked}");
@@ -3309,7 +5359,15 @@ mod tests {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        let f = read_stats(&device, &queue, &sim, 7, 1800, [-6.94, -6.94, 0.0]);
+        let f = read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            1800,
+            [-6.94, -6.94, 0.0],
+            sim::Touches::default(),
+        );
         eprintln!(
             "corner: compr avg {:.5} max {:.5}, rho {:.1}..{:.1}, p {:.1}..{:.1}, v {:.4}, T {}..{}, clamps {}",
             f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9]
@@ -3329,7 +5387,15 @@ mod tests {
         let Some((device, queue, sim)) = headless_sim() else {
             return;
         };
-        read_stats(&device, &queue, &sim, 7, 600, [-9.81, 0.0, 0.0]);
+        read_stats(
+            &device,
+            &queue,
+            &sim,
+            7,
+            600,
+            [-9.81, 0.0, 0.0],
+            sim::Touches::default(),
+        );
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -3337,7 +5403,15 @@ mod tests {
             pass.set_pipeline(&sim.advect);
             pass.set_immediates(
                 0,
-                &sim::pack_step([-9.81, 0.0, 0.0], [0.0; 3], [0.0; 3], 6.0, 0.0, 601),
+                &sim::pack_step(
+                    [-9.81, 0.0, 0.0],
+                    [0.0; 3],
+                    [0.0; 3],
+                    6.0,
+                    0.0,
+                    601,
+                    sim::Touches::default(),
+                ),
             );
             pass.dispatch_workgroups(sim.tracer_count.div_ceil(256), 1, 1);
         }

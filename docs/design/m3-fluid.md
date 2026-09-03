@@ -66,8 +66,12 @@ decision and not an apology:
 - Thermal expansion feedback on density: β × tens of µK ≈ 10⁻⁸
   relative — negligible by arithmetic, recorded here, not built.
 
-The M5 temperature lens auto-scales its colour range to the live min–max,
-so µK structure is visible without faking magnitudes.
+The M5 temperature lens auto-scaled its colour range to the live
+min–max to make µK structure visible without faking magnitudes. It was
+not enough: 1.5 mK of spread against f32's 30 µK at 293 K is about
+fifty steps, and Jack read the result as random dappling
+(2026-09-02). The lens is withdrawn; the field stays, and the readout
+still carries its two ends. See the M5 record, "The lenses".
 
 ## 4. The solver
 

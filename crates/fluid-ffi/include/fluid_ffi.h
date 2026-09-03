@@ -51,11 +51,20 @@ extern "C" {
 #endif // __cplusplus
 
 /**
+ * How many fingers the sim drags with at once. A shell must give each
+ * finger a slot below this and hold it for as long as that finger
+ * stays on the glass.
+ */
+extern const uint32_t FLUID_TOUCH_SLOTS;
+
+/**
  * Builds the renderer on a layer: `particle_count` sprites of
  * `sprite_radius` metres, or, when `bench_sweeps` is nonzero, the M3
  * stage-0 microbench at `bench_spacing` metres. A nonzero `sim_substeps`
- * runs the M3 fluid instead, at that many substeps a frame. Returns null
- * when GPU setup fails, with the reason on stderr.
+ * runs the M3 fluid instead, at that many substeps a frame, with
+ * `particle_scale` times the shipped particle count unless
+ * `bench_spacing` pins the spacing. Returns null when GPU setup fails,
+ * with the reason on stderr.
  *
  * # Safety
  *
@@ -70,7 +79,8 @@ struct FluidRenderer *fluid_renderer_create(void *metal_layer,
                                             uint32_t bench_sweeps,
                                             float bench_spacing,
                                             uint32_t sim_substeps,
-                                            uint32_t tracers);
+                                            uint32_t tracers,
+                                            float particle_scale);
 
 /**
  * One frame: integrate the particles, draw them over the body-force tint,
@@ -87,6 +97,68 @@ uint32_t fluid_renderer_frame(struct FluidRenderer *renderer,
                               struct FluidVec3 user_acceleration,
                               struct FluidVec3 rotation_rate,
                               double now_ms);
+
+/**
+ * Reseeds the fluid at `scale` times the shipped particle count: a
+ * rebuild of the sim, off the frame path, after which a still phone's
+ * water falls and settles again.
+ *
+ * # Safety
+ *
+ * `renderer` must be a live pointer from `fluid_renderer_create`.
+ */
+void fluid_renderer_set_particles(struct FluidRenderer *renderer, float scale);
+
+/**
+ * The particle count `fluid_renderer_set_particles` would seed at
+ * `scale`, for the menu's labels.
+ *
+ * # Safety
+ *
+ * `renderer` must be a live pointer from `fluid_renderer_create`.
+ */
+uint32_t fluid_renderer_particles_at(const struct FluidRenderer *renderer, float scale);
+
+/**
+ * Where one finger presses, normalised over the drawable: `x` runs 0
+ * to 1 left to right, `y` 0 to 1 top to bottom. Every finger down
+ * drags the water it moves through and keeps the sim awake; `down`
+ * false lifts one. Call it from the gesture, not the frame.
+ *
+ * # Safety
+ *
+ * `renderer` must be a live pointer from `fluid_renderer_create`.
+ */
+void fluid_renderer_touch(struct FluidRenderer *renderer,
+                          uint32_t slot,
+                          float x,
+                          float y,
+                          bool down);
+
+/**
+ * Liquid glass when `flat` is false. Otherwise paint on black: the
+ * flat surface, or, when `particles` is also true, the particles
+ * alone as discs. `particles` alone does nothing.
+ *
+ * `low` is the one colour when `gradient` is false. When it is true,
+ * the colour runs from `low` to `high` across `lens`, between the
+ * lowest and highest the frame itself holds: 0 velocity,
+ * 1 acceleration, 2 pressure, 3 proximity, and anything else
+ * velocity. 4 is the direction wheel, which takes its hue from which
+ * way the water goes and reads no `high`. Colour components are 0 to
+ * 1 as the picker shows them; the core linearises them.
+ *
+ * # Safety
+ *
+ * `renderer` must be a live pointer from `fluid_renderer_create`.
+ */
+void fluid_renderer_set_look(struct FluidRenderer *renderer,
+                             bool flat,
+                             bool particles,
+                             struct FluidVec3 low,
+                             bool gradient,
+                             struct FluidVec3 high,
+                             uint32_t lens);
 
 /**
  * # Safety

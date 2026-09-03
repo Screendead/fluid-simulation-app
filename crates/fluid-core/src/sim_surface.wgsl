@@ -4,7 +4,8 @@
 // gradient sky, Beer-Lambert absorption. The M4 record holds the
 // model. Everything uniform across a frame — world up, the glint half
 // vector and gain — arrives precomputed in the immediates; air pixels
-// take the early return and pay one stripe lookup.
+// take the early return and pay one stripe lookup, and the flat look
+// returns before the wall.
 
 // The fill reads the filtered field: blurred thickness and its raw
 // first and second texel differences, one sample a pixel. field_filter
@@ -12,6 +13,36 @@
 @group(0) @binding(0) var field: texture_2d<f32>;
 @group(0) @binding(1) var field_sampler: sampler;
 @group(0) @binding(2) var filtered: texture_storage_2d<rgba16float, write>;
+// The raw splat, which the fill also binds: r the thickness, g that
+// thickness weighted by the lens. The flat look reads the ratio
+// straight, unblurred — a kernel-weighted mean over a 1.5 h footprint
+// is already smooth where the body is, and the blur exists for the
+// caustics, which the flat look never runs.
+@group(0) @binding(3) var splat: texture_2d<f32>;
+// The direction lens's own field: the kernel-weighted sum of the unit
+// heading vectors, which body_flow in sim_sprites.wgsl writes and only
+// that lens fills. An angle has no mean across the seam at half a
+// turn; the sum of the unit vectors has one everywhere.
+@group(0) @binding(4) var flow: texture_2d<f32>;
+
+const TAU: f32 = 6.2831855;
+
+// Both mirrored from sim_sprites.wgsl, which paints the same wheel on
+// the discs; a divergence is a bug.
+// Gamma two, not sRGB's exact curve. The wheel's hues are chosen
+// here rather than picked by the user, so the curve only has to look
+// like a rainbow — and the exact one is three pows a fragment, which
+// cost 600 microseconds a frame on the disc draw (reference device,
+// 2026-09-02, 3,512 against 2,912). A picked colour still goes
+// through the exact curve, in `linear` in render.rs.
+fn to_linear(c: vec3f) -> vec3f {
+    return c * c;
+}
+
+fn hue_colour(h: f32) -> vec3f {
+    let k = abs(fract(h + vec3f(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+    return to_linear(clamp(k - 1.0, vec3f(0.0), vec3f(1.0)));
+}
 
 struct Optics {
     up: vec3f,
@@ -20,12 +51,20 @@ struct Optics {
     slab_depth: f32,
     glint_gain: f32,
     h: vec3f,
+    // The flat look's two colours in linear light. flat.w is one for
+    // either flat look and zero for the glass. high.w says how the
+    // body is painted: 0 the low colour alone, 1 the ramp from low to
+    // high across the lens the splat normalised into the field's g
+    // channel, 2 the direction wheel over that same channel.
+    flat: vec4f,
+    high: vec4f,
 }
 var<immediate> optics: Optics;
 
-// The liquid/air edge band, in field units.
-const EDGE_LO: f32 = 0.8;
-const EDGE_HI: f32 = 1.6;
+// The liquid/air edge band, in settled thicknesses: 0.8 and 1.6 field
+// units at the shipped spacing, and the same water at every scale.
+const EDGE_LO: f32 = 0.8 / 5.3;
+const EDGE_HI: f32 = 1.6 / 5.3;
 const ETA: f32 = 1.0 / 1.33;
 const F0: f32 = 0.02;
 // Transmittance one slab depth of path down: red dies first, so the
@@ -173,11 +212,55 @@ fn decay_frag(in: FillVertex) -> @location(0) vec4f {
     return vec4f(0.0);
 }
 
+// The flat look: the water where the thickness crosses the band's
+// midpoint, black everywhere else, and a hard edge between them
+// (Jack, 2026-09-02). One chosen colour, or the ramp across the body.
+// The particle view skips this pass entirely.
+//
+// `wheel` arrives as a literal from each entry point, so the branch
+// folds away at compile time and the wheel's hue arithmetic never
+// enters the shader the glass and the ramp share. Left as a runtime
+// branch it cost the flat look 200 us a frame on a pixel that never
+// took it: 3,847 microseconds with the branch against 3,644 with it
+// folded (reference device, 2026-09-02, the two builds installed one
+// after the other, twice through).
+fn flat_look(uv: vec2f, rel: f32, wheel: bool) -> vec4f {
+    let water = rel >= 0.5 * (EDGE_LO + EDGE_HI);
+    var colour = optics.flat.rgb;
+    if (optics.high.w > 0.0) {
+        // The threshold above is what makes the divide safe: no pixel
+        // reaches here with a thickness near zero.
+        let s = textureSampleLevel(splat, field_sampler, uv, 0.0);
+        let t = s.g / max(s.r, 1e-6);
+        if (wheel) {
+            let d = textureSampleLevel(flow, field_sampler, uv, 0.0).rg;
+            // The wheel takes over as the square, as it does on the
+            // discs in sim_sprites.wgsl.
+            colour = mix(optics.flat.rgb, hue_colour(atan2(d.y, d.x) / TAU + 0.5), t * t);
+        } else {
+            colour = mix(optics.flat.rgb, optics.high.rgb, t);
+        }
+    }
+    return vec4f(select(vec3f(0.0), colour, water), 1.0);
+}
+
+// The wheel's own fill. Bound only by a flat look with the direction
+// lens on, so it takes the flat branch without testing for it.
+@fragment
+fn surface_wheel_frag(in: FillVertex) -> @location(0) vec4f {
+    let f = textureSampleLevel(field, field_sampler, in.uv, 0.0);
+    return flat_look(in.uv, f.r / optics.field_settled, true);
+}
+
 @fragment
 fn surface_frag(in: FillVertex) -> @location(0) vec4f {
     let f = textureSampleLevel(field, field_sampler, in.uv, 0.0);
-    let d = f.r;
-    let a = smoothstep(EDGE_LO, EDGE_HI, d);
+    let rel = f.r / optics.field_settled;
+    let a = smoothstep(EDGE_LO, EDGE_HI, rel);
+
+    if (optics.flat.w > 0.0) {
+        return flat_look(in.uv, rel, false);
+    }
 
     // This pixel on the back wall, metres, y up.
     let p = vec2f(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0) * optics.extent;
@@ -188,7 +271,7 @@ fn surface_frag(in: FillVertex) -> @location(0) vec4f {
 
     // Thickness from the calibrated field; the clamp stops an EMA
     // transient from throwing the refraction across the screen.
-    let t = clamp(d / optics.field_settled, 0.0, 1.25) * optics.slab_depth;
+    let t = clamp(rel, 0.0, 1.25) * optics.slab_depth;
 
     // The filtered texel differences over the texel are the thickness
     // gradient and Laplacian. field_filter already ran uv.y against

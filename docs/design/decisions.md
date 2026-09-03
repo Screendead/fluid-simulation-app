@@ -40,6 +40,9 @@ JavaScript page that owns permissions and the canvas.
 The deployment target is iOS 17.0. The reference device is CLAUDE.md
 section 5.
 
+*Amended 2026-09-02 (D6).* The shell also owns the settings menu, the
+readout, and their persistence.
+
 *Amended 2026-08-30, Jack's call.* The original text read "There is no
 simulator target: the simulator has no motion sensors." The project now
 builds for the simulator (`aarch64-apple-ios-sim`) as a compile, link and
@@ -83,6 +86,22 @@ the negated accelerometer reading is a test.
 *Amended 2026-08-30, Jack's call.* The web conversion paragraph above and
 its pending sign check are moot: the web target is removed (D1
 amendment). Sensor input is CoreMotion alone.
+
+*Amended 2026-09-02, from Jack's report of inverted inertia.* The formula
+above misencoded the convention. CoreMotion's `user_acceleration` is the
+device's acceleration negated, not the acceleration itself. Three facts fix
+the sign: an accelerometer measures specific force, `a - g`;
+`CMDeviceMotion.h` states that the raw reading is `gravity +
+userAcceleration`; a face-up phone at rest reads `(0, 0, -1)`, which is real
+gravity, so the raw reading is the negated specific force. A face-up phone
+in freefall therefore reads a `user_acceleration` of `(0, 0, 1)`.
+
+The body force is now `g · (gravity + user_acceleration)`, which is that raw
+reading in SI. The "negated proper acceleration" above stands: it was always
+the intent, and only the sign of the second term was wrong. Jack found it on
+the device: a sharp move left piled the water on the left wall first, where
+inertia holds it against the right. The old formula also doubled gravity in
+freefall, which `in_freefall_the_fluid_is_weightless` now pins at zero.
 
 ## D4 — M1 dependencies (2026-08-30)
 
@@ -145,3 +164,57 @@ spacing; "3D" stands as quasi-3D — z motion and M4 depth exist, z
 eddies do not. 2D remains rejected. Wall boundaries are analytic planar
 kernel integrals, not boundary particles: six flat walls have a closed
 form. This decision closes O1.
+
+## D6 — The menu is the shell's; the fluid is the core's (2026-09-02)
+
+**Decision.** The controls Jack asked for on 2026-09-02 (M5 record)
+are SwiftUI in the shell: the tap, the button, the half-sheet menu,
+the readout, and the choices' persistence in `UserDefaults`. The core
+exposes three calls for them — `set_particles(scale)`,
+`particles_at(scale)`, `set_look(look)` — and computes everything
+about the fluid from them: the spacing behind a scale, the count it
+seeds, the shading of each of the three looks. The shell computes nothing about
+the fluid; the performance rating beside each scale is a table of
+device measurements, not a computation.
+
+*Amends D2.* D2's shell list gains the settings menu, the readout,
+and their persistence.
+
+**Why.** Native controls, the system colour picker, the thermal state
+and `UserDefaults` are platform work; a menu drawn in wgpu would put
+a UI toolkit inside the platform-free core for no gain. The readout
+rides the once-a-second stats call the console line already makes,
+so it costs the frame nothing new.
+
+**Rejected.** A UI toolkit in the core (egui, or a text pass over
+wgpu): a dependency, a second render path, and no system colour
+picker. Settings in the core: the core has no storage and should not
+gain one. A rating computed live from the running frame: it can only
+rate the scale that is running; the table rates the four before you
+pick.
+
+*Amended 2026-09-02, from Jack's request for a gradient.* The core's
+`set_look` carries a `Paint` — one colour, or two with a `Lens` — and
+computes every range the ramp needs from the box. The shell picks the
+colours and names the lens by number; it computes no range and no
+threshold. `fluid_renderer_set_look` grows the three arguments that
+say so.
+
+*Amended 2026-09-02, from Jack's ask for the ranges.* The ramp's two
+ends are no longer derived from the box. They are the lowest and the
+highest the frame itself holds, reduced in the solver's own statistics
+block. Jack: "The gradient should go from the lowest value *actually
+present in the sim* to the highest *actually present*." The core still
+computes them and the shell still only names a lens by number, so the
+split above is unchanged. The lens set changes with it: temperature
+goes, and the direction wheel takes its number.
+
+*Amended 2026-09-02, from Jack's request to drag the sim.* The split
+gains a fourth call, `touch(slot, x, y, down)`. The shell owns the
+touch handling and reports two things only it can know: which finger
+this is, as a slot it holds until that finger leaves the glass, and
+where it presses on its own drawable, normalised 0 to 1, x right and
+y down. The core does everything else: the y flip, the scale to box
+metres, each finger's velocity from its own frame clock, the radius
+they drag within, and the entrainment itself. The shell computes no
+metre and no metre per second, which is the rule above unchanged.

@@ -15,8 +15,9 @@ pub const WORLD_SCALE: f32 = 4.0;
 /// One reading of the motion sensors in the device frame: x to the right of
 /// the screen, y to its top, z out of it. The acceleration vectors are in g,
 /// the CoreMotion convention: a phone lying face up reads a gravity of
-/// (0, 0, -1). `rotation_rate` is the gyroscope, radians per second about
-/// the same axes, right-handed.
+/// (0, 0, -1), and `user_acceleration` is the device's acceleration negated
+/// — the same phone in freefall reads (0, 0, 1). `rotation_rate` is the
+/// gyroscope, radians per second about the same axes, right-handed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MotionSample {
     pub gravity: [f32; 3],
@@ -27,9 +28,11 @@ pub struct MotionSample {
 impl MotionSample {
     /// Body force per unit mass on fluid in a box fixed to the device, in
     /// metres per second squared, device frame. This is the negated proper
-    /// acceleration: pushing the phone right throws the fluid left.
+    /// acceleration: pushing the phone right throws the fluid left. The sum
+    /// of CoreMotion's two vectors is the raw accelerometer reading, so this
+    /// is that reading in SI.
     pub fn body_force(&self) -> [f32; 3] {
-        std::array::from_fn(|i| STANDARD_GRAVITY * (self.gravity[i] - self.user_acceleration[i]))
+        std::array::from_fn(|i| STANDARD_GRAVITY * (self.gravity[i] + self.user_acceleration[i]))
     }
 }
 
@@ -51,11 +54,21 @@ mod tests {
     fn pushing_right_throws_the_fluid_left() {
         let sample = MotionSample {
             gravity: [0.0, 0.0, -1.0],
-            user_acceleration: [0.5, 0.0, 0.0],
+            user_acceleration: [-0.5, 0.0, 0.0],
             rotation_rate: [0.0, 0.0, 0.0],
         };
         let [x, _, _] = sample.body_force();
         assert_eq!(x, -0.5 * STANDARD_GRAVITY);
+    }
+
+    #[test]
+    fn in_freefall_the_fluid_is_weightless() {
+        let sample = MotionSample {
+            gravity: [0.0, 0.0, -1.0],
+            user_acceleration: [0.0, 0.0, 1.0],
+            rotation_rate: [0.0, 0.0, 0.0],
+        };
+        assert_eq!(sample.body_force(), [0.0; 3]);
     }
 }
 
@@ -64,4 +77,7 @@ mod render;
 mod sim;
 #[cfg(feature = "film")]
 pub use render::film;
-pub use render::{RenderOptions, RenderStats, Renderer};
+pub use render::{Lens, Look, Paint, RenderOptions, RenderStats, Renderer};
+
+/// How many fingers [`Renderer::touch`] tracks at once.
+pub const TOUCH_SLOTS: u32 = sim::MAX_TOUCHES as u32;

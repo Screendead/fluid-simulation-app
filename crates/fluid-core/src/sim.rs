@@ -59,16 +59,23 @@ pub(crate) fn kernel(r: f32, h: f32) -> f32 {
     }
 }
 
-/// A jittered lattice at spacing `d` filling the slab's lower `fill` of
-/// height, full width and depth, centred; four floats a particle (x, y, z,
-/// then a zero the shader ignores for vec4 alignment).
-pub(crate) fn seed_slab(spacing: f32, extent: [f32; 2], fill: f32) -> Vec<f32> {
+/// The rows, ranks and layers seed_slab fills at `spacing`: whole
+/// steps across the width, up the lower `fill` of the height, and
+/// through the depth, never fewer than one.
+pub(crate) fn lattice_dims(spacing: f32, extent: [f32; 2], fill: f32) -> [u32; 3] {
     let size = [
         2.0 * extent[0] - spacing,
         (2.0 * extent[1] - spacing) * fill,
         SLAB_DEPTH - spacing,
     ];
-    let n: [u32; 3] = std::array::from_fn(|i| ((size[i] / spacing) as u32).max(1));
+    std::array::from_fn(|i| ((size[i] / spacing) as u32).max(1))
+}
+
+/// A jittered lattice at spacing `d` filling the slab's lower `fill` of
+/// height, full width and depth, centred; four floats a particle (x, y, z,
+/// then a zero the shader ignores for vec4 alignment).
+pub(crate) fn seed_slab(spacing: f32, extent: [f32; 2], fill: f32) -> Vec<f32> {
+    let n = lattice_dims(spacing, extent, fill);
     let origin = [
         -0.5 * n[0] as f32 * spacing,
         -extent[1] + 0.5 * spacing,
@@ -167,13 +174,44 @@ fn half_value(bits: u16) -> f32 {
     f32::from_bits(o.to_bits() | ((raw & 0x8000) << 16))
 }
 
-/// The Step immediates block, one layout shared by sim_solve.wgsl and
-/// sim_tracers.wgsl: two vec3s on 16-byte alignment — the body force
-/// and the box's angular velocity — with dt and the CFL clamp speed in
-/// their tail slots, then the angular acceleration with the tracer
-/// seed in its tail. Real rotation reaches this from exactly two
-/// places, the device frame path and the film harness; every other
+/// Fingers the solver drags with at once. Five is what the phone
+/// reports; a sixth finger on the glass is not a pose the app has to
+/// serve.
+pub(crate) const MAX_TOUCHES: usize = 5;
+
+/// One finger on the glass, as the solver sees it: where it presses in
+/// the box plane and how fast it travels there, both world metres.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Touch {
+    pub at: [f32; 2],
+    pub velocity: [f32; 2],
+}
+
+/// Every finger down, packed from the front, with the radius they all
+/// drag within. A count of zero is no finger, which is not the same as
+/// a finger held still — a still finger brakes the water it sits in.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Touches {
+    pub each: [Touch; MAX_TOUCHES],
+    pub count: u32,
+    pub radius: f32,
+}
+
+/// The bytes pack_step writes, which is the size sim_solve.wgsl's Step
+/// block reads.
+pub(crate) const STEP_BYTES: usize = 64 + MAX_TOUCHES * 16;
+
+/// The Step immediates block, whose head sim_solve.wgsl and
+/// sim_tracers.wgsl share: two vec3s on 16-byte alignment — the body
+/// force and the box's angular velocity — with dt and the CFL clamp
+/// speed in their tail slots, then the angular acceleration with the
+/// tracer seed in its tail. Real rotation reaches this from exactly
+/// two places, the device frame path and the film harness; every other
 /// caller passes zeros.
+///
+/// The tail is the fingers: their shared radius and their count, then
+/// the array they must be 16-byte aligned for, each finger a position
+/// and a velocity in one vec4.
 pub(crate) fn pack_step(
     force: [f32; 3],
     omega: [f32; 3],
@@ -181,8 +219,9 @@ pub(crate) fn pack_step(
     dt: f32,
     v_clamp: f32,
     seed: u32,
-) -> [u8; 48] {
-    let mut raw = [0u8; 48];
+    touches: Touches,
+) -> [u8; STEP_BYTES] {
+    let mut raw = [0u8; STEP_BYTES];
     for (slot, v) in [
         force[0], force[1], force[2], dt, omega[0], omega[1], omega[2], v_clamp, domega[0],
         domega[1], domega[2],
@@ -193,6 +232,22 @@ pub(crate) fn pack_step(
         raw[slot * 4..slot * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
     raw[44..48].copy_from_slice(&seed.to_le_bytes());
+    raw[48..52].copy_from_slice(&touches.radius.to_le_bytes());
+    raw[52..56].copy_from_slice(&touches.count.to_le_bytes());
+    for (i, touch) in touches.each.iter().enumerate() {
+        let at = 64 + i * 16;
+        for (slot, v) in [
+            touch.at[0],
+            touch.at[1],
+            touch.velocity[0],
+            touch.velocity[1],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            raw[at + slot * 4..at + slot * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
     raw
 }
 
@@ -420,6 +475,23 @@ mod tests {
             4.0,
             5.0,
             6,
+            Touches {
+                each: [
+                    Touch {
+                        at: [13.0, 14.0],
+                        velocity: [15.0, 16.0],
+                    },
+                    Touch {
+                        at: [18.0, 19.0],
+                        velocity: [20.0, 21.0],
+                    },
+                    Touch::default(),
+                    Touch::default(),
+                    Touch::default(),
+                ],
+                count: 2,
+                radius: 17.0,
+            },
         );
         let f = |i: usize| f32::from_le_bytes(raw[i..i + 4].try_into().unwrap());
         assert_eq!([f(0), f(4), f(8)], [1.0, 2.0, 3.0], "force");
@@ -428,6 +500,22 @@ mod tests {
         assert_eq!(f(28), 5.0, "v_clamp");
         assert_eq!([f(32), f(36), f(40)], [10.0, 11.0, 12.0], "domega");
         assert_eq!(u32::from_le_bytes(raw[44..48].try_into().unwrap()), 6);
+        assert_eq!(f(48), 17.0, "touch_r");
+        assert_eq!(
+            u32::from_le_bytes(raw[52..56].try_into().unwrap()),
+            2,
+            "touch_n"
+        );
+        assert_eq!(
+            [f(64), f(68), f(72), f(76)],
+            [13.0, 14.0, 15.0, 16.0],
+            "finger 0"
+        );
+        assert_eq!(
+            [f(80), f(84), f(88), f(92)],
+            [18.0, 19.0, 20.0, 21.0],
+            "finger 1"
+        );
     }
 
     #[test]

@@ -5,8 +5,9 @@
 **A box of liquid you hold.** Tilt the phone and the water runs to the low
 corner; push it and the water sloshes back. The simulation runs on the GPU at
 the display rate, driven by the motion sensors, and renders as water, as
-particles, or coloured by density, pressure, temperature, velocity or
-acceleration. The source is Rust; the product is an iOS app.
+particles, or coloured by how fast it moves, how hard it is thrown
+about or squeezed, how crowded each drop is, or which way it is going —
+that last one as a hue around the colour wheel. The source is Rust; the product is an iOS app.
 
 ## The stack
 
