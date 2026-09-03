@@ -236,6 +236,21 @@ floors the substep count at eight, and the frame settles near
 the optimisation record said. The menu offers it because Jack asked,
 rated bad.
 
+The 4x dip, explained (2026-09-02, evening): the "hard shake dropped
+it to 40 to 60 Hz for 3 s" in the 4x row is a pacing feedback, not the
+GPU's limit. Measured the same evening with a same-run alternating
+instrument (optimisation record, "The 4x session"): a five-pass
+substep at 4x costs 0.97 to 1.0 ms cool and 1.25 to 1.36 hot, the
+glass look adds 2.4 ms a frame of its own, and five substeps still
+lock 120 Hz; six or seven do not, the frame slips, and the CFL and
+the refine rung both read the slipped frame until the count rails at
+the cap. The rating stays borderline until the changes that record
+holds are measured on the device. Two findings from the same evening
+bind this record's 4x row: the 4x pool held upright and still boiled
+at the shipped substep cap (Jack: "it absolutely does jitter/boil at
+4x"), and Jack deprioritised the glass look at 4x ("flat and
+particle look the coolest").
+
 
 The tap, the button, the menu, the scale switch and its 25 ms
 rebuild, and the two-colour surface were exercised by Jack's hand

@@ -465,6 +465,167 @@ overlap.
    as one-constant device A/Bs now that the folds are barrier-free.
 4. The runbook items below still stand.
 
+## The 4x session (2026-09-02, evening)
+
+Jack's question, verbatim: "is it possible to enable this app to run
+on my iPhone *well* - *comfortably* at the 4x resolution setting?"
+The session priced it: the phone under a throwaway instrument for the
+cost, the laptop film harness for the physics, three read-only or
+film-only agents for the levers. Nothing here changed the code; the
+section after this one records what shipped.
+
+### The instrument, and a protocol rule it forced
+
+The instrument is a scratchpad patch on the head (`p4x/patch4x.py`,
+never in the repository): `FLUID_IDLE=0` turns the gate off,
+`FLUID_NMIN` pins the substep count, `FLUID_REFINE` pins the refine
+pass count, and a cadence line prints the mean frame interval of every
+120-frame window. The meter is the cadence line of a window that is
+over budget; a window that fits locks at 8,334 us and says nothing,
+and the stats line's GPU span is the governor's clock whenever the
+frame fits (the M5 record).
+
+**Alternate inside one run; never pair installs.** The same build
+installed twice at eight pinned substeps read 12.2 then 11.3 ms a
+frame, and two one-constant builds swapped order between the halves
+of a mirrored chain (LANES 4: 12.0 then 9.9; workgroup 128: 9.8 then
+11.4). The thermal state climbs from nominal to serious within two
+minutes of over-budget frames, and every cost rises 25 to 35% with
+it. So `FLUID_NMIN=6,8` and `FLUID_REFINE=5,2` take comma lists and
+switch every 120 frames, and a pair read inside one run cancels the
+drift. Two caveats of the instrument: the cadence line stamps each
+window with the *next* window's refine pin (the substep stamp is
+right), and the stats line's GPU p50 spans two windows.
+
+### The frame at 4x (reference device, 2026-09-02, glass unless named)
+
+Frame = n x S + R: n substeps from the CFL (n = ceil(3.36 x v_max) at
+120 Hz and the 4x spacing), S the cost of one substep, R the look's
+own work each frame.
+
+| Quantity | Cool (nominal) | Hot (serious) | Method |
+|---|---|---|---|
+| S, five refine passes | 0.97 to 1.0 ms | 1.25 to 1.36 ms | alternating pairs 6/8, 7/8, 5/7; four-point fits |
+| one refine pass | ~0.1 ms a substep | ~0.1 | n = 8, five against two passes: 11.7 against 9.2 ms |
+| S, two passes | ~0.65 (inferred: the cool S less a hot pass cost) | ~1.0 | |
+| R glass | — | 2.4 ms | four-point fit, intercept |
+| R flat surface | — | 1.6 | |
+| R particle view | — | 1.15 | |
+| R direction wheel | — | flat + ~0.7 | one pair, inside the drift |
+
+The four-point fits (one run each, n = 6, 7, 8, 9 alternating, five
+passes, phone hot): glass 10.5 / 11.9 / 13.2 / 14.6 ms; flat 9.1 /
+10.3 / 11.6 / 12.9; particles 8.9 / 10.0 / 11.4 / 12.8. Each is a
+line to within the window scatter.
+
+The pinned ladder, cool, gate off, phone flat and still: two, three,
+four and five substeps lock 8,334 us (five at GPU p50 7.8 ms; four
+still locks at thermal serious); six reads 8,576 (a frame dropped
+every 35); seven reads 10.3 to 10.4 ms; eight at five passes 10.4
+cool and 11.6 to 13.2 hot; eight at two passes 9.2 hot. Eight on the
+natural schedule is bistable at 8,334 or 10,400: when the frame fits,
+the substep is 1.04 ms and gets two passes; when it slips, the
+substep passes 1.05 ms and gets five.
+
+Every look sleeps on the desk at 4x (gate on, 100 s a look): glass,
+flat, particles and the wheel all settle at GPU p50 5.5 to 6.8 ms, the
+governor's clock, and the idle counter climbs. The desk is the flat
+pose; see the boil below.
+
+### The mechanism of the dip
+
+At 120 Hz, six or seven substeps at five passes cost 8.6 to 10.4 ms
+and do not fit. The frame slips. Two rules then read the measured
+frame and feed each other: the CFL reads the measured dt and asks for
+more substeps, and the refine rung reads the measured substep (1.47
+ms at n = 7 and a 10.3 ms frame, above the 1.05 ms boundary) and
+stays at five passes. Clamped water reads back exactly the clamp
+speed, and `ceil` splits that tie, so the count climbs one step a
+frame to the cap: 16 x 1.0 to 1.3 + 2.4 = 18 to 23 ms, 45 to 55 Hz,
+until v_max falls under about 1.5 m/s. That is the M5 record's "dips
+to 40 to 60 Hz for 3 s". The two-pass rung is reached only at exactly
+120 Hz with eight or more substeps, which the slip prevents.
+
+### What the films found (Jack's laptop, 2026-09-02, SPACING=0.0062)
+
+1. **The 4x pool boils at rest, upright.** At natural pacing (two
+   substeps of 4.17 ms) a 15 s upright hold reads v_max 0.60 to 0.75
+   m/s every second, 1,000 to 1,700 CFL clamps a second, compression
+   max 0.16 to 0.19%, flicker 162,016 and 162,114 px/frame against
+   the 12,000 line — every tracer dot in the body moving — and the
+   WAKE film never sleeps (v_max 0.05 against V_SLEEP 0.04 at 20 s).
+   Pinned at four substeps (2.08 ms) it rests: v_max 0.08, zero
+   clamps, compression 0.03%, flicker 10,491 and 10,710, sleep at
+   frame 1652. At three substeps (2.78 ms) five passes read 14,599
+   and 15,464; eight passes 9,396 and 10,751. Eight passes at 4.17 ms
+   also rest it (v 0.12, flicker 10,613 and 10,793, sleep at frame
+   2084) with 2,800 clamps in the settled 3 s and compression 0.08%:
+   cheaper a frame (40 sweeps against 56) and dirtier. The flat pose
+   settles at every setting, which is why the desk never showed it.
+   Jack confirmed the boil on the phone the same evening: "it
+   absolutely does jitter/boil at 4x". The M3 convergence ladder
+   ("refine depth changes nothing at either length") was 1,620
+   particles; at 6,468 the 4.2 ms substep is a convergence failure
+   as well as a timestep one.
+2. **The refine mid rung is dead at 4x as at 1x.** At 2.08 ms
+   substeps five passes are required (four: 11,048 and 11,271, under
+   the line but outside the five-pass pair's spread; three: 41,910
+   and 41,968; two: 158,869 and 162,989). At 1.39 ms four passes hold
+   (9,482 and 9,733 against 9,275 and 9,798; 14% fewer sweeps) and
+   three fail narrowly (12,397 and 12,570). The short rung at 1.04 ms:
+   two passes read 26,389 at rest and 0.068% under the shake; three
+   passes 11,196 and 0.049%; four 9,805. Ring meters do not
+   discriminate, and shake clamps span 9,713 to 15,742 across
+   identical rows.
+3. **Spray does not set the substep count.** An interior-only CFL
+   (particles above half rest density) buys 1.8 to 5.6% fewer
+   substeps over the shake film, inside the 2.5% run-to-run scatter,
+   and nothing in ring, tilt or spin; the feared threefold feedback
+   (a spray particle at three times the clamp read back into the next
+   frame's CFL) never appears: the largest frame-to-frame jump in n
+   is 2 to 3. The interior water itself reaches the cap's own clamp
+   (4.76 m/s) in the film's shake. The mechanism that is real is the
+   clamp-tie ratchet above.
+4. **The sort's gate.** The design for a cell-ordered layout (below)
+   asked for one device experiment before any build: seed the
+   lattice in row order (the shipped seed), shuffled (what handling
+   produces) and cell order (what a sort delivers), and read eight
+   pinned substeps at five passes, 60 s a run, mirrored. Row 9.8
+   (cool), shuffled 11.1, cell 9.8, cell 10.6, shuffled 13.1, row
+   11.5 (hot). Shuffled sits 1.3 to 2.5 ms a frame above its
+   neighbours in both halves, above the ~1 ms drift: 0.16 to 0.3 ms a
+   substep, 16 to 30%. Cell equals row inside the drift. So a sort
+   recovers what handling mixes and nothing at rest. Unexplained:
+   both shuffled runs read a livelier pool (v_max 0.3 against 0.18 or
+   less); the cost gap is not obviously from it.
+5. **LANES 4 and workgroup 128 are unmeasured, not dead.** Both were
+   built and installed; paired installs drift as above, so neither
+   number means anything. A constant baked into a shader needs both
+   pipelines in one build to alternate; that instrument is not
+   written.
+
+### The levers, priced
+
+| Lever | Buys | Costs | Standing |
+|---|---|---|---|
+| The two-pass jump (a 120 Hz frame the CFL would put on six or seven substeps runs eight) | fits cool: 8 x 0.65 + 2.4 = 7.6 ms; at 3 m/s cool converges near 87 Hz instead of the cap | nothing at rest; hot it changes nothing by construction | shipped, below |
+| The cap scaled with the spacing (2.6 ms at 4x, four substeps at rest) | the rest boil; sleep | rest frame 4 x 1.0 + R until the gate sleeps (~14 s) | shipped, below |
+| The cell-ordered layout | 0.16 to 0.3 ms a substep in mixed water; hot particle view with the jump: 8 x 0.75 + 1.15 = 7.2 | 6 to 10 h; five buffers, four bindings | shipped, below |
+| Tracers halved at 4x | 0.4 to 0.8 of glass's 2.4 | a look change | Jack's dial; glass deprioritised 2026-09-02 |
+| LANES / workgroup retune | +-10% | an alternating two-pipeline instrument | deferred |
+| Pre-clamp speed for the CFL | n answers in one frame both ways | none | quality, not cost; open |
+| Interior-only CFL | 2 to 5% | clamps +2 to 47% in motion | dead |
+| Refine mid rung | 14% of sweeps at 1.39 ms with four passes | flicker | dead |
+
+What "comfortable" can mean, priced: 120 Hz through ordinary and
+brisk handling, with a dip only in a hard shake and brief — reachable,
+and on the flat and particle looks reachable hot; glass at 4x is
+comfortable cool and dips once the phone is hot. Never dipping, any
+shake, needs a substep under 0.4 ms, 2.5 to 3x off, and is not on
+the table. Jack's ruling, 2026-09-02: glass deprioritised ("flat and
+particle look the coolest"), the first definition accepted, no more
+phone time that day, the work approved.
+
 ## The runbook's remainder (waits for a phone session)
 
 Session prep, first plug-in: enable network debugging for the
