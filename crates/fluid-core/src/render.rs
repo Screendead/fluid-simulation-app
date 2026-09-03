@@ -42,8 +42,10 @@ const SOLVE_STORAGE_BUFFERS: u32 = 23;
 // either length, so this and refine_passes key on substep length, not
 // count. At the 1x spacing (0.01 m) 4.2 ms holds every rest, ring,
 // wake, flicker and shake guard and rests 120 Hz at two substeps
-// (set 2026-08-31, re-measured at the 4x world scale 2026-09-01,
-// optimisation record, target 1). The same 4.2 ms at the 4x particle
+// (2.2 ms set 2026-08-31 before the 4x scale landed; 4.2 ms decided
+// 2026-09-01 on the film harness, optimisation record, target 1). It
+// sits just above 8.334/2 ms, so measured 120 Hz interval jitter
+// still floors at two. The same 4.2 ms at the 4x particle
 // scale (spacing 0.0062 m) boils for ever: v_max 0.6 to 0.75 m/s,
 // over a thousand CFL clamps a second, flicker 162,000 px/frame
 // against the 12,000 line, and no sleep, where four substeps (2.08
